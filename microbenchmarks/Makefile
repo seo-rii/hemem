@@ -1,12 +1,15 @@
 CC = gcc
 CFLAGS = -g -Wall -O3
 #CFLAGS = -g3 -Wall -O0
-INCLUDES = -I/home/amanda/linux/usr/include
+INCLUDES = -I/home/kayvan/linux/usr/include
 LIBS = -lm -lpthread
 
-default: gups-pebs gups-random gups-hotset-move
+default: gups-pebs gups-random gups-hotset-move fixed-access gups_warmset
 
 all: gups-pebs gups-random gups-simple gups-lru gups-lru-swap test-simple test-lru test gups-small gups-hotset-move #gups
+
+fixed-access: fixed-access.o
+	$(CC) $(CFLAGS) $(INCLUDES) -O0 -o fixed-access fixed-access.o $(LIBS) -L../ -lhemem
 
 gups-random: gups-random.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups-random gups-random.o zipf.o $(LIBS) -L../ -lhemem
@@ -16,6 +19,9 @@ gups-small: gups-small.o
 
 gups: gups.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups gups.o zipf.o ../timer.o $(LIBS)
+
+gups_warmset: gups_warmset.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups_warmset gups_warmset.o zipf.o $(LIBS) -L../ -lhemem
 
 gups-pebs: gups.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups-pebs gups.o zipf.o $(LIBS) -L../ -lhemem
@@ -44,6 +50,9 @@ test-lru: test.o
 gups-random.o: gups-random.c zipf.c gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c gups-random.c zipf.c
 
+gups_warmset.o: gups_warmset.c zipf.c  gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c gups_warmset.c zipf.c
+
 gups.o: gups.c zipf.c  gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c gups.c zipf.c
 
@@ -56,5 +65,8 @@ gups-small.o: gups-small.c
 gups-hotset-move.o: gups-hotset-move.c zipf.c gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c gups-hotset-move.c zipf.c
 
+fixed-access.o: fixed-access.c
+	$(CC) $(CFLAGS) $(INCLUDES) -O0 -c fixed-access.c -L../ -lhemem
+
 clean:
-	$(RM) *.o gups gups-simple gups-lru gups-lru-swap test test-simple test-lru
+	$(RM) *.o gups gups-simple gups-lru gups-lru-swap test test-simple test-lru fixed-access

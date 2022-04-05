@@ -1,14 +1,41 @@
 CC = gcc
-CFLAGS = -g -Wall -O3 -fPIC
+CFLAGS = -g -Wall -O3 -fPIC -frecord-gcc-switches
 #CFLAGS = -g3 -Wall -O0 -fPIC
 LDFLAGS = -shared
-INCLUDES = -I/home/amanda/linux/usr/include
+INCLUDES = -I/home/kayvan/linux/usr/include
 LIBS = -lm -lpthread
-HEMEM_LIBS = $(LIBS) -ldl -lsyscall_intercept -L/home/amanda/Hoard/src -lhoard
+HEMEM_LIBS = $(LIBS) -ldl -lsyscall_intercept -L/home/kayvan/Hoard/src -lhoard
 
 default: libhemem.so
 
 all: hemem-libs
+
+dt: CFLAGS += -DDYNA_THRESH
+dt: default
+dt_debug: CFLAGS += -DDEBUG
+dt_debug: dt
+dt_weighted: CFLAGS += -DWEIGHTED
+dt_weighted: dt
+
+ml: CFLAGS += -DMULTI_LIST
+ml: default
+ml_debug: CFLAGS += -DDEBUG
+ml_debug: ml
+
+
+samp_cool: CFLAGS += -DDYNA_THRESH
+samp_cool: CFLAGS += -DSAMP_COOLING
+samp_cool: default
+samp_cool_debug: CFLAGS += -DDEBUG
+samp_cool_debug: samp_cool
+
+debug: CFLAGS += -DDEBUG
+debug: default
+
+slow_hist: CFLAGS += -DSLOW_HISTO
+slow_hist: default
+slow_hist_debug: CFLAGS += -DDEBUG
+slow_hist_debug: slow_hist
 
 hemem-libs: libhemem-lru.so libhemem-simple.so libhemem-lru-swap.so libhemem.so
 

@@ -78,36 +78,26 @@ static inline uint64_t rdtscp(void)
     return ((uint64_t)edx << 32) | eax;
 }
 
-//uint64_t thread_gups[MAX_THREADS];
+uint64_t thread_gups[MAX_THREADS];
 
 static unsigned long updates, nelems;
 
+FILE **f;
 static void *print_instantaneous_gups()
 {
   uint64_t last_second_gups[threads];
-  FILE *f[threads];
-  char fname[20];
-
   for (int i = 0; i < threads; i++) {
     last_second_gups[i] = 0;
-    snprintf(fname, 20, "gups_%d.txt", i);
-    //printf("file name: %s\n", fname);
-    f[i] = fopen(fname, "w");
-    if (f[i] == NULL) {
-      perror("fopen");
-      assert(0);
-    }
   }
 
   for (;;) {
     for (int i = 0; i < threads; i++) {
-      //fprintf(f[i], "%.10f\n", (1.0 * (abs(thread_gups[i] - last_second_gups[i]))) / (1.0e9));
-      //last_second_gups[i] = thread_gups[i];
+      fprintf(f[i], "%.10f\n", (1.0 * (abs(thread_gups[i] - last_second_gups[i]))) / (1.0e9));
+      last_second_gups[i] = thread_gups[i];
     }
     sleep(1);
     //printf("GUPS: %.10f\n", (1.0 * (abs(thread_gups[0]- last_second_gups))) / (1.0e9));
-    //last_second_gups = thread_gups[0];
-    //sleep(1);
+    last_second_gups[0] = thread_gups[0];
   }
 
   return NULL;
@@ -195,6 +185,7 @@ static void *do_gups(void *arguments)
         memcpy(&field[index1 * elt_size], data, elt_size);
       }
       end = rdtscp();
+      thread_gups[args->tid]++;
     }
     else {
       lfsr = lfsr_fast(lfsr);
@@ -211,6 +202,7 @@ static void *do_gups(void *arguments)
         memcpy(&field[index2 * elt_size], data, elt_size);
       }
       end = rdtscp();
+      thread_gups[args->tid]++;
     }
   }
 
@@ -245,6 +237,7 @@ int main(int argc, char **argv)
   threads = atoi(argv[1]);
   assert(threads <= MAX_THREADS);
   ga = (struct gups_args**)malloc(threads * sizeof(struct gups_args*));
+  f = malloc(sizeof(FILE*) * threads);
 
   updates = atol(argv[2]);
   updates -= updates % 256;
@@ -275,7 +268,7 @@ int main(int argc, char **argv)
   nelems = (size / threads) / elt_size; // number of elements per thread
   fprintf(stderr, "Elements per thread: %lu\n", nelems);
 
-  //memset(thread_gups, 0, sizeof(thread_gups));
+  memset(thread_gups, 0, sizeof(thread_gups));
 
   hotsetfile = fopen("hotsets.txt", "w");
   if (hotsetfile == NULL) {
@@ -289,9 +282,24 @@ int main(int argc, char **argv)
 
   //hemem_start_timing();
 
-  //pthread_t print_thread;
-  //int pt = pthread_create(&print_thread, NULL, print_instantaneous_gups, NULL);
-  //assert(pt == 0);
+  char fname[20];
+  
+  for (int i = 0; i < threads; i++) {
+    snprintf(fname, 20, "gups_%d.txt", i);
+    //printf("file name: %s\n", fname);
+    f[i] = fopen(fname, "a");
+    if (f[i] == NULL) {
+      perror("fopen");
+      assert(0);
+    }
+  }
+  for (int i = 0; i < threads; i++) {
+    fprintf(f[i], "=== %d ===\n", (log_hot_size));
+  }
+
+  pthread_t print_thread;
+  int pt = pthread_create(&print_thread, NULL, print_instantaneous_gups, NULL);
+  assert(pt == 0);
 
 
   hot_start = 0;
@@ -343,7 +351,12 @@ int main(int argc, char **argv)
   printf("Elapsed time: %.4f seconds.\n", secs);
   gups = threads * ((double)updates) / (secs * 1.0e9);
   printf("GUPS = %.10f\n", gups);
-  //memset(thread_gups, 0, sizeof(thread_gups));
+  memset(thread_gups, 0, sizeof(thread_gups));
+  printf("First Touch Done\n");
+  for (int i = 0; i < threads; i++) {
+    fprintf(f[i], "=== First Touch Done ===\n", (log_hot_size));
+  }
+  fprintf(stderr, "=== First Touch Done ===\n", (log_hot_size));
 
   filename = "indices2.txt";
 
@@ -370,6 +383,7 @@ int main(int argc, char **argv)
   printf("Elapsed time: %.4f seconds.\n", secs);
   gups = threads * ((double)updates) / (secs * 1.0e9);
   printf("GUPS = %.10f\n", gups);
+  fprintf(stderr, "Done With Run.\n");
 
   //memset(thread_gups, 0, sizeof(thread_gups));
 #if 0
@@ -407,6 +421,7 @@ int main(int argc, char **argv)
   printf("Elapsed time: %.4f seconds.\n", secs);
   gups = threads * ((double)updates) / (secs * 1.0e9);
   printf("GUPS = %.10f\n", gups);
+  fprintf(stderr, "Done With Run.\n");
 
   //hemem_print_stats();
 #endif
@@ -421,6 +436,11 @@ int main(int argc, char **argv)
       fprintf(pebsfile, "0x%lx:\t%lu\t%lu\t%lu\n", pg->va, pg->tot_accesses[DRAMREAD], pg->tot_accesses[NVMREAD], pg->tot_accesses[WRITE]);
     }
   }
+
+  for (int i = 0; i < threads; i++) {
+    fprintf(f[i], "=== %d ===\n", (log_hot_size));
+  }
+
 
   //hemem_stop_timing();
 

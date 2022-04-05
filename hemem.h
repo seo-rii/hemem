@@ -32,7 +32,7 @@ extern "C" {
 #include "pebs.h"
 #include "fifo.h"
 
-//#define HEMEM_DEBUG
+#define HEMEM_DEBUG
 //#define USE_PEBS
 #define STATS_THREAD
 
@@ -69,12 +69,12 @@ extern "C" {
 #define FAULT_THREAD_CPU  (0)
 #define STATS_THREAD_CPU  (23)
 
-FILE *hememlogf;
+extern FILE *hememlogf;
 //#define LOG(...) fprintf(stderr, __VA_ARGS__)
 //#define LOG(...)	fprintf(hememlogf, __VA_ARGS__)
 #define LOG(str, ...) while(0) {}
 
-FILE *timef;
+extern FILE *timef;
 extern bool timing;
 
 static inline void log_time(const char* fmt, ...)
@@ -92,7 +92,7 @@ static inline void log_time(const char* fmt, ...)
 //#define LOG_TIME(str, ...) fprintf(timef, str, __VA_ARGS__)
 #define LOG_TIME(str, ...) while(0) {}
 
-FILE *statsf;
+extern FILE *statsf;
 #define LOG_STATS(str, ...) fprintf(stderr, str,  __VA_ARGS__)
 //#define LOG_STATS(str, ...) fprintf(statsf, str, __VA_ARGS__)
 //#define LOG_STATS(str, ...) while (0) {}
@@ -155,10 +155,24 @@ struct hemem_page {
   volatile bool migrating;
   bool present;
   bool written;
+#ifdef MULTI_LIST
+  uint64_t hot;
+#else
   bool hot;
+#endif  
   uint64_t naccesses;
   uint64_t migrations_up, migrations_down;
+#if defined(DYNA_THRESH) || defined(MULTI_LIST) 
+  uint64_t read_local_clock;
+  uint64_t write_local_clock;
+  uint64_t NVM_local_clock;
+#else
   uint64_t local_clock;
+#endif
+#ifdef DYNA_THRESH
+  int8_t cur_read_bin;
+  int8_t cur_write_bin;
+#endif
   bool ring_present;
   uint64_t accesses[NPBUFTYPES];
   uint64_t tot_accesses[NPBUFTYPES];

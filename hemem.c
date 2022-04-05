@@ -55,6 +55,10 @@ uint64_t migration_waits = 0;
 static bool cr3_set = false;
 uint64_t cr3 = 0;
 
+FILE* hememlogf;
+FILE* statsf;
+FILE* timef;
+
 #ifndef USE_DMA
 pthread_t copy_threads[MAX_COPY_THREADS];
 #endif
@@ -293,11 +297,6 @@ void hemem_init()
   }
 #endif
 
-#ifdef STATS_THREAD
-  s = pthread_create(&stats_thread, NULL, hemem_stats_thread, NULL);
-  assert(s == 0);
-#endif
-
   paging_init();
 
 #ifdef USE_PEBS
@@ -317,6 +316,12 @@ void hemem_init()
       exit(1);
   }
 #endif
+
+#ifdef STATS_THREAD
+  s = pthread_create(&stats_thread, NULL, hemem_stats_thread, NULL);
+  assert(s == 0);
+#endif
+
 
   LOG("hemem_init: finished\n");
 
