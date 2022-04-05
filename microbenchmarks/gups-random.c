@@ -34,8 +34,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "../timer.h"
-#include "../hemem.h"
+#include "../src/timer.h"
+#include "../src/hemem.h"
 
 
 #include "gups.h"
@@ -78,41 +78,7 @@ static inline uint64_t rdtscp(void)
     return ((uint64_t)edx << 32) | eax;
 }
 
-//uint64_t thread_gups[MAX_THREADS];
-
 static unsigned long updates, nelems;
-
-static void *print_instantaneous_gups()
-{
-  uint64_t last_second_gups[threads];
-  FILE *f[threads];
-  char fname[20];
-
-  for (int i = 0; i < threads; i++) {
-    last_second_gups[i] = 0;
-    snprintf(fname, 20, "gups_%d.txt", i);
-    //printf("file name: %s\n", fname);
-    f[i] = fopen(fname, "w");
-    if (f[i] == NULL) {
-      perror("fopen");
-      assert(0);
-    }
-  }
-
-  for (;;) {
-    for (int i = 0; i < threads; i++) {
-      //fprintf(f[i], "%.10f\n", (1.0 * (abs(thread_gups[i] - last_second_gups[i]))) / (1.0e9));
-      //last_second_gups[i] = thread_gups[i];
-    }
-    sleep(1);
-    //printf("GUPS: %.10f\n", (1.0 * (abs(thread_gups[0]- last_second_gups))) / (1.0e9));
-    //last_second_gups = thread_gups[0];
-    //sleep(1);
-  }
-
-  return NULL;
-}
-
 
 static uint64_t lfsr_fast(uint64_t lfsr)
 {
@@ -126,74 +92,37 @@ char *filename = "indices1.txt";
 
 FILE *hotsetfile = NULL;
 
-bool hotset_only = false;
-
-static void *prefill_hotset(void* arguments)
-{
-  struct gups_args *args = (struct gups_args*)arguments;
-  uint64_t *field = (uint64_t*)(args->field);
-  uint64_t i;
-  uint64_t index1;
-  uint64_t elt_size = args->elt_size;
-  char data[elt_size];
-
-  index1 = 0;
-
-  for (i = 0; i < args->hotsize; i++) {
-    index1 = i;
-    if (elt_size == 8) {
-      uint64_t  tmp = field[index1];
-      tmp = tmp + i;
-      field[index1] = tmp;
-    }
-    else {
-      memcpy(data, &field[index1 * elt_size], elt_size);
-      memset(data, data[0] + i, elt_size);
-      memcpy(&field[index1 * elt_size], data, elt_size);
-    }
-  }
-  return 0;
-  
-}
-
 static void *do_gups(void *arguments)
 {
   //printf("do_gups entered\n");
   struct gups_args *args = (struct gups_args*)arguments;
   uint64_t *field = (uint64_t*)(args->field);
   uint64_t i;
-  uint64_t index1, index2;
+  uint64_t index;
   uint64_t elt_size = args->elt_size;
   char data[elt_size];
   uint64_t lfsr;
-  uint64_t hot_num;
-  uint64_t offset;
-  uint64_t start, end;
 
   srand(args->tid);
   lfsr = rand();
 
-  index1 = 0;
-  index2 = 0;
+  index = 0;
 
   fprintf(hotsetfile, "Thread %d region: %p - %p\thot set: %p - %p\n", args->tid, field, field + (args->size * elt_size), field + args->hot_start, field + args->hot_start + (args->hotsize * elt_size));   
 
   for (i = 0; i < args->iters; i++) {
-    hot_num = lfsr_fast(lfsr) % 100;
     lfsr = lfsr_fast(lfsr);
-    index2 = lfsr % (args->size);
-    start = rdtscp();
+    index = lfsr % (args->size);
     if (elt_size == 8) {
-      uint64_t tmp = field[index2];
+      uint64_t tmp = field[index];
       tmp = tmp + i;
-      field[index2] = tmp;
+      field[index] = tmp;
     }
     else {
-      memcpy(data, &field[index2 * elt_size], elt_size);
+      memcpy(data, &field[index * elt_size], elt_size);
       memset(data, data[0] + i, elt_size);
-      memcpy(&field[index2 * elt_size], data, elt_size);
+      memcpy(&field[index * elt_size], data, elt_size);
     }
-    end = rdtscp();
   }
 
   return 0;
@@ -291,18 +220,6 @@ int main(int argc, char **argv)
     ga[i]->elt_size = elt_size;
     ga[i]->hot_start = 0;        // hot set at start of thread's region
     ga[i]->hotsize = hotsize;
-  }
-
-  if (!hotset_only) {
-    for (i = 0; i < threads; i++) {
-      int r = pthread_create(&t[i], NULL, prefill_hotset, (void*)ga[i]);
-      assert(r == 0);
-    }
-    // wait for worker threads
-    for (i = 0; i < threads; i++) {
-      int r = pthread_join(t[i], NULL);
-      assert(r == 0);
-    }
   }
 
   // run through gups once to touch all memory

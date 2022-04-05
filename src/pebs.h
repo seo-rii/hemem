@@ -23,7 +23,7 @@
 #define PEBS_NPROCS 24
 #define PERF_PAGES	(1 + (1 << 16))	// Has to be == 1+2^n, here 1MB
 //#define SAMPLE_PERIOD	10007
-#define SAMPLE_PERIOD (5003 * 35)
+#define SAMPLE_PERIOD 5003
 //#define SAMPLE_FREQ	100
 
 #define HISTO_BIN_COUNT 8

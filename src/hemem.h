@@ -22,14 +22,18 @@
 extern "C" {
 #endif
 
-#include "paging.h"
-#include "hemem-mmgr.h"
-#include "lru.h"
-#include "simple.h"
+#ifdef ALLOC_LRU
+#include "policies/lru.h"
+#endif
+
+#ifdef ALLOC_SIMPLE
+#include "policies/simple.h"
+#endif 
+
+#include "pebs.h"
 #include "timer.h"
 #include "interpose.h"
 #include "uthash.h"
-#include "pebs.h"
 #include "fifo.h"
 
 #define HEMEM_DEBUG
@@ -212,9 +216,11 @@ void hemem_wp_page(struct hemem_page *page, bool protect);
 void hemem_promote_pages(uint64_t addr);
 void hemem_demote_pages(uint64_t addr);
 
+#ifdef ALLOC_LRU
 void hemem_clear_bits(struct hemem_page *page);
 uint64_t hemem_get_bits(struct hemem_page *page);
 void hemem_tlb_shootdown(uint64_t va);
+#endif
 
 struct hemem_page* get_hemem_page(uint64_t va);
 
@@ -223,7 +229,6 @@ void hemem_clear_stats();
 
 void hemem_start_timing(void);
 void hemem_stop_timing(void);
-
 
 #ifdef __cplusplus
 }

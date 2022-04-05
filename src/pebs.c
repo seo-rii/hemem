@@ -571,25 +571,28 @@ void *pebs_scan_thread()
                   page->accesses[j]++;
                   page->tot_accesses[j]++;
                   if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
-                    if (!page->hot || !page->ring_present) {
+                    if (!page->hot && !page->ring_present) {
                         make_hot_request(page);
                     }
                   }
                   else if (page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= HOT_READ_THRESHOLD) {
-                    if (!page->hot || !page->ring_present) {
+                    if (!page->hot && !page->ring_present) {
                         make_hot_request(page);
                     }
                   }
                   else if ((page->accesses[WRITE] < HOT_WRITE_THRESHOLD) && (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
-                    if (page->hot || !page->ring_present) {
+                    if (page->hot && !page->ring_present) {
                         make_cold_request(page);
                     }
                  }
 
-                  page->accesses[j] >>= (global_clock - page->local_clock);
+                  page->accesses[DRAMREAD] >>= (global_clock - page->local_clock);
+                  page->accesses[NVMREAD] >>= (global_clock - page->local_clock);
+                  page->accesses[WRITE] >>= (global_clock - page->local_clock);
                   page->local_clock = global_clock;
                   if (page->accesses[j] > PEBS_COOLING_THRESHOLD) {
                     global_clock++;
+                    cools++;
                     need_cool_dram = true;
                     need_cool_nvm = true;
                     cools++;
@@ -905,7 +908,7 @@ struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo
   }
 
   for (int i = 0; i < COOLING_PAGES; i++) {
-    p = next_page(hot, current);
+    next_page(hot, current, &p);
     if (p == NULL) {
         break;
     }
@@ -929,12 +932,12 @@ struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo
         p->hot = false;
     }
     
-    if (dram && p == start_dram_page) {
+    if (dram && (p == start_dram_page)) {
         start_dram_page = NULL;
         need_cool_dram = false;
     }
 
-    if (!dram && p == start_nvm_page) {
+    if (!dram && (p == start_nvm_page)) {
         start_nvm_page = NULL;
         need_cool_nvm = false;
     } 
@@ -1514,6 +1517,15 @@ void *pebs_policy_thread()
         }
     }
 
+    if (page == *cur_cool_in_dram) {
+        assert(page->list == &dram_hot_list);
+        next_page(page->list, page, cur_cool_in_dram);
+    }
+    if (page == *cur_cool_in_nvm) {
+        assert(page->list == &nvm_hot_list);
+        next_page(page->list, page, cur_cool_in_nvm);
+    }
+
     num_ring_reqs = 0;
     // handle hot requests from hot buffer by moving pages to hot list
     while(!ring_buf_empty(hot_ring) && num_ring_reqs < HOT_RING_REQS_THRESHOLD) {
@@ -1545,7 +1557,7 @@ void *pebs_policy_thread()
     }
     
     // move each hot NVM page to DRAM
-    for (migrated_bytes = 0; migrated_bytes < KSWAPD_MIGRATE_RATE;) {
+    for (migrated_bytes = 0; migrated_bytes < PEBS_KSWAPD_MIGRATE_RATE;) {
       p = dequeue_fifo(&nvm_hot_list);
       if (p == NULL) {
         // nothing in NVM is currently hot -- bail out
@@ -1852,5 +1864,3 @@ void pebs_stats()
   
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
 }
-
-

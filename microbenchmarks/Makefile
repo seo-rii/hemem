@@ -1,51 +1,44 @@
+HEMEMDIR = $(CURDIR)/../src/
+
 CC = gcc
 CFLAGS = -g -Wall -O3
 #CFLAGS = -g3 -Wall -O0
-INCLUDES = -I/home/kayvan/linux/usr/include
+INCLUDES = -I../linux/usr/include
 LIBS = -lm -lpthread
 
 default: gups-pebs gups-random gups-hotset-move fixed-access gups_warmset
 
-all: gups-pebs gups-random gups-simple gups-lru gups-lru-swap test-simple test-lru test gups-small gups-hotset-move #gups
+all: gups-pebs gups-random gups-simple gups-lru gups-lru-swap gups-hotset-move #gups
 
 fixed-access: fixed-access.o
 	$(CC) $(CFLAGS) $(INCLUDES) -O0 -o fixed-access fixed-access.o $(LIBS) -L../ -lhemem
 
 gups-random: gups-random.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-random gups-random.o zipf.o $(LIBS) -L../ -lhemem
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-random gups-random.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem
 
 gups-small: gups-small.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-small gups-small.o ../timer.o $(LIBS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-small gups-small.o ../src/timer.o $(LIBS)
 
 gups: gups.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups gups.o zipf.o ../timer.o $(LIBS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups gups.o zipf.o ../src/timer.o $(LIBS)
 
 gups_warmset: gups_warmset.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups_warmset gups_warmset.o zipf.o $(LIBS) -L../ -lhemem
 
 gups-pebs: gups.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-pebs gups.o zipf.o $(LIBS) -L../ -lhemem
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-pebs gups.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem
 
 gups-hotset-move: gups-hotset-move.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-hotset-move gups-hotset-move.o zipf.o $(LIBS) -L../ -lhemem
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-hotset-move gups-hotset-move.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem
 
 gups-simple: gups.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-simple gups.o zipf.o $(LIBS) -L../ -lhemem-simple
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-simple gups.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem-simple
 
 gups-lru: gups.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-lru gups.o zipf.o $(LIBS) -L../ -lhemem-lru
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-lru gups.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem-lru
 
 gups-lru-swap: gups.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-lru-swap gups.o zipf.o $(LIBS) -L../ -lhemem-lru-swap
-
-test: test.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o test test.o $(LIBS) -L../ -lhemem
-
-test-simple: test.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o test-simple test.o $(LIBS) -L../ -lhemem-simple
-
-test-lru: test.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o test-lru test.o $(LIBS) -L../ -lhemem-lru
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-lru-swap gups.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem-lru-swap
 
 gups-random.o: gups-random.c zipf.c gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c gups-random.c zipf.c
@@ -56,12 +49,6 @@ gups_warmset.o: gups_warmset.c zipf.c  gups.h
 gups.o: gups.c zipf.c  gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c gups.c zipf.c
 
-test.o: test.c
-	$(CC) $(CFLAGS) $(INCLUDES) -c test.c
-
-gups-small.o: gups-small.c 
-	$(CC) $(CFLAGS) $(INCLUDES) -c gups-small.c
-
 gups-hotset-move.o: gups-hotset-move.c zipf.c gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c gups-hotset-move.c zipf.c
 
@@ -69,4 +56,8 @@ fixed-access.o: fixed-access.c
 	$(CC) $(CFLAGS) $(INCLUDES) -O0 -c fixed-access.c -L../ -lhemem
 
 clean:
+<<<<<<< HEAD
 	$(RM) *.o gups gups-simple gups-lru gups-lru-swap test test-simple test-lru fixed-access
+=======
+	$(RM) *.o gups gups-hotset-move gups-lru-swap gups-lru gups-simple gups-random gups-pebs
+>>>>>>> origin/sosp-submission

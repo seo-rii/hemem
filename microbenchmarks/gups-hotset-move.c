@@ -34,8 +34,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "../timer.h"
-#include "../hemem.h"
+#include "../src/timer.h"
+#include "../src/hemem.h"
 
 
 #include "gups.h"
@@ -156,8 +156,6 @@ static void *do_gups(void *arguments)
   char data[elt_size];
   uint64_t lfsr;
   uint64_t hot_num;
-  uint64_t tmp;
-  uint64_t start, end;
   uint64_t before_accesses = 0;
 
   srand(args->tid);
@@ -183,7 +181,6 @@ static void *do_gups(void *arguments)
           before_accesses++;
         }
       }
-      start = rdtscp();
       if (elt_size == 8) {
         uint64_t  tmp = field[index1];
         tmp = tmp + i;
@@ -194,12 +191,10 @@ static void *do_gups(void *arguments)
         memset(data, data[0] + i, elt_size);
         memcpy(&field[index1 * elt_size], data, elt_size);
       }
-      end = rdtscp();
     }
     else {
       lfsr = lfsr_fast(lfsr);
       index2 = lfsr % (args->size);
-      start = rdtscp();
       if (elt_size == 8) {
         uint64_t tmp = field[index2];
         tmp = tmp + i;
@@ -210,7 +205,6 @@ static void *do_gups(void *arguments)
         memset(data, data[0] + i, elt_size);
         memcpy(&field[index2 * elt_size], data, elt_size);
       }
-      end = rdtscp();
     }
 
     if (i % 10000 == 0) {
