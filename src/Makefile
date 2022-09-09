@@ -1,67 +1,73 @@
 CC = gcc
-CFLAGS = -g -Wall -O3 -fPIC
+APP_CFLAGS = -Wall -O3 -fPIC
+UCM_CFLAGS = -Wall -O3
+SHARED_CFLAGS = -Wall -O3
 #CFLAGS = -g3 -Wall -O0 -fPIC
+UCM = ucm
+APP = app
+SHARED = shared
 LDFLAGS = -shared
-INCLUDES = -I../linux/usr/include/
+APP_INCLUDES := -I ../linux/usr/include/
+APP_INCLUDES += -I $(SHARED)/
+UCM_INCLUDES := -I ../linux/usr/include/
+UCM_INCLUDES += -I ../linux/include/uapi
+UCM_INCLUDES += -I $(SHARED)/
+SHARED_INCLUDES := -I $(SHARED)/
 LIBS = -lm -lpthread
-HEMEM_LIBS = $(LIBS) -ldl -lsyscall_intercept -L../Hoard/src -lhoard
+#HEMEM_LIBS = $(LIBS) -ldl -lsyscall_intercept -L../Hoard/src -lhoard
+HEMEM_LIBS = $(LIBS) -ldl -lsyscall_intercept
 
-default: libhemem.so
+default: all
+all:app central-manager
+app: libhemem.so
 
-all: hemem-libs
+libhemem.so: hemem-app.o  interpose.o channel-shared-app.o channel-app.o logging-app.o
+	$(CC) $(LDFLAGS) -o libhemem.so hemem-app.o interpose.o channel-shared-app.o channel-app.o logging-app.o  $(HEMEM_LIBS)
 
-hemem-libs: libhemem-lru.so libhemem-simple.so libhemem-lru-swap.so libhemem.so
+hemem-app.o: ${APP}/hemem-app.c
+	$(CC) $(APP_CFLAGS) $(APP_INCLUDES) -D ALLOC_HEMEM -c ${APP}/hemem-app.c -o hemem-app.o
 
-libhemem.so: hemem.o pebs.o timer.o interpose.o fifo.o spsc-ring.o
-	$(CC) $(LDFLAGS) -o libhemem.so hemem.o timer.o interpose.o pebs.o fifo.o spsc-ring.o $(HEMEM_LIBS)
+interpose.o: ${APP}/interpose.c
+	$(CC) $(APP_CFLAGS) $(APP_INCLUDES) -c ${APP}/interpose.c
 
-libhemem-lru.so: policies/hemem-lru.o policies/lru.o timer.o interpose.o policies/paging.o fifo.o spsc-ring.o
-	$(CC) $(LDFLAGS) -o libhemem-lru.so policies/hemem-lru.o timer.o policies/lru.o interpose.o policies/paging.o fifo.o spsc-ring.o $(HEMEM_LIBS)
+channel-app.o: ${APP}/channel-app.c
+	$(CC) $(APP_CFLAGS) $(APP_INCLUDES) -c ${APP}/channel-app.c
 
-libhemem-simple.so: policies/hemem-simple.o policies/simple.o timer.o interpose.o policies/paging.o fifo.o spsc-ring.o
-	$(CC) $(LDFLAGS) -o libhemem-simple.so policies/hemem-simple.o timer.o policies/simple.o interpose.o policies/paging.o fifo.o spsc-ring.o $(HEMEM_LIBS)
+central-manager: ucm.o channel-shared.o channel-ucm.o timer.o pebs.o hemem-ucm.o fifo.o spsc-ring.o logging.o
+	$(CC) -o central-manager ucm.o channel-shared.o channel-ucm.o timer.o pebs.o hemem-ucm.o fifo.o spsc-ring.o logging.o -lpthread
 
-libhemem-lru-swap.so: policies/hemem-lru-swap.o policies/lru_swap.o timer.o interpose.o policies/paging.o fifo.o spsc-ring.o
-	$(CC) $(LDFLAGS) -o libhemem-lru-swap.so policies/hemem-lru-swap.o timer.o policies/lru_swap.o interpose.o policies/paging.o fifo.o spsc-ring.o $(HEMEM_LIBS)
+ucm.o: ${UCM}/ucm.c
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/ucm.c
 
-hemem.o: hemem.c hemem.h pebs.h interpose.h fifo.h spsc-ring.h
-	$(CC) $(CFLAGS) $(INCLUDES) -D ALLOC_HEMEM -c hemem.c -o hemem.o
+hemem-ucm.o: ${UCM}/hemem-ucm.c
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/hemem-ucm.c -lpthread
 	
-policies/hemem-lru.o: hemem.c hemem.h policies/lru.h interpose.h policies/paging.h fifo.h spsc-ring.h
-	$(CC) $(CFLAGS) $(INCLUDES) -D ALLOC_LRU -c hemem.c -o policies/hemem-lru.o
+channel-shared-app.o: ${SHARED}/channel-shared.c
+	$(CC) $(APP_CFLAGS) $(SHARED_INCLUDES) -o channel-shared-app.o  -c ${SHARED}/channel-shared.c
 
-policies/hemem-simple.o: hemem.c hemem.h policies/simple.h interpose.h policies/paging.h fifo.h spsc-ring.h
-	$(CC) $(CFLAGS) $(INCLUDES) -D ALLOC_SIMPLE -c hemem.c -o policies/hemem-simple.o
+channel-shared.o: ${SHARED}/channel-shared.c
+	$(CC) $(SHARED_CFLAGS) $(SHARED_INCLUDES) -c ${SHARED}/channel-shared.c
 
-policies/hemem-lru-swap.o: hemem.c hemem.h policies/lru.h interpose.h policies/paging.h fifo.h spsc-ring.h
-	$(CC) $(CFLAGS) $(INCLUDES) -D ALLOC_LRU -D LRU_SWAP -c hemem.c -o policies/hemem-lru-swap.o
+channel-ucm.o: ${UCM}/channel-ucm.c
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/channel-ucm.c
 
-interpose.o: interpose.c interpose.h hemem.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c interpose.c
+timer.o: ${UCM}/timer.c
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/timer.c
 
-timer.o: timer.c timer.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c timer.c
+pebs.o: ${UCM}/pebs.c
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/pebs.c -lpthread
 
-policies/lru.o: policies/lru.c policies/lru.h hemem.h fifo.h spsc-ring.h
-	$(CC) $(CFLAGS) $(INCLUDES) -D ALLOC_LRU -c policies/lru.c -o policies/lru.o
+fifo.o: ${UCM}/fifo.c
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/fifo.c
 
-policies/simple.o: policies/simple.c policies/simple.h hemem.h spsc-ring.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c policies/simple.c -o policies/simple.o
+spsc-ring.o: ${UCM}/spsc-ring.c
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/spsc-ring.c
 
-policies/lru_swap.o: policies/lru.c policies/lru.h hemem.h fifo.h spsc-ring.h
-	$(CC) $(CFLAGS) $(INCLUDES) -D LRU_SWAP -D ALLOC_LRU -c policies/lru.c -o policies/lru_swap.o
+logging.o: ${SHARED}/logging.c
+	$(CC) $(SHARED_CFLAGS) $(SHARED_INCLUDES) -c ${SHARED}/logging.c
 
-policies/paging.o: policies/paging.c policies/paging.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c policies/paging.c -o policies/paging.o
-
-pebs.o: pebs.c pebs.h hemem.h fifo.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c pebs.c
-
-fifo.o: fifo.c fifo.h hemem.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c fifo.c
-
-spsc-ring.o: spsc-ring.c spsc-ring.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c spsc-ring.c
+logging-app.o: ${SHARED}/logging.c
+	$(CC) $(APP_CFLAGS) $(SHARED_INCLUDES) -o logging-app.o -c $(SHARED)/logging.c
 
 clean:
-	$(RM) *.o *.so policies/*.o
+	$(RM) *.o *.so central-manager

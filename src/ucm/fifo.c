@@ -1,8 +1,9 @@
 #include <pthread.h>
 #include <stdlib.h>
 
-#include "hemem.h"
+#include "hemem-ucm.h"
 #include "fifo.h"
+#include "logging.h"
 
 void enqueue_fifo(struct fifo_list *queue, struct hemem_page *entry)
 {
@@ -58,7 +59,7 @@ void page_list_remove_page(struct fifo_list *list, struct hemem_page *page)
     assert(list->last == NULL);
     assert(list->numentries == 0);
     pthread_mutex_unlock(&(list->list_lock));
-    LOG("page_list_remove_page: list was empty!\n");
+    //LOG("page_list_remove_page: list was empty!\n");
     return;
   }
 

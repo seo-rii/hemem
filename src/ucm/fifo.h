@@ -7,7 +7,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-#include "hemem.h"
+#include "hemem-ucm.h"
 
 struct fifo_list {
   struct hemem_page *first, *last;
