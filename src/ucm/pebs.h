@@ -37,7 +37,7 @@ struct perf_sample {
 enum pbuftype {
     DRAMREAD = 0,
     NVMREAD = 1,
-    WRITE = 2,
+//    WRITE = 2,
     NPBUFTYPES
 };
 

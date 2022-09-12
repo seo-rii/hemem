@@ -153,17 +153,17 @@ void *pebs_scan_thread()
                   if (page->va != 0) {
                     page->accesses[j]++;
                     page->tot_accesses[j]++;
-                    if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
+                    //if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
+                    //  if (!page->hot && !page->ring_present) {
+                    //    make_hot_request(process, page);
+                    //  }
+                    //}
+                    /* else */if (page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= HOT_READ_THRESHOLD) {
                       if (!page->hot && !page->ring_present) {
                         make_hot_request(process, page);
                       }
                     }
-                    else if (page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= HOT_READ_THRESHOLD) {
-                      if (!page->hot && !page->ring_present) {
-                        make_hot_request(process, page);
-                      }
-                    }
-                    else if ((page->accesses[WRITE] < HOT_WRITE_THRESHOLD) && (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+                    else if (/*page->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
                       if (page->hot && !page->ring_present) {
                         make_cold_request(process, page);
                       }
@@ -171,7 +171,7 @@ void *pebs_scan_thread()
 
                     page->accesses[DRAMREAD] >>= (global_clock - page->local_clock);
                     page->accesses[NVMREAD] >>= (global_clock - page->local_clock);
-                    page->accesses[WRITE] >>= (global_clock - page->local_clock);
+                    //page->accesses[WRITE] >>= (global_clock - page->local_clock);
                     page->local_clock = global_clock;
                     if (page->accesses[j] > PEBS_COOLING_THRESHOLD) {
                       global_clock++;
@@ -183,7 +183,7 @@ void *pebs_scan_thread()
                   hemem_pages_cnt++;
                 }
                 else {
-                  //fprintf(stderr, "did not find page %llx\n", pfn);
+                  fprintf(stderr, "did not find page %llx\n", pfn);
                   other_pages_cnt++;
                 }
                 total_pages_cnt++;
@@ -361,7 +361,7 @@ struct hemem_page* partial_cool_peek_and_move(struct hemem_process* process, boo
         tmp_accesses[j] = p->accesses[j] >> (global_clock - p->local_clock);
     }
 
-    if ((tmp_accesses[WRITE] < HOT_WRITE_THRESHOLD) && (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+    if (/*(tmp_accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
         p->hot = false;
     }
     
@@ -491,7 +491,7 @@ void *pebs_policy_thread()
 
         update_current_cool_page(process, page);
       
-        if ((p->accesses[WRITE] < HOT_WRITE_THRESHOLD) && (p->accesses[DRAMREAD] + p->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+        if (/*(p->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (p->accesses[DRAMREAD] + p->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
           // it has been cooled, need to move it into the cold list
           p->hot = false;
           enqueue_fifo(&(process->nvm_cold_list), p); 
@@ -660,7 +660,7 @@ void pebs_init(void)
   for (int i = 0; i < PEBS_NPROCS; i++) {
     perf_page[i][DRAMREAD] = perf_setup(0x1d3, 0, i, DRAMREAD);      // MEM_LOAD_L3_MISS_RETIRED.LOCAL_DRAM
     perf_page[i][NVMREAD] = perf_setup(0x80d1, 0, i, NVMREAD);     // MEM_LOAD_RETIRED.LOCAL_PMM
-    perf_page[i][WRITE] = perf_setup(0x82d0, 0, i, WRITE);    // MEM_INST_RETIRED.ALL_STORES
+    //perf_page[i][WRITE] = perf_setup(0x82d0, 0, i, WRITE);    // MEM_INST_RETIRED.ALL_STORES
   }
 
   pthread_mutex_init(&(dram_free_list.list_lock), NULL);
