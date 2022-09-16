@@ -242,6 +242,21 @@ void remap_page(struct hemem_page_app* page)
     perror("newptr mmap");
     assert(0);
   }
+
+
+  // re-register new mmap region with userfaultfd
+  struct uffdio_register uffdio_register;
+  uffdio_register.range.start = (uint64_t)newptr;
+  uffdio_register.range.len = pagesize;
+  uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
+  uffdio_register.ioctls = 0;
+  if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
+    perror("ioctl uffdio_register");
+    assert(0);
+  }
+
+  assert((uint64_t)newptr != 0);
+  assert((uint64_t)newptr % pagesize == 0);
 }
 
 void *handle_remap()
