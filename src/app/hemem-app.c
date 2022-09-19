@@ -386,7 +386,9 @@ void hemem_app_init()
     assert(0);
   }
 
+  #ifdef HEMEM_DEBUG
   printf("request_fd=%d\n", request_fd);
+  #endif
 
   remap_fd = channel_client_init(REMAP);
   if (remap_fd < 0) {
@@ -394,7 +396,9 @@ void hemem_app_init()
     assert(0);
   }
 
+  #ifdef HEMEM_DEBUG
   printf("remap_fd=%d\n", remap_fd);
+  #endif
 
   if (pthread_mutex_init(&channel_lock, NULL) != 0) {
     perror("mutex init");
@@ -445,14 +449,25 @@ static void hemem_mmap_populate(void* addr, size_t length)
   uint64_t page_boundry;
   uint64_t pagesize;
   struct alloc_response* response;
+  #ifndef ONE_MEM_REQUEST
   size_t req_mem_size;
   size_t remaining_length = length;
+  #endif
 
   assert(addr != 0);
   assert(length != 0);
+
+  #ifdef ONE_MEM_REQUEST
+  response = alloc_space((void*)addr, length);
+  if (response->header.status != 0) {
+    perror("hemem_mmap_populate allloc fails");
+    assert(0);
+  }
+  #endif
  
   for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
     int index = 0;
+    #ifndef ONE_MEM_REQUEST
     req_mem_size = remaining_length > MAX_MEM_LEN_PER_REQ ? MAX_MEM_LEN_PER_REQ : remaining_length;
     response = alloc_space((void*)page_boundry, req_mem_size);
     if (response->header.status != 0) {
@@ -461,6 +476,7 @@ static void hemem_mmap_populate(void* addr, size_t length)
     }
 
     remaining_length -= req_mem_size;
+    #endif
     int num_pages = response->num_pages;
     while (index < num_pages) {
         page = &(response->pages[index++]);
@@ -573,7 +589,18 @@ int hemem_munmap(void* addr, size_t length)
       assert(0);
   }
 
+  #ifdef ONE_MEM_REQUEST
   free_space(addr, length);
+  #else
+  size_t remaining_length = length;
+  size_t req_mem_size;
+  uint64_t page_boundry;
+  for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
+    req_mem_size = remaining_length > MAX_MEM_LEN_PER_REQ ? MAX_MEM_LEN_PER_REQ : remaining_length;
+    free_space((void*)page_boundry, req_mem_size);
+    remaining_length -= req_mem_size;
+  }
+  #endif
 
   internal_call = false;
 

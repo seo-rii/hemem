@@ -30,6 +30,7 @@
 
 pthread_t fault_thread;
 pthread_t request_thread;
+pthread_t listen_thread;
 int epoll_fd = -1;
 struct epoll_event epoll_events[MAX_EVENTS];
 int listen_fd = -1;
@@ -412,9 +413,9 @@ int add_epoll_ctl(int epoll, int fd)
   event.events = EPOLLIN | EPOLLET;
 
   ret = epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &event);
- // #ifdef HEMEM_DEBUG
- printf("add_epoll_ctl, fd=%d\n", fd);
- // #endif
+  #ifdef HEMEM_DEBUG
+  printf("add_epoll_ctl, fd=%d\n", fd);
+  #endif
 
   if (ret != 0) {
     perror("epoll_ctl");
@@ -492,13 +493,13 @@ void hemem_ucm_init() {
     assert(0);
   }
 
-  ret = add_epoll_ctl(epoll_fd, listen_fd);
+  ret = pthread_create(&fault_thread, NULL, handle_fault, 0);
   if (ret != 0) {
-    perror("add_epoll_ctl");
+    perror("pthread_create");
     assert(0);
   }
 
-  ret = pthread_create(&fault_thread, NULL, handle_fault, 0);
+  ret = pthread_create(&listen_thread, NULL, accept_new_app, 0);
   if (ret != 0) {
     perror("pthread_create");
     assert(0);
@@ -1167,16 +1168,54 @@ int process_msg(int fd)
   return 0;
 }
 
+void *accept_new_app()
+{
+
+  int ret;
+  int cli_fd;
+  socklen_t cli_addr_len;
+  struct sockaddr_un cli_addr;
+
+  cpu_set_t cpuset;
+  pthread_t thread;
+
+  thread = pthread_self();
+  CPU_ZERO(&cpuset);
+  CPU_SET(LISTEN_THREAD_CPU, &cpuset);
+  int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+  if (s != 0) {
+    perror("pthread_setaffinity_np");
+    assert(0);
+  }
+
+  while (1) {
+    cli_addr_len = sizeof(struct sockaddr_un);
+    cli_fd = accept(listen_fd, (struct sockaddr*)&cli_addr, &cli_addr_len);
+    #ifdef HEMEM_DEBUG   
+    printf("accept, cli_fd=%d\n", cli_fd);
+    #endif
+
+    if (cli_fd == -1) {
+      perror("accept");
+      assert(0);
+    }
+
+    ret = add_epoll_ctl(epoll_fd, cli_fd);
+    if (ret != 0) {
+      perror("add_epoll_ctl");
+      assert(0);
+    }
+  }
+ 
+  return NULL;
+}
+
 void *handle_request()
 {
   int num_ready_fds;
   struct epoll_event epoll_events[MAX_EVENTS];
   int ready_fd;
   int ret;
-  int cli_fd;
-  socklen_t cli_addr_len;
-  struct sockaddr_un cli_addr;
-
   cpu_set_t cpuset;
   pthread_t thread;
 
@@ -1206,28 +1245,7 @@ void *handle_request()
         close(ready_fd);
         continue;
       }
-
-      if (ready_fd == listen_fd) {
-        cli_addr_len = sizeof(struct sockaddr_un);
-        cli_fd = accept(listen_fd, (struct sockaddr*)&cli_addr, &cli_addr_len);
-        printf("accept, cli_fd=%d\n", cli_fd);
-        if (cli_fd == -1) {
-          if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-            perror("accept");
-            assert(0);
-          }
-        }
-        else {
-          ret = add_epoll_ctl(epoll_fd, cli_fd);
-          if (ret != 0) {
-            perror("add_epoll_ctl");
-            assert(0);
-          }
-        }
-
-        continue;
-      }
-
+   
       ret = process_msg(ready_fd);
       if (ret != 0) {
         perror("process_msg");
