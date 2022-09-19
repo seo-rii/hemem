@@ -6,9 +6,9 @@
 #include <stdarg.h>
 
 extern FILE *hememlogf;
-#define LOG(...) fprintf(stderr, __VA_ARGS__)
+//#define LOG(...) fprintf(stderr, __VA_ARGS__)
 //#define LOG(...) fprintf(hememlogf, __VA_ARGS__)
-//#define LOG(str, ...) while (0) {}
+#define LOG(str, ...) while (0) {}
 
 extern FILE *timef;
 extern bool timing;
@@ -28,9 +28,9 @@ static inline void log_time(const char* fmt, ...)
 #define LOG_TIME(str, ...) while (0) {}
 
 extern FILE *statsf;
-#define LOG_STATS(str, ...) fprintf(stderr, str, __VA_ARGS__)
+//#define LOG_STATS(str, ...) fprintf(stderr, str, __VA_ARGS__)
 //#define LOG_STATS(str, ...) fprintf(statsf, str, __VA_ARGS__)
-//#define LOG_STATS(str, ...) while (0) {}
+#define LOG_STATS(str, ...) while (0) {}
 
 void log_init(const char* log_name);
 

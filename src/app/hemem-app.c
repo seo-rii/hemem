@@ -73,7 +73,10 @@ void* process_request(int fd, void* request)
       pthread_mutex_lock(&channel_lock);
   }
 
-  printf("client sends request, fd=%d, operation=%ld, request_size=%d\n", fd, request_size, request_header->operation);
+  #ifdef HEMEM_DEBUG
+  printf("client sends request, fd=%d, operation=%d, request_size=%ld\n", fd, request_header->operation, request_size);
+  #endif
+
   if (request_header->operation == GET_UFFD) {
     send_fd(fd, NULL, 0, ((struct get_uffd_request*)request)->uffd);
   }
@@ -91,7 +94,9 @@ void* process_request(int fd, void* request)
     assert(0);
   }
 
+  #ifdef HEMEM_DEBUG
   printf("fd=%d, operation=%d\n", fd, request_header->operation);
+  #endif
 
   if (len != response->msg_size) {
     new_response = realloc(response, response->msg_size);
@@ -381,11 +386,15 @@ void hemem_app_init()
     assert(0);
   }
 
+  printf("request_fd=%d\n", request_fd);
+
   remap_fd = channel_client_init(REMAP);
   if (remap_fd < 0) {
     perror("channel_init");
     assert(0);
   }
+
+  printf("remap_fd=%d\n", remap_fd);
 
   if (pthread_mutex_init(&channel_lock, NULL) != 0) {
     perror("mutex init");
@@ -429,8 +438,6 @@ void hemem_app_stop()
 
 static void hemem_mmap_populate(void* addr, size_t length)
 {
-  // Page mising fault case - probably the first touch case
-  // allocate in DRAM via LRU
   void* newptr;
   uint64_t offset;
   struct hemem_page_app *page;
@@ -438,55 +445,62 @@ static void hemem_mmap_populate(void* addr, size_t length)
   uint64_t page_boundry;
   uint64_t pagesize;
   struct alloc_response* response;
-  int index = 0;
+  size_t req_mem_size;
+  size_t remaining_length = length;
 
   assert(addr != 0);
   assert(length != 0);
-
-  response = alloc_space(addr, length);
-  if (response->header.status != 0) {
-    perror("hemem_mmap_populate alloc fails");
-    assert(0);
-  }
-
+ 
   for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
-    page = &(response->pages[index++]);
-    assert(page != NULL);
-
-    offset = page->devdax_offset;
-    in_dram = page->in_dram;
-    pagesize = pt_to_pagesize(page->pt);
-
-    // now that we have an offset determined via the policy algorithm, actually map
-    // the page for the application
-    newptr = libc_mmap((void*)page_boundry, pagesize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE | MAP_FIXED, (in_dram ? dramfd : nvmfd), offset);
-    if (newptr == MAP_FAILED) {
-      perror("newptr mmap");
-      assert(0);
-    }
-  
-    if (newptr != (void*)page_boundry) {
-      fprintf(stderr, "hemem: mmap populate: warning, newptr != page boundry\n");
+    int index = 0;
+    req_mem_size = remaining_length > MAX_MEM_LEN_PER_REQ ? MAX_MEM_LEN_PER_REQ : remaining_length;
+    response = alloc_space((void*)page_boundry, req_mem_size);
+    if (response->header.status != 0) {
+        perror("hemem_mmap_populate allloc fails");
+        assert(0);
     }
 
-    // re-register new mmap region with userfaultfd
-    struct uffdio_register uffdio_register;
-    uffdio_register.range.start = (uint64_t)newptr;
-    uffdio_register.range.len = pagesize;
-    uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
-    uffdio_register.ioctls = 0;
-    if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
-      perror("ioctl uffdio_register");
-      assert(0);
+    remaining_length -= req_mem_size;
+    int num_pages = response->num_pages;
+    while (index < num_pages) {
+        page = &(response->pages[index++]);
+        assert(page != NULL);
+
+        offset = page->devdax_offset;
+        in_dram = page->in_dram;
+        pagesize = pt_to_pagesize(page->pt);
+
+        // now that we have an offset determined via the policy algorithm, actually map
+        // the page for the application
+        newptr = libc_mmap((void*)page_boundry, pagesize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE | MAP_FIXED, (in_dram ? dramfd : nvmfd), offset);
+        if (newptr == MAP_FAILED) {
+          perror("newptr mmap");
+          assert(0);
+        }
+      
+        if (newptr != (void*)page_boundry) {
+          fprintf(stderr, "hemem: mmap populate: warning, newptr != page boundry\n");
+        }
+
+        // re-register new mmap region with userfaultfd
+        struct uffdio_register uffdio_register;
+        uffdio_register.range.start = (uint64_t)newptr;
+        uffdio_register.range.len = pagesize;
+        uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
+        uffdio_register.ioctls = 0;
+        if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
+          perror("ioctl uffdio_register");
+          assert(0);
+        }
+
+        assert((uint64_t)newptr != 0);
+        assert((uint64_t)newptr % pagesize == 0);
+
+        page_boundry += pagesize;
     }
-
-    assert((uint64_t)newptr != 0);
-    assert((uint64_t)newptr % pagesize == 0);
-
-    page_boundry += pagesize;
+    free(response);
   }
 
-  free(response);
 }
 
 #define PAGE_ROUND_UP(x) (((x) + (HUGEPAGE_SIZE)-1) & (~((HUGEPAGE_SIZE)-1)))

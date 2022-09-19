@@ -243,7 +243,7 @@ static void pebs_migrate_up(struct hemem_process *process, struct hemem_page *pa
   gettimeofday(&start, NULL);
 
   page->migrating = true;
-  printf("pebs_migrate_up, addr:0x%lx\n", page->va);
+  //printf("pebs_migrate_up, addr:0x%lx\n", page->va);
   hemem_ucm_wp_page(page, true);
   hemem_ucm_migrate_up(process, page, offset);
   page->migrating = false;

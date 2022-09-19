@@ -14,7 +14,7 @@
 
 #define MEM_BARRIER() __sync_synchronize()
 
-#define STATS_THREAD
+//#define STATS_THREAD
 //#define HEMEM_DEBUG
 
 #define NVMSIZE   (480L * (1024L * 1024L * 1024L))

@@ -412,6 +412,9 @@ int add_epoll_ctl(int epoll, int fd)
   event.events = EPOLLIN | EPOLLET;
 
   ret = epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &event);
+ // #ifdef HEMEM_DEBUG
+ printf("add_epoll_ctl, fd=%d\n", fd);
+ // #endif
 
   if (ret != 0) {
     perror("epoll_ctl");
@@ -425,6 +428,10 @@ int delete_epoll_ctl(int epoll, int fd)
 {
   int ret;
   ret = epoll_ctl(epoll, EPOLL_CTL_DEL, fd, NULL);
+
+  #ifdef HEMEM_DEBUG
+  printf("delete socket fd:%d\n", fd);
+  #endif
 
   if (ret != 0) {
     perror("epoll_ctl");
@@ -662,7 +669,9 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
   assert(!page->in_dram);
 
   //LOG("hemem_migrate_up, pid: %d, migrate up addr: %lx, dramread: %" PRId64 ", nvmread: %" PRId64 "\n", page->pid, page->va, page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD]);
+  #ifdef HEMEM_DEBUG
   printf("hemem_ucm_migrate_up, pid: %d, migrate up addr: %lx, dramread: %" PRId64 ", nvmread: %" PRId64 "\n", page->pid, page->va, page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD]);
+  #endif
 
   gettimeofday(&migrate_start, NULL);
 
@@ -1108,8 +1117,9 @@ int process_msg(int fd)
   memset(send_buf, 0, MAX_SIZE);
   request_header = (struct msg_header*)recv_buf;
 
-
+  #ifdef HEMEM_DEBUG
   printf("fd=%d, operation=%d\n", fd, request_header->operation);
+  #endif
 
   switch(request_header->operation) {
   case ALLOC_SPACE:
@@ -1200,6 +1210,7 @@ void *handle_request()
       if (ready_fd == listen_fd) {
         cli_addr_len = sizeof(struct sockaddr_un);
         cli_fd = accept(listen_fd, (struct sockaddr*)&cli_addr, &cli_addr_len);
+        printf("accept, cli_fd=%d\n", cli_fd);
         if (cli_fd == -1) {
           if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
             perror("accept");

@@ -28,6 +28,7 @@ extern "C" {
 #include "logging.h"
 
 #define MAX_UFFD_MSGS	    (1)
+#define MAX_MEM_LEN_PER_REQ (1 * HUGEPAGE_SIZE)
 
 extern int dramfd;
 extern int nvmfd;
