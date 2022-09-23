@@ -35,6 +35,10 @@ uint64_t zero_pages_cnt = 0;
 uint64_t throttle_cnt = 0;
 uint64_t unthrottle_cnt = 0;
 uint64_t cools = 0;
+uint64_t dram_hot_pages = 0;
+uint64_t dram_cold_pages = 0;
+uint64_t nvm_hot_pages = 0;
+uint64_t nvm_cold_pages = 0;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
@@ -183,7 +187,7 @@ void *pebs_scan_thread()
                   hemem_pages_cnt++;
                 }
                 else {
-                  fprintf(stderr, "did not find page %llx\n", pfn);
+                  //fprintf(stderr, "did not find page %llx\n", pfn);
                   other_pages_cnt++;
                 }
                 total_pages_cnt++;
@@ -243,7 +247,6 @@ static void pebs_migrate_up(struct hemem_process *process, struct hemem_page *pa
   gettimeofday(&start, NULL);
 
   page->migrating = true;
-  //printf("pebs_migrate_up, addr:0x%lx\n", page->va);
   hemem_ucm_wp_page(page, true);
   hemem_ucm_migrate_up(process, page, offset);
   page->migrating = false;
@@ -272,14 +275,19 @@ void make_hot(struct hemem_process* process, struct hemem_page* page)
   if (page->in_dram) {
     assert(page->list == &(process->dram_cold_list));
     page_list_remove_page(&(process->dram_cold_list), page);
+    dram_cold_pages--;
     page->hot = true;
     enqueue_fifo(&(process->dram_hot_list), page);
+    dram_hot_pages++;
+
   }
   else {
     assert(page->list == &(process->nvm_cold_list));
     page_list_remove_page(&(process->nvm_cold_list), page);
+    nvm_cold_pages--;
     page->hot = true;
     enqueue_fifo(&(process->nvm_hot_list), page);
+    nvm_hot_pages++;
   }
 }
 
@@ -303,14 +311,18 @@ void make_cold(struct hemem_process* process, struct hemem_page* page)
   if (page->in_dram) {
     assert(page->list == &(process->dram_hot_list));
     page_list_remove_page(&(process->dram_hot_list), page);
+    dram_hot_pages--;
     page->hot = false;
     enqueue_fifo(&(process->dram_cold_list), page);
+    dram_cold_pages++;
   }
   else {
     assert(page->list == &(process->nvm_hot_list));
     page_list_remove_page(&(process->nvm_hot_list), page);
+    nvm_hot_pages--;
     page->hot = false;
     enqueue_fifo(&(process->nvm_cold_list), page);
+    nvm_cold_pages++;
   }
 }
 
@@ -378,7 +390,11 @@ struct hemem_page* partial_cool_peek_and_move(struct hemem_process* process, boo
     if (!p->hot) {
         current = p->next;
         page_list_remove_page(hot, p);
+        if (dram) dram_hot_pages--;
+        else nvm_hot_pages--;
         enqueue_fifo(cold, p);
+        if (dram) dram_cold_pages++;
+        else nvm_cold_pages++;
     }
     else {
         current = p;
@@ -444,17 +460,29 @@ void *pebs_policy_thread()
         update_current_cool_page(process, page);
         page_list_remove_page(list, page);
         if (page->in_dram) {
-            enqueue_fifo(&dram_free_list, page);
+          if (page->hot) dram_hot_pages--;
+          else dram_cold_pages--;  
+          enqueue_fifo(&dram_free_list, page);
         }
         else {
-            enqueue_fifo(&nvm_free_list, page);
+          if (page->hot) nvm_hot_pages--;
+          else nvm_cold_pages--;
+          enqueue_fifo(&nvm_free_list, page);
         }
+
+        page->present = false;
+        page->hot = false;
+        for (int i = 0; i < NPBUFTYPES; i++) {
+          page->accesses[i] = 0;
+          page->tot_accesses[i] = 0;
+        }
+
       }
 
       num_ring_reqs = 0;
       // handle hot requests from hot buffer by moving pages to hot list
       while(!ring_buf_empty(process->hot_ring) && num_ring_reqs < HOT_RING_REQS_THRESHOLD) {
-		page = (struct hemem_page*)ring_buf_get(process->hot_ring);
+		    page = (struct hemem_page*)ring_buf_get(process->hot_ring);
         if (page == NULL) {
             continue;
         }
@@ -464,7 +492,7 @@ void *pebs_policy_thread()
         num_ring_reqs++;
         make_hot(process, page);
         //printf("hot ring, hot pages:%llu\n", num_ring_reqs);
-	 }
+	    }
 
       num_ring_reqs = 0;
       // handle cold requests from cold buffer by moving pages to cold list
@@ -488,6 +516,7 @@ void *pebs_policy_thread()
           // nothing in NVM is currently hot -- bail out
           break;
         }
+        nvm_hot_pages--;
 
         update_current_cool_page(process, page);
       
@@ -495,6 +524,7 @@ void *pebs_policy_thread()
           // it has been cooled, need to move it into the cold list
           p->hot = false;
           enqueue_fifo(&(process->nvm_cold_list), p); 
+          nvm_cold_pages++;
           continue;
         } 
 
@@ -523,6 +553,7 @@ void *pebs_policy_thread()
             }
 
             enqueue_fifo(&(process->dram_hot_list), p);
+            dram_hot_pages++;
             enqueue_fifo(&nvm_free_list, np);
 
             migrated_bytes += pt_to_pagesize(p->pt);
@@ -534,9 +565,11 @@ void *pebs_policy_thread()
           if (cp == NULL) {
             // all dram pages are hot, so put it back in list we got it from
             enqueue_fifo(&(process->nvm_hot_list), p);
+            nvm_hot_pages++;
             goto out;
           }
           assert(cp != NULL);
+          dram_cold_pages--;
 
           update_current_cool_page(process, cp);
          
@@ -563,6 +596,7 @@ void *pebs_policy_thread()
             }
 
             enqueue_fifo(&(process->nvm_cold_list), cp);
+            nvm_cold_pages++;
             enqueue_fifo(&dram_free_list, np);
           }
           assert(np != NULL);
@@ -593,6 +627,7 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
 
     page->present = true;
     enqueue_fifo(&(process->dram_cold_list), page);
+    dram_cold_pages++;
 
     gettimeofday(&end, NULL);
     LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
@@ -608,7 +643,7 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
 
     page->present = true;
     enqueue_fifo(&(process->nvm_cold_list), page);
-
+    nvm_cold_pages++;
 
     gettimeofday(&end, NULL);
     LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
@@ -641,12 +676,6 @@ void pebs_remove_page(struct hemem_page *page)
   ring_buf_put(free_page_ring, (uint64_t*)page); 
   pthread_mutex_unlock(&free_page_ring_lock);
 
-  page->present = false;
-  page->hot = false;
-  for (int i = 0; i < NPBUFTYPES; i++) {
-    page->accesses[i] = 0;
-    page->tot_accesses[i] = 0;
-  }
 }
 
 void pebs_init(void)
@@ -728,9 +757,14 @@ void pebs_stats()
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
   */
 
-  LOG_STATS("\themem_pages:[%lu]total_pages: [%lu]\tzero_pages: [%ld]\tother_processes: [%ld]\tthrottle/unthrottle: [%ld/%ld]\tcools: [%ld]\n",
+  LOG_STATS("\tdram_hot: [%lu]\tdram_cold: [%lu]\tnvm_hot: [%lu]\tnvm_cold: [%lu]\n",
+        dram_hot_pages,
+        dram_cold_pages,
+        nvm_hot_pages,
+        nvm_cold_pages);
+  LOG_STATS("\themem_pages: [%lu]\tother_pages: [%lu]\tzero_pages: [%ld]\tother_processes: [%ld]\tthrottle/unthrottle: [%ld/%ld]\tcools: [%ld]\n",
         hemem_pages_cnt,
-        total_pages_cnt,
+        total_pages_cnt - hemem_pages_cnt,
         zero_pages_cnt,
         other_processes_cnt,
         throttle_cnt,

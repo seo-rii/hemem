@@ -196,7 +196,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     page->pid = process->pid;
     page->uffd = process->uffd;
     assert(page->va != 0);
-    assert(page->va != HUGEPAGE_SIZE);
+    assert(page->va % HUGEPAGE_SIZE == 0);
     page->migrating = false;
     page->migrations_up = page->migrations_down = 0;
     pthread_mutex_init(&(page->page_lock), NULL);
@@ -210,6 +210,9 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     page_app->pt = page->pt;
     response->num_pages++;
     page_boundry += pagesize;
+
+    mem_allocated += pagesize;
+    pages_allocated++;
   } 
   
   response->header.msg_size = sizeof(struct alloc_response) + response->num_pages * sizeof(struct hemem_page_app);
@@ -250,6 +253,7 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
 
     remove_page(process, page);
     page_free(page);
+    mem_allocated -= pagesize;
   } 
   
   response->header.status = SUCCESS;
@@ -670,9 +674,7 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
   assert(!page->in_dram);
 
   //LOG("hemem_migrate_up, pid: %d, migrate up addr: %lx, dramread: %" PRId64 ", nvmread: %" PRId64 "\n", page->pid, page->va, page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD]);
-  #ifdef HEMEM_DEBUG
-  printf("hemem_ucm_migrate_up, pid: %d, migrate up addr: %lx, dramread: %" PRId64 ", nvmread: %" PRId64 "\n", page->pid, page->va, page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD]);
-  #endif
+  LOG("hemem_migrate_up, pid: %d, migrate up addr: %lx, dramread: %" PRId64 ", nvmread: %" PRId64 "\n", page->pid, page->va, page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD]);
 
   gettimeofday(&migrate_start, NULL);
 
@@ -742,6 +744,8 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
 
   assert(page->in_dram);
 
+  LOG("hemem_migrate_down, pid: %d, migrate down addr: %lx, dramread: %" PRId64 ", nvmread: %" PRId64 "\n", page->pid, page->va, page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD]);
+  
   gettimeofday(&migrate_start, NULL);
 
   pagesize = pt_to_pagesize(page->pt);

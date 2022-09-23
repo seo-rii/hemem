@@ -248,7 +248,6 @@ void remap_page(struct hemem_page_app* page)
     assert(0);
   }
 
-
   // re-register new mmap region with userfaultfd
   struct uffdio_register uffdio_register;
   uffdio_register.range.start = (uint64_t)newptr;
@@ -259,7 +258,6 @@ void remap_page(struct hemem_page_app* page)
     perror("ioctl uffdio_register");
     assert(0);
   }
-
   assert((uint64_t)newptr != 0);
   assert((uint64_t)newptr % pagesize == 0);
 }
