@@ -37,7 +37,7 @@ long uffd = -1;
 uint64_t msg_id = 0;
 bool is_init = false;
 __thread bool internal_call = false;
-bool enable_remap = false;
+volatile bool enable_remap = false;
 pthread_mutex_t channel_lock;
 
 int request_fd;
