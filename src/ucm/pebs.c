@@ -39,6 +39,10 @@ uint64_t dram_hot_pages = 0;
 uint64_t dram_cold_pages = 0;
 uint64_t nvm_hot_pages = 0;
 uint64_t nvm_cold_pages = 0;
+uint64_t dram_hot_ring_pages = 0;
+uint64_t dram_cold_ring_pages = 0;
+uint64_t nvm_hot_ring_pages = 0;
+uint64_t nvm_cold_ring_pages = 0;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
@@ -98,13 +102,17 @@ static struct perf_event_mmap_page* perf_setup(__u64 config, __u64 config1, __u6
 void make_hot_request(struct hemem_process* process, struct hemem_page* page)
 {
    page->ring_present = true;
-   ring_buf_put(process->hot_ring, (uint64_t*)page); 
+   ring_buf_put(process->hot_ring, (uint64_t*)page);
+   if (page->in_dram) dram_hot_ring_pages++;
+   else nvm_hot_ring_pages++;
 }
 
 void make_cold_request(struct hemem_process* process, struct hemem_page* page)
 {
     page->ring_present = true;
     ring_buf_put(process->cold_ring, (uint64_t*)page);
+    if (page->in_dram) dram_cold_ring_pages++;
+    else nvm_cold_ring_pages++;
 }
 
 void *pebs_scan_thread()
@@ -486,7 +494,10 @@ void *pebs_policy_thread()
         if (page == NULL) {
             continue;
         }
-       
+        
+        if (page->in_dram) dram_hot_ring_pages--;
+        else nvm_hot_ring_pages--;
+
         update_current_cool_page(process, page);
         page->ring_present = false;
         num_ring_reqs++;
@@ -501,6 +512,9 @@ void *pebs_policy_thread()
         if (page == NULL) {
             continue;
         }
+
+        if (page->in_dram) dram_cold_ring_pages--;
+        else nvm_cold_ring_pages--;
 
         update_current_cool_page(process, page);
         page->ring_present = false;
@@ -757,11 +771,15 @@ void pebs_stats()
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
   */
 
-  LOG_STATS("\tdram_hot: [%lu]\tdram_cold: [%lu]\tnvm_hot: [%lu]\tnvm_cold: [%lu]\n",
+  LOG_STATS("\tdram_hot: [%lu]\tdram_cold: [%lu]\tnvm_hot: [%lu]\tnvm_cold: [%lu]\tdram_hot_ring: [%lu]\tdram_cold_ring: [%lu]\tnvm_hot_ring: [%lu]\tnvm_cold_ring: [%lu]\n",
         dram_hot_pages,
         dram_cold_pages,
         nvm_hot_pages,
-        nvm_cold_pages);
+        nvm_cold_pages,
+        dram_hot_ring_pages,
+        dram_cold_ring_pages,
+        nvm_hot_ring_pages,
+        nvm_cold_ring_pages);
   LOG_STATS("\themem_pages: [%lu]\tother_pages: [%lu]\tzero_pages: [%ld]\tother_processes: [%ld]\tthrottle/unthrottle: [%ld/%ld]\tcools: [%ld]\n",
         hemem_pages_cnt,
         total_pages_cnt - hemem_pages_cnt,
