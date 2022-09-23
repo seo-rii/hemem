@@ -599,6 +599,7 @@ int hemem_munmap(void* addr, size_t length)
     req_mem_size = remaining_length > MAX_MEM_LEN_PER_REQ ? MAX_MEM_LEN_PER_REQ : remaining_length;
     free_space((void*)page_boundry, req_mem_size);
     remaining_length -= req_mem_size;
+    page_boundry += req_mem_size;
   }
   #endif
 
