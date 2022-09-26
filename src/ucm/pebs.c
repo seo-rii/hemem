@@ -490,7 +490,7 @@ void *pebs_policy_thread()
       num_ring_reqs = 0;
       // handle hot requests from hot buffer by moving pages to hot list
       while(!ring_buf_empty(process->hot_ring) && num_ring_reqs < HOT_RING_REQS_THRESHOLD) {
-		    page = (struct hemem_page*)ring_buf_get(process->hot_ring);
+		page = (struct hemem_page*)ring_buf_get(process->hot_ring);
         if (page == NULL) {
             continue;
         }

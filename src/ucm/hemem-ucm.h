@@ -14,8 +14,9 @@
 #define MAX_UFFD_MSGS	    (3)
 
 #define USE_DMA
-#define NUM_CHANNS 2
+#define NUM_CHANNS 1
 #define SIZE_PER_DMA_REQUEST (1024*1024)
+#define MAX_COPY_THREADS 4
 
 #define MAX_EVENTS 128
 
@@ -54,9 +55,9 @@ struct hemem_process {
   struct fifo_list nvm_cold_list;
   struct hemem_page* cur_cool_in_dram;
   struct hemem_page* cur_cool_in_nvm;
-  ring_handle_t hot_ring;
-  ring_handle_t cold_ring;
-  ring_handle_t free_page_ring;
+  volatile ring_handle_t hot_ring;
+  volatile ring_handle_t cold_ring;
+  volatile ring_handle_t free_page_ring;
   pthread_mutex_t free_page_ring_lock;
   struct hemem_page* start_dram_page;
   struct hemem_page* start_nvm_page;

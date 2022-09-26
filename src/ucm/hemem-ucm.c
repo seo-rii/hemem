@@ -64,6 +64,87 @@ uint64_t migration_waits = 0;
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
 
+#ifndef USE_DMA
+struct pmemcpy {
+  pthread_mutex_t lock;
+  pthread_barrier_t barrier;
+  _Atomic bool write_zeros;
+  _Atomic void *dst;
+  _Atomic void *src;
+  _Atomic size_t length;
+};
+
+static struct pmemcpy pmemcpy;
+
+void *hemem_parallel_memcpy_thread(void *arg) {
+  uint64_t tid = (uint64_t)arg;
+  void *src;
+  void *dst;
+  size_t length;
+  size_t chunk_size;
+
+  assert(tid < MAX_COPY_THREADS);
+
+  for (;;) {
+    int r = pthread_barrier_wait(&pmemcpy.barrier);
+    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+    if (tid == 0) {
+      memcpys++;
+    }
+
+    // grab data out of shared struct
+    length = pmemcpy.length;
+    chunk_size = length / MAX_COPY_THREADS;
+    dst = pmemcpy.dst + (tid * chunk_size);
+    if (!pmemcpy.write_zeros) {
+      src = pmemcpy.src + (tid * chunk_size);
+      memcpy(dst, src, chunk_size);
+    } else {
+      memset(dst, 0, chunk_size);
+    }
+
+    //LOG("thread %lu done copying\n", tid);
+
+    r = pthread_barrier_wait(&pmemcpy.barrier);
+    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  }
+  return NULL;
+}
+
+static void hemem_parallel_memset(void *addr, int c, size_t n) {
+  pthread_mutex_lock(&(pmemcpy.lock));
+  pmemcpy.dst = addr;
+  pmemcpy.length = n;
+  pmemcpy.write_zeros = true;
+
+  int r = pthread_barrier_wait(&pmemcpy.barrier);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+
+  r = pthread_barrier_wait(&pmemcpy.barrier);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+
+  pthread_mutex_unlock(&(pmemcpy.lock));
+}
+
+static void hemem_parallel_memcpy(void *dst, void *src, size_t length) {
+  pthread_mutex_lock(&(pmemcpy.lock));
+  pmemcpy.dst = dst;
+  pmemcpy.src = src;
+  pmemcpy.length = length;
+  pmemcpy.write_zeros = false;
+
+  int r = pthread_barrier_wait(&pmemcpy.barrier);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+
+  // LOG("parallel migration started\n");
+
+  r = pthread_barrier_wait(&pmemcpy.barrier);
+  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
+  // LOG("parallel migration finished\n");
+  pthread_mutex_unlock(&(pmemcpy.lock));
+}
+#endif
+
 struct hemem_process* ucm_add_process(int fd, struct add_process_request* request, struct add_process_response* response)
 {
   pid_t pid = request->header.pid;
@@ -292,53 +373,6 @@ int ucm_record_remap_fd(int fd, struct record_remap_fd_request* request, struct 
   return 0;
 }
 
-#ifndef USE_DMA
-struct pmemcpy {
-  pthread_mutex_t lock;
-  pthread_barrier_t barrier;
-  _Atomic bool write_zeros;
-  _Atomic void *dst;
-  _Atomic void *src;
-  _Atomic size_t length;
-};
-
-static struct pmemcpy pmemcpy;
-
-void *hemem_parallel_memcpy_thread(void *arg) {
-  uint64_t tid = (uint64_t)arg;
-  void *src;
-  void *dst;
-  size_t length;
-  size_t chunk_size;
-
-  assert(tid < MAX_COPY_THREADS);
-
-  for (;;) {
-    int r = pthread_barrier_wait(&pmemcpy.barrier);
-    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-    if (tid == 0) {
-      memcpys++;
-    }
-
-    // grab data out of shared struct
-    length = pmemcpy.length;
-    chunk_size = length / MAX_COPY_THREADS;
-    dst = pmemcpy.dst + (tid * chunk_size);
-    if (!pmemcpy.write_zeros) {
-      src = pmemcpy.src + (tid * chunk_size);
-      memcpy(dst, src, chunk_size);
-    } else {
-      memset(dst, 0, chunk_size);
-    }
-
-    LOG("thread %lu done copying\n", tid);
-
-    r = pthread_barrier_wait(&pmemcpy.barrier);
-    assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-  }
-  return NULL;
-}
-#endif
 
 #ifdef STATS_THREAD
 static void *hemem_stats_thread() {
@@ -581,22 +615,6 @@ void hemem_ucm_stop() {
   policy_shutdown();
 }
 
-#ifndef USE_DMA
-static void hemem_parallel_memset(void *addr, int c, size_t n) {
-  pthread_mutex_lock(&(pmemcpy.lock));
-  pmemcpy.dst = addr;
-  pmemcpy.length = n;
-  pmemcpy.write_zeros = true;
-
-  int r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-
-  r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-
-  pthread_mutex_unlock(&(pmemcpy.lock));
-}
-#endif
 
 #if 0
 static void hemem_ucm_mmap_populate(struct hemem_page *page) {
@@ -639,25 +657,6 @@ int hemem_ucm_munmap(struct hemem_page *page) {
   return ret;
 }
 
-#ifndef USE_DMA
-static void hemem_parallel_memcpy(void *dst, void *src, size_t length) {
-  pthread_mutex_lock(&(pmemcpy.lock));
-  pmemcpy.dst = dst;
-  pmemcpy.src = src;
-  pmemcpy.length = length;
-  pmemcpy.write_zeros = false;
-
-  int r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-
-  // LOG("parallel migration started\n");
-
-  r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-  // LOG("parallel migration finished\n");
-  pthread_mutex_unlock(&(pmemcpy.lock));
-}
-#endif
 
 void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page, uint64_t dram_offset) {
   void *old_addr;
@@ -673,8 +672,9 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
 
   assert(!page->in_dram);
 
-  //LOG("hemem_migrate_up, pid: %d, migrate up addr: %lx, dramread: %" PRId64 ", nvmread: %" PRId64 "\n", page->pid, page->va, page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD]);
+#ifdef HEMEM_DEBUG
   LOG("hemem_migrate_up, pid: %d, migrate up addr: %lx, dramread: %" PRId64 ", nvmread: %" PRId64 "\n", page->pid, page->va, page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD]);
+#endif
 
   gettimeofday(&migrate_start, NULL);
 
@@ -744,7 +744,9 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
 
   assert(page->in_dram);
 
+#ifdef HEMEM_DEBUG
   LOG("hemem_migrate_down, pid: %d, migrate down addr: %lx, dramread: %" PRId64 ", nvmread: %" PRId64 "\n", page->pid, page->va, page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD]);
+#endif  
   
   gettimeofday(&migrate_start, NULL);
 

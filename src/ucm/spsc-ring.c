@@ -7,9 +7,9 @@
 
 struct ring_buf_t {
 	uint64_t** buffer;
-	size_t head;
-	size_t tail;
-	size_t capacity;
+	volatile size_t head;
+	volatile size_t tail;
+	volatile size_t capacity;
 };
 
 static void advance_pointer(ring_handle_t rbuf)
