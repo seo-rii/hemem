@@ -10,6 +10,36 @@ default: libhemem.so
 
 all: hemem-libs
 
+dt: CFLAGS += -DDYNA_THRESH
+dt: default
+dt_debug: CFLAGS += -DDEBUG
+dt_debug: dt
+dt_weighted: CFLAGS += -DWEIGHTED
+dt_weighted: dt
+
+ml: CFLAGS += -DMULTI_LIST
+ml: default
+ml_debug: CFLAGS += -DDEBUG
+ml_debug: ml
+
+
+samp_cool_d: CFLAGS += -DDYNA_THRESH
+samp_cool_d: CFLAGS += -DSAMP_COOLING
+samp_cool_d: default
+samp_cool_debug: CFLAGS += -DDEBUG
+samp_cool_debug: samp_cool
+
+samp_cool: CFLAGS += -DSAMP_COOLING
+samp_cool: default
+
+debug: CFLAGS += -DDEBUG
+debug: default
+
+slow_hist: CFLAGS += -DSLOW_HISTO
+slow_hist: default
+slow_hist_debug: CFLAGS += -DDEBUG
+slow_hist_debug: slow_hist
+
 hemem-libs: libhemem-lru.so libhemem-simple.so libhemem-lru-swap.so libhemem.so
 
 libhemem.so: hemem.o pebs.o timer.o interpose.o fifo.o spsc-ring.o

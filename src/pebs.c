@@ -14,6 +14,7 @@
 #include <sys/mman.h>
 #include <sched.h>
 #include <sys/ioctl.h>
+#include <time.h>
 
 #include "hemem.h"
 #include "pebs.h"
@@ -56,6 +57,7 @@ uint64_t hemem_pages_cnt = 0;
 uint64_t other_pages_cnt = 0;
 uint64_t total_pages_cnt = 0;
 uint64_t zero_pages_cnt = 0;
+uint64_t good_samples = 0;
 uint64_t throttle_cnt = 0;
 uint64_t unthrottle_cnt = 0;
 uint64_t cools = 0;
@@ -68,7 +70,6 @@ volatile bool need_cool_dram = false;
 volatile bool need_cool_nvm = false;
 
 
-#define SAMPLE_COOLING_NUM 100000
 // histogram definitions
 // histogram for deciding the threshhold. bins are 0, 1, 2, 4, 8, 16, 32+
 // histogram size must be a power of 2 (for bit masking)
@@ -77,6 +78,7 @@ uint64_t reading_hot_thresh = HOT_READ_THRESHOLD;
 
 uint64_t writing_page_histogram[HISTO_BIN_COUNT] = {0};
 uint64_t writing_hot_thresh = HOT_WRITE_THRESHOLD;
+
 
 #ifdef SLOW_HISTO
 uint64_t read_print[HISTO_BIN_COUNT] = {0};
@@ -88,6 +90,8 @@ uint64_t reading_bin_0_loc = 0;
 
 uint64_t histo_last_global_clock = 0;
 float time_taken_histo = 0.0f;
+
+uint64_t lost_sample = 0;
 
 static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid, 
     int cpu, int group_fd, unsigned long flags)
@@ -111,6 +115,7 @@ static struct perf_event_mmap_page* perf_setup(__u64 config, __u64 config1, __u6
   attr.config = config;
   attr.config1 = config1;
   attr.sample_period = SAMPLE_PERIOD;
+  attr.freq = 0;
 
   attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_WEIGHT | PERF_SAMPLE_ADDR;
   attr.disabled = 0;
@@ -120,6 +125,8 @@ static struct perf_event_mmap_page* perf_setup(__u64 config, __u64 config1, __u6
   attr.exclude_callchain_kernel = 1;
   attr.exclude_callchain_user = 1;
   attr.precise_ip = 1;
+
+  assert(attr.freq == 0);
 
   pfd[cpu][type] = perf_event_open(&attr, -1, cpu, -1, 0);
   if(pfd[cpu][type] == -1) {
@@ -212,7 +219,7 @@ void *pebs_scan_thread()
                   // cool down pages
                   if (page->accesses[j] > PEBS_COOLING_THRESHOLD) {
                     cools++;
-                    *(global_clock_maps[j])++;
+                    (*(global_clock_maps[j]))++;
                     need_cool_dram = true;
                     need_cool_nvm = true;
 #ifdef DEBUG
@@ -278,7 +285,6 @@ void *pebs_scan_thread()
 }
 #elif defined(DYNA_THRESH)
 // TODO: move all the branching cringe into one big branch that sets up and then lets it RIP
-uint64_t pebs_sample_since_cool = 0;
 void *pebs_scan_thread()
 {
   cpu_set_t cpuset;
@@ -292,7 +298,7 @@ void *pebs_scan_thread()
     perror("pthread_setaffinity_np");
     assert(0);
   }
-
+  uint64_t pebs_sample_since_cool = 0;
   for(;;) {
     for (int i = 0; i < PEBS_NPROCS; i++) {
       for(int j = 0; j < NPBUFTYPES; j++) {
@@ -535,107 +541,124 @@ void *pebs_scan_thread()
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
-  CPU_SET(SCANNING_THREAD_CPU, &cpuset);
+  CPU_SET(24, &cpuset);
   int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-  if (s != 0) {
+  if (s != 0)
+  {
     perror("pthread_setaffinity_np");
     assert(0);
   }
 
-  for(;;) {
-    for (int i = 0; i < PEBS_NPROCS; i++) {
-      for(int j = 0; j < NPBUFTYPES; j++) {
-        struct perf_event_mmap_page *p = perf_page[i][j];
+  for (;;)
+  {
+    for (int i = 0; i < PEBS_NPROCS; i++)
+    {
+      for (int j = 0; j < NPBUFTYPES; j++)
+      {
         char *pbuf = (char *)p + p->data_offset;
 
         __sync_synchronize();
 
-        if(p->data_head == p->data_tail) {
+        if (p->data_head == p->data_tail)
+        {
           continue;
         }
 
         struct perf_event_header *ph = (void *)(pbuf + (p->data_tail % p->data_size));
-        struct perf_sample* ps;
-        struct hemem_page* page;
+        struct perf_sample *ps;
+        struct hemem_page *page;
+        if (ph->size == 0)
+        {
+          continue;
+        }
 
-        switch(ph->type) {
+        switch (ph->type)
+        {
         case PERF_RECORD_SAMPLE:
-            ps = (struct perf_sample*)ph;
-            assert(ps != NULL);
-            if(ps->addr != 0) {
-              __u64 pfn = ps->addr & HUGE_PFN_MASK;
-            
-              page = get_hemem_page(pfn);
-              if (page != NULL) {
-                if (page->va != 0) {
-                  page->accesses[j]++;
-                  page->tot_accesses[j]++;
-                  if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
-                    if (!page->hot && !page->ring_present) {
-                        make_hot_request(page);
-                    }
-                  }
-                  else if (page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= HOT_READ_THRESHOLD) {
-                    if (!page->hot && !page->ring_present) {
-                        make_hot_request(page);
-                    }
-                  }
-                  else if ((page->accesses[WRITE] < HOT_WRITE_THRESHOLD) && (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
-                    if (page->hot && !page->ring_present) {
-                        make_cold_request(page);
-                    }
-                 }
+          ps = (struct perf_sample *)ph;
+          assert(ps != NULL);
+          if (ps->addr != 0)
+          {
+            __u64 pfn = ps->addr & HUGE_PFN_MASK;
 
-                  page->accesses[DRAMREAD] >>= (global_clock - page->local_clock);
-                  page->accesses[NVMREAD] >>= (global_clock - page->local_clock);
-                  page->accesses[WRITE] >>= (global_clock - page->local_clock);
-                  page->local_clock = global_clock;
-                  if (page->accesses[j] > PEBS_COOLING_THRESHOLD) {
-                    global_clock++;
-                    cools++;
-                    need_cool_dram = true;
-                    need_cool_nvm = true;
-                    cools++;
+            page = get_hemem_page(pfn);
+            if (page != NULL)
+            {
+              if (page->va != 0)
+              {
+                page->accesses[j]++;
+                page->tot_accesses[j]++;
+                if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD)
+                {
+                  if (!page->hot && !page->ring_present)
+                  {
+                    make_hot_request(page);
                   }
                 }
-                hemem_pages_cnt++;
+                else if (page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= HOT_READ_THRESHOLD)
+                {
+                  if (!page->hot && !page->ring_present)
+                  {
+                    make_hot_request(page);
+                  }
+                }
+                else if ((page->accesses[WRITE] < HOT_WRITE_THRESHOLD) && (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < HOT_READ_THRESHOLD))
+                {
+                  if (page->hot && !page->ring_present)
+                  {
+                    make_cold_request(page);
+                  }
+                }
+                page->accesses[DRAMREAD] >>= (global_clock - page->local_clock);
+                page->accesses[NVMREAD] >>= (global_clock - page->local_clock);
+                page->accesses[WRITE] >>= (global_clock - page->local_clock);
+                page->local_clock = global_clock;
+                if (page->accesses[j] > PEBS_COOLING_THRESHOLD)
+                {
+                  global_clock++;
+                  cools++;
+                  need_cool_dram = true;
+                  need_cool_nvm = true;
+                  cools++;
+                }
               }
-              else {
-                other_pages_cnt++;
-              }
-            
-              total_pages_cnt++;
+              hemem_pages_cnt++;
             }
-            else {
-              zero_pages_cnt++;
+            else
+            {
+              other_pages_cnt++;
             }
-  	      break;
+
+            total_pages_cnt++;
+          }
+          else
+          {
+            zero_pages_cnt++;
+          }
+          break;
         case PERF_RECORD_THROTTLE:
         case PERF_RECORD_UNTHROTTLE:
           //fprintf(stderr, "%s event!\n",
           //   ph->type == PERF_RECORD_THROTTLE ? "THROTTLE" : "UNTHROTTLE");
           if (ph->type == PERF_RECORD_THROTTLE) {
-              throttle_cnt++;
+            throttle_cnt++;
           }
           else {
-              unthrottle_cnt++;
+            unthrottle_cnt++;
           }
-          break;
+
         default:
           fprintf(stderr, "Unknown type %u\n", ph->type);
           //assert(!"NYI");
           break;
         }
-
         p->data_tail += ph->size;
       }
     }
   }
-
   return NULL;
 }
 #endif
-
 
 static void pebs_migrate_down(struct hemem_page *page, uint64_t offset)
 {
@@ -809,6 +832,155 @@ void make_warm(struct hemem_page* page) {
 }
 #endif
 
+
+static struct hemem_page* start_dram_page = NULL;
+static struct hemem_page* start_nvm_page = NULL;
+
+#ifdef COOL_IN_PLACE
+struct hemem_page* partial_cool(struct fifo_list *hot, struct fifo_list *cold, bool dram, struct hemem_page* current)
+{
+  struct hemem_page *p;
+  uint64_t tmp_accesses[NPBUFTYPES];
+
+  if (dram && !need_cool_dram) {
+    if (current != NULL)
+      assert(current->list == hot);
+    return current;
+  }
+  if (!dram && !need_cool_nvm) {
+    if (current != NULL)
+      assert(current->list == hot);
+    return current;
+  }
+
+  if (start_dram_page == NULL && dram) {
+      start_dram_page = hot->last;
+  }
+
+  if (start_nvm_page == NULL && !dram) {
+      start_nvm_page = hot->last;
+  }
+
+  for (int i = 0; i < COOLING_PAGES; i++) {
+    next_page(hot, current, &p);
+    if (p == NULL) {
+        break;
+    }
+    if (dram) {
+        assert(p->in_dram);
+    }
+    else {
+        assert(!p->in_dram);
+    }
+
+#if defined(MULTI_LIST)
+    tmp_accesses[WRITE] = p->accesses[WRITE] >> (write_global_clock - p->write_local_clock);
+    tmp_accesses[NVMREAD] = p->accesses[NVMREAD] >> (NVM_global_clock - p->NVM_local_clock);
+    tmp_accesses[DRAMREAD] = p->accesses[DRAMREAD] >> (read_global_clock - p->read_local_clock);
+#else
+    for (int j = 0; j < NPBUFTYPES; j++) {
+        tmp_accesses[j] = p->accesses[j] >> (global_clock - p->local_clock);
+    }
+#endif
+
+    if ((tmp_accesses[WRITE] < HOT_WRITE_THRESHOLD) && (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+        p->hot = false;
+    }
+    
+    if (dram && (p == start_dram_page)) {
+        start_dram_page = NULL;
+        need_cool_dram = false;
+    }
+
+    if (!dram && (p == start_nvm_page)) {
+        start_nvm_page = NULL;
+        need_cool_nvm = false;
+    } 
+
+    if (!p->hot) {
+        current = p->next;
+        if (current != NULL)
+          assert(current->list == hot);
+        page_list_remove_page(hot, p);
+        enqueue_fifo(cold, p);
+    }
+    else {
+        current = p;
+    }
+  }
+  if (current != NULL) {
+    assert(current->list == &dram_hot_list || current->list == &nvm_hot_list);
+  }
+  return current;
+}
+#else
+static void partial_cool(struct fifo_list *hot, struct fifo_list *cold, bool dram)
+{
+  struct hemem_page *p;
+  uint64_t tmp_accesses[NPBUFTYPES];
+
+  if (dram && !need_cool_dram) {
+      return;
+  }
+  if (!dram && !need_cool_nvm) {
+      return;
+  }
+
+  if ((start_dram_page == NULL) && dram) {
+      start_dram_page = hot->last;
+  }
+
+  if ((start_nvm_page == NULL) && !dram) {
+      start_nvm_page = hot->last;
+  }
+
+  for (int i = 0; i < COOLING_PAGES; i++) {
+    p = dequeue_fifo(hot);
+    if (p == NULL) {
+        break;
+    }
+    if (dram) {
+        assert(p->in_dram);
+    }
+    else {
+        assert(!p->in_dram);
+    }
+
+#if defined(MULTI_LIST)
+    tmp_accesses[WRITE] = p->accesses[WRITE] >> (write_global_clock - p->write_local_clock);
+    tmp_accesses[NVMREAD] = p->accesses[NVMREAD] >> (NVM_global_clock - p->NVM_local_clock);
+    tmp_accesses[DRAMREAD] = p->accesses[DRAMREAD] >> (read_global_clock - p->read_local_clock);
+#else
+    for (int j = 0; j < NPBUFTYPES; j++) {
+        tmp_accesses[j] = p->accesses[j] >> (global_clock - p->local_clock);
+    }
+#endif
+
+    if ((tmp_accesses[WRITE] < HOT_WRITE_THRESHOLD) && (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+        p->hot = false;
+    }
+
+    if (dram && (p == start_dram_page)) {
+        start_dram_page = NULL;
+        need_cool_dram = false;
+    }
+
+    if (!dram && (p == start_nvm_page)) {
+        start_nvm_page = NULL;
+        need_cool_nvm = false;
+    } 
+
+    if (p->hot) {
+      enqueue_fifo(hot, p);
+    }
+    else {
+      enqueue_fifo(cold, p);
+    }
+  }
+}
+#endif
+
+
 #ifdef MULTI_LIST
 struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo_list *cold, bool dram, struct hemem_page* current, bool *finished_cool)
 {
@@ -833,7 +1005,7 @@ struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo
   }
 
   for (int i = 0; i < COOLING_PAGES; i++) {
-    p = next_page(hot, current);
+    next_page(hot, current, &p);
     if (p == NULL) {
         break;
     }
@@ -883,7 +1055,6 @@ struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo
 
   return current;
 }
-
 #else
 struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo_list *cold, bool dram, struct hemem_page* current)
 {
@@ -965,14 +1136,14 @@ void update_current_cool_page(struct hemem_page** cur_index_dram, struct hemem_p
 
   if (page == *cur_index_dram) {
     assert(page->list != &dram_cold_list);
-    *cur_index_dram = next_page(page->list, page);
+    next_page(page->list, page, cur_index_dram);
   }
   if (page == *cur_index_nvm) {
     assert(page->list != &nvm_cold_list);
-    *cur_index_nvm = next_page(page->list, page);
+    next_page(page->list, page, cur_index_nvm);
   }
 }
-#else
+#elif defined(COOL_IN_PLACE)
 void update_current_cool_page(struct hemem_page** cur_cool_in_dram, struct hemem_page** cur_cool_in_nvm, struct hemem_page* page)
 {
   if (page == NULL) {
@@ -981,11 +1152,21 @@ void update_current_cool_page(struct hemem_page** cur_cool_in_dram, struct hemem
 
   if (page == *cur_cool_in_dram) {
     assert(page->list == &dram_hot_list);
-    *cur_cool_in_dram = next_page(page->list, page);
+    next_page(page->list, page, cur_cool_in_dram);
+    if((*cur_cool_in_dram) != NULL) 
+      assert((*cur_cool_in_dram)->list == &dram_hot_list);
   }
   if (page == *cur_cool_in_nvm) {
     assert(page->list == &nvm_hot_list);
-    *cur_cool_in_nvm = next_page(page->list, page);
+    next_page(page->list, page, cur_cool_in_nvm);
+    if (*cur_cool_in_nvm != NULL)
+      assert((*cur_cool_in_nvm)->list == &nvm_hot_list);
+  }
+  if(*cur_cool_in_nvm != NULL) {
+    assert((*cur_cool_in_nvm)->list == &nvm_hot_list);
+  }
+  if(*cur_cool_in_dram != NULL) {
+    assert((*cur_cool_in_dram)->list == &dram_hot_list);
   }
 }
 #endif
@@ -1021,24 +1202,8 @@ int64_t timeSinceLast = 0;
 #define PERC_IN_DRAM 9/10
 
 int update_thresholds() {
-  /* // only update thresholds every 120s */
-  /* if(timeSinceLast <= 12000) { */
-  /*   timeSinceLast += 1; */
-  /*   return 0; */
-  /* } */
-  /* timeSinceLast = 0; */
-  
-  // cooling is done in scan thread
-
   int64_t total_pages_dram = dram_hot_list.numentries + dram_cold_list.numentries + dram_free_list.numentries;
 
-  // count number of reads we have going on right now
-  /* int64_t total_pages_dram = 0; */
-  /* int cur_ind = ((HISTO_BIN_COUNT-1) + reading_bin_0_loc) & (HISTO_BIN_COUNT-1); */
-  /* while(cur_ind != reading_bin_0_loc) { */
-  /*   total_pages_dram = reading_page_histogram[cur_ind] * (1 << cur_ind); */
-  /*   cur_ind = (cur_ind-1) & (HISTO_BIN_COUNT-1); */
-  /* } */
   total_pages_dram = total_pages_dram * PERC_IN_DRAM; 
   
   int64_t shift_amount = ((HISTO_BIN_COUNT-1) + reading_bin_0_loc) & (HISTO_BIN_COUNT-1);
@@ -1060,18 +1225,9 @@ int update_thresholds() {
   if(reading_hot_thresh < 2) {
     reading_hot_thresh = 2;
   }
-  /*
-  if(reading_hot_thresh < READ_MIN) {
-    reading_hot_thresh = READ_MIN;
-  }
-  */ 
     
   total_pages_dram = dram_hot_list.numentries + dram_cold_list.numentries + dram_free_list.numentries;
-  /* cur_ind = ((HISTO_BIN_COUNT-1) + writing_bin_0_loc) & (HISTO_BIN_COUNT-1); */
-  /* while(cur_ind != reading_bin_0_loc) { */
-  /*   total_pages_dram = writing_page_histogram[cur_ind] * (1 << cur_ind); */
-  /*   cur_ind = (cur_ind-1) & (HISTO_BIN_COUNT-1); */
-  /* } */
+
   total_pages_dram = total_pages_dram * PERC_IN_DRAM;
   
   shift_amount = ((HISTO_BIN_COUNT-1) + writing_bin_0_loc) & (HISTO_BIN_COUNT-1);
@@ -1093,11 +1249,6 @@ int update_thresholds() {
   if(writing_hot_thresh < 2) {
     writing_hot_thresh = 2;
   }
-  /*
-  if(writing_hot_thresh < WRITE_MIN) {
-    writing_hot_thresh = WRITE_MIN;
-  }
-  */
   return 0;
 }
 #endif
@@ -1281,8 +1432,10 @@ void *pebs_policy_thread()
         
         list = page->list;
         assert(list != NULL);
+        #ifdef COOL_IN_PLACE
         update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, page);
         update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, page);
+        #endif
         page_list_remove_page(list, page);
         if (page->in_dram) {
           enqueue_fifo(&dram_free_list, page);
@@ -1300,8 +1453,10 @@ void *pebs_policy_thread()
             continue;
         }
         
+        #ifdef COOL_IN_PLACE
         update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, page);
         update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, page);
+        #endif
         page->ring_present = false;
         num_ring_reqs++;
         make_hot(page);
@@ -1316,8 +1471,10 @@ void *pebs_policy_thread()
             continue;
         }
 
+        #ifdef COOL_IN_PLACE
         update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, page);
         update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, page);
+        #endif
         page->ring_present = false;
         num_ring_reqs++;
         make_cold(page);
@@ -1332,8 +1489,10 @@ void *pebs_policy_thread()
             continue;
         }
 
+        #ifdef COOL_IN_PLACE
         update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, page);
         update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, page);
+        #endif
         page->ring_present = false;
         num_ring_reqs++;
         make_warm(page);
@@ -1341,26 +1500,25 @@ void *pebs_policy_thread()
     }
     
     // move each hot NVM page to DRAM
-    struct fifo_list* p_source_list = NULL;
+    struct fifo_list* p_src_lst;
     for (migrated_bytes = 0; migrated_bytes < PEBS_KSWAPD_MIGRATE_RATE;) {
       p = dequeue_fifo(&nvm_hot_list);
+      p_src_lst = &nvm_hot_list;
       if (p == NULL) {
-        // nothing in NVM is currently hot -- check if anything is touched
+        // else look for a warm thing to move up? 
         p = dequeue_fifo(&nvm_touched_list);
-        if(p == NULL) {
-          // nothing is touched nor hot -- bail out
+        p_src_lst = &nvm_touched_list;
+        if (p == NULL) {
+          // truly there is nothing here for us
           break;
         }
-        else {
-          p_source_list = &nvm_touched_list;
-        }
-      }
-      else {
-        p_source_list = &nvm_hot_list;
       }
 
+      #ifdef COOL_IN_PLACE
       update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, page);
       update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, page);
+      #endif
+
       if ((p->accesses[WRITE] < 1) && (p->accesses[DRAMREAD] + p->accesses[NVMREAD] < 1)) {
         // it has been cooled, need to move it into the cold list
         p->hot = COLD;
@@ -1374,6 +1532,11 @@ void *pebs_policy_thread()
 
         if (np != NULL) {
           assert(!(np->present));
+
+          #ifdef COOL_IN_PLACE
+          update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, np);
+          update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, np);
+          #endif
 
           LOG("%lx: cold %lu -> hot %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
                 p->va, p->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
@@ -1399,22 +1562,32 @@ void *pebs_policy_thread()
         // no free dram page, try to find a cold dram page to move down
         cp = dequeue_fifo(&dram_cold_list);
         if (cp == NULL) {
-          // all dram pages are >touched, if p is hot it can evict a warm page
-          if(p->hot > WARM) {
+          // if p is hot it can evit a warm.
+          if(p->hot == HOT) {
             cp = dequeue_fifo(&dram_touched_list);
           }
-          // if we cant evict a warm page then we return p to where it belongs
           if(cp == NULL) {
-            enqueue_fifo(p_source_list, p);
+            // no victim
+            enqueue_fifo(p_src_lst, p);
             goto out;
           }
         }
         assert(cp != NULL);
+
+        #ifdef COOL_IN_PLACE
+        update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, cp);
+        update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, cp);
+        #endif 
          
         // find a free nvm page to move the cold dram page to
         np = dequeue_fifo(&nvm_free_list);
         if (np != NULL) {
           assert(!(np->present));
+
+          #ifdef COOL_IN_PLACE
+          update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, np);
+          update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, np);
+          #endif 
 
           LOG("%lx: hot %lu -> cold %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
                 cp>va, cp->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
@@ -1430,6 +1603,7 @@ void *pebs_policy_thread()
             np->tot_accesses[i] = 0;
           }
 
+          // move it and try again I guess
           enqueue_fifo(nvm_hotness_to_list[cp->hot], cp);
           enqueue_fifo(&dram_free_list, np);
         }
@@ -1441,31 +1615,28 @@ void *pebs_policy_thread()
     // needed for pages that were once hot and now get no accesses. 
     // Since there are no accesses PEBS thread will never request they go cold.
     // Thus we iterate te hot and warm list to move pages down to the cold list.
+    #ifdef COOL_IN_PLACE
     bool dram_hot_list_finished = false, dram_warmlist_finished = false;
     bool nvm_hot_list_finished = false, nvm_warmlist_finished = false;
     cur_dram_hotlist_index = partial_cool_peek_and_move(&dram_hot_list, &dram_touched_list, true, cur_dram_hotlist_index, &dram_hot_list_finished);
     cur_nvm_hotlist_index = partial_cool_peek_and_move(&nvm_hot_list, &nvm_touched_list, false, cur_nvm_hotlist_index, &nvm_hot_list_finished);
     cur_dram_warmlist_index = partial_cool_peek_and_move(&dram_touched_list, &dram_cold_list, true, cur_dram_warmlist_index, &dram_warmlist_finished);
     cur_nvm_warmlist_index = partial_cool_peek_and_move(&nvm_touched_list, &nvm_cold_list, false, cur_nvm_warmlist_index, &nvm_warmlist_finished);
-
     need_cool_dram = !(dram_hot_list_finished && dram_warmlist_finished);
     need_cool_nvm =  !(nvm_hot_list_finished && nvm_warmlist_finished);
+    #else
+    partial_cool(&dram_hot_list, &dram_cold_list, true);
+    partial_cool(&nvm_hot_list, &nvm_cold_list, false);
+    #endif
  
 
 out:
-#ifdef DYNA_THRESH
+#if defined(DYNA_THRESH) || defined(SLOW_HISTO)
     gettimeofday(&start_histo, NULL);
     last_pages_read_cnt = update_thresholds();
     gettimeofday(&end_histo, NULL);       
     time_taken_histo = elapsed(&start_histo, &end_histo);
-#endif
-#ifdef SLOW_HISTO
-    gettimeofday(&start_histo, NULL);
-    last_pages_read_cnt = update_thresholds();
-    gettimeofday(&end_histo, NULL);       
-    time_taken_histo = elapsed(&start_histo, &end_histo);
-#endif
-    
+#endif    
     LOG_TIME("migrate: %f s\n", elapsed(&start, &end));
   }
 
@@ -1484,8 +1655,10 @@ void *pebs_policy_thread()
   uint64_t old_offset;
   int num_ring_reqs;
   struct hemem_page* page = NULL;
+  #ifdef COOL_IN_PLACE
   struct hemem_page* cur_cool_in_dram  = NULL;
   struct hemem_page* cur_cool_in_nvm = NULL;
+  #endif
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
@@ -1507,7 +1680,9 @@ void *pebs_policy_thread()
         
         list = page->list;
         assert(list != NULL);
+        #ifdef COOL_IN_PLACE
         update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, page);
+        #endif
         page_list_remove_page(list, page);
         if (page->in_dram) {
             enqueue_fifo(&dram_free_list, page);
@@ -1515,15 +1690,6 @@ void *pebs_policy_thread()
         else {
             enqueue_fifo(&nvm_free_list, page);
         }
-    }
-
-    if (page == *cur_cool_in_dram) {
-        assert(page->list == &dram_hot_list);
-        next_page(page->list, page, cur_cool_in_dram);
-    }
-    if (page == *cur_cool_in_nvm) {
-        assert(page->list == &nvm_hot_list);
-        next_page(page->list, page, cur_cool_in_nvm);
     }
 
     num_ring_reqs = 0;
@@ -1534,7 +1700,9 @@ void *pebs_policy_thread()
             continue;
         }
         
+        #ifdef COOL_IN_PLACE
         update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, page);
+        #endif
         page->ring_present = false;
         num_ring_reqs++;
         make_hot(page);
@@ -1549,7 +1717,9 @@ void *pebs_policy_thread()
             continue;
         }
 
+        #ifdef COOL_IN_PLACE
         update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, page);
+        #endif
         page->ring_present = false;
         num_ring_reqs++;
         make_cold(page);
@@ -1564,7 +1734,12 @@ void *pebs_policy_thread()
         break;
       }
 
+      #ifdef COOL_IN_PLACE
+      p->list = &nvm_hot_list;
+      update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, p);
+      p->list = NULL;
       update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, page);
+      #endif
       
       if ((p->accesses[WRITE] < HOT_WRITE_THRESHOLD) && (p->accesses[DRAMREAD] + p->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
         // it has been cooled, need to move it into the cold list
@@ -1580,7 +1755,11 @@ void *pebs_policy_thread()
         if (np != NULL) {
           assert(!(np->present));
 
+          #ifdef COOL_IN_PLACE
+          np->list = &dram_free_list;
           update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, np);
+          np->list = NULL;
+          #endif
 
           LOG("%lx: cold %lu -> hot %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
                 p->va, p->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
@@ -1596,6 +1775,7 @@ void *pebs_policy_thread()
             np->tot_accesses[i] = 0;
           }
 
+          assert(p->hot);
           enqueue_fifo(&dram_hot_list, p);
           enqueue_fifo(&nvm_free_list, np);
 
@@ -1607,19 +1787,28 @@ void *pebs_policy_thread()
         cp = dequeue_fifo(&dram_cold_list);
         if (cp == NULL) {
           // all dram pages are hot, so put it back in list we got it from
+          assert(p->hot);
           enqueue_fifo(&nvm_hot_list, p);
           goto out;
         }
         assert(cp != NULL);
 
+        #ifdef COOL_IN_PLACE
+        cp->list = &dram_cold_list;
         update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, cp);
-         
+        cp->list = NULL;
+        #endif 
+
         // find a free nvm page to move the cold dram page to
         np = dequeue_fifo(&nvm_free_list);
         if (np != NULL) {
           assert(!(np->present));
 
+          #ifdef COOL_IN_PLACE 
+          np->list = &nvm_free_list;
           update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, np);
+          np->list = NULL;
+          #endif
 
           LOG("%lx: hot %lu -> cold %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
                 cp>va, cp->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
@@ -1635,6 +1824,8 @@ void *pebs_policy_thread()
             np->tot_accesses[i] = 0;
           }
 
+          assert(!cp->hot);
+          assert(!np->hot);
           enqueue_fifo(&nvm_cold_list, cp);
           enqueue_fifo(&dram_free_list, np);
         }
@@ -1642,10 +1833,15 @@ void *pebs_policy_thread()
       }
     }
 
-    cur_cool_in_dram = partial_cool_peek_and_move(&dram_hot_list, &dram_cold_list, true, cur_cool_in_dram);
-    cur_cool_in_nvm = partial_cool_peek_and_move(&nvm_hot_list, &nvm_cold_list, false, cur_cool_in_nvm);
-  
-  out:
+    #ifdef COOL_IN_PLACE
+    cur_cool_in_dram = partial_cool(&dram_hot_list, &dram_cold_list, true, cur_cool_in_dram);
+    cur_cool_in_nvm = partial_cool(&nvm_hot_list, &nvm_cold_list, false, cur_cool_in_nvm);
+    #else
+    partial_cool(&dram_hot_list, &dram_cold_list, true);
+    partial_cool(&nvm_hot_list, &nvm_cold_list, false);
+    #endif
+
+out:
 #ifdef DYNA_THRESH
     gettimeofday(&start_histo, NULL);
     last_pages_read_cnt = update_thresholds();
@@ -1658,7 +1854,6 @@ void *pebs_policy_thread()
     gettimeofday(&end_histo, NULL);       
     time_taken_histo = elapsed(&start_histo, &end_histo);
 #endif
-    
     LOG_TIME("migrate: %f s\n", elapsed(&start, &end));
   }
 
@@ -1837,7 +2032,7 @@ void pebs_stats()
             "throttle/unthrottle_cnt: [%ld/%ld]\tcools: [%ld]\tpages_read_cnt: [%ld]\t"
             "read_hot_thresh: [%ld]\twrite_hot_thresh: [%ld]\ttime_taken_histo: [%f]\t"
             "dram_touched_list.numentries: [%ld]\tnvm_touched_list.numentries: [%ld]\t"
-            "touched_ring empty[%d]\tcold_ring empty[%d]\thot_ring empty[%d]\n",
+            "touched_ring empty[%d]\tcold_ring empty[%d]\thot_ring empty[%d]\tLost samples: [%ld]\n",
 	    dram_hot_list.numentries,
 	    dram_cold_list.numentries,
 	    nvm_hot_list.numentries,
@@ -1858,9 +2053,11 @@ void pebs_stats()
       nvm_touched_list.numentries,
       ring_buf_empty(touched_ring),
       ring_buf_empty(cold_ring),
-      ring_buf_empty(hot_ring));
-  
+      ring_buf_empty(hot_ring),
+      lost_sample);
+      LOG_STATS("Good/throttle samples: [%ld/%ld]\n", good_samples, throttle_cnt);
+
   log_histogram();
   
-  hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
+  hemem_pages_cnt = total_pages_cnt = throttle_cnt = unthrottle_cnt = good_samples = 0;
 }

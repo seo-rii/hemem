@@ -96,12 +96,10 @@ static void *print_instantaneous_gups()
     }
     sleep(1);
     //printf("GUPS: %.10f\n", (1.0 * (abs(thread_gups[0]- last_second_gups))) / (1.0e9));
-    last_second_gups[0] = thread_gups[0];
   }
 
   return NULL;
 }
-#endif
 
 static uint64_t lfsr_fast(uint64_t lfsr)
 {
@@ -180,8 +178,6 @@ static void *do_gups(void *arguments)
         memset(data, data[0] + i, elt_size);
         memcpy(&field[index1 * elt_size], data, elt_size);
       }
-      end = rdtscp();
-      thread_gups[args->tid]++;
     }
     else {
       lfsr = lfsr_fast(lfsr);
@@ -196,9 +192,8 @@ static void *do_gups(void *arguments)
         memset(data, data[0] + i, elt_size);
         memcpy(&field[index2 * elt_size], data, elt_size);
       }
-      end = rdtscp();
-      thread_gups[args->tid]++;
     }
+    thread_gups[args->tid]++;
   }
 
   return 0;
@@ -349,9 +344,9 @@ int main(int argc, char **argv)
   memset(thread_gups, 0, sizeof(thread_gups));
   printf("First Touch Done\n");
   for (int i = 0; i < threads; i++) {
-    fprintf(f[i], "=== First Touch Done ===\n", (log_hot_size));
+    fprintf(f[i], "=== First Touch Done ===\n");
   }
-  fprintf(stderr, "=== First Touch Done ===\n", (log_hot_size));
+  fprintf(stderr, "=== First Touch Done ===\n");
 
   filename = "indices2.txt";
 

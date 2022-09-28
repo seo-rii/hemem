@@ -26,12 +26,18 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
   // non-anonymous mappings should probably go to libc (e.g., file mappings)
   if (((flags & MAP_ANONYMOUS) != MAP_ANONYMOUS) && !((fd == dramfd) || (fd == nvmfd) || (fd == devmemfd))) {
     LOG("hemem interpose: calling libc mmap due to non-anonymous, non-devdax mapping: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+#ifdef DEBUG
+    printf("hemem interpose: calling libc mmap due to non-anonymous, non-devdax mapping: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+#endif
     return 1;
   }
 
   if ((flags & MAP_STACK) == MAP_STACK) {
     // pthread mmaps are called with MAP_STACK
     LOG("hemem interpose: calling libc mmap due to stack mapping: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+#ifdef DEBUG
+    printf("hemem interpose: calling libc mmap due to stack mapping: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+#endif
     return 1;
   }
 
@@ -41,23 +47,35 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
     //return 1;
   //}
   
-  if ((fd == dramfd) || (fd == nvmfd) || (fd == devmemfd)) {
+  if ((fd == dramfd) || (fd == nvmfd) || (fd == devmemfd && devmemfd != -1)) {
     //LOG("hemem interpose: calling libc mmap due to hemem devdax mapping\n");
+#ifdef DEBUG
+    printf("mmapping the devdax stuff\n");
+#endif
     return 1;
   }
 
   if (internal_call) {
     LOG("hemem interpose: calling libc mmap due to internal memory call: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+#ifdef DEBUG
+    printf("hemem interpose: calling libc mmap due to internal memory call: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+#endif
     return 1;
   }
   
   if (!is_init) {
     //LOG("hemem interpose: calling libc mmap due to hemem init in progress\n");
+#ifdef DEBUG
+    printf("mmap while hemem isnt done initing :/\n");
+#endif
     return 1;
   }
 
   if (length < 1UL * 1024UL * 1024UL * 1024UL) {
     LOG("hemem interpose calling libc mmap due to small allocation size: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+#ifdef DEBUG
+    printf("hemem interpose calling libc mmap due to small allocation size: mmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+#endif
     return 1;
   }
 
@@ -65,7 +83,14 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
   if ((*result = (uint64_t)hemem_mmap(addr, length, prot, flags, fd, offset)) == (uint64_t)MAP_FAILED) {
     // hemem failed for some reason, try libc
     LOG("hemem mmap failed\n\tmmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+#ifdef DEBUG
+    printf("hemem mmap failed\n\tmmap(0x%lx, %ld, %x, %x, %d, %ld)\n", (uint64_t)addr, length, prot, flags, fd, offset);
+#endif
   }
+#ifdef DEBUG
+  printf("mmap finished so we return 0 for success.\n");
+#endif
+
   return 0;
 }
 
