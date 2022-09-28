@@ -454,7 +454,9 @@ void *pebs_policy_thread()
   for (;;) {
     struct hemem_process *process, *tmp;
 
-    HASH_ITER(hh, processes, process, tmp) {
+    //fprintf(stderr, "Processes Count: %u\n", HASH_CNT(phh, processes));
+    HASH_ITER(phh, processes, process, tmp) {
+      fprintf(stderr, "managing process %u\n", process->pid);
       // free pages using free page ring buffer
       while(!ring_buf_empty(process->free_page_ring)) {
         struct fifo_list *list;
@@ -771,7 +773,8 @@ void pebs_stats()
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
   */
 
-  LOG_STATS("\tdram_hot: [%lu]\tdram_cold: [%lu]\tnvm_hot: [%lu]\tnvm_cold: [%lu]\tdram_hot_ring: [%lu]\tdram_cold_ring: [%lu]\tnvm_hot_ring: [%lu]\tnvm_cold_ring: [%lu]\n",
+  LOG_STATS("\tnum_processes: [%u]\tdram_hot: [%lu]\tdram_cold: [%lu]\tnvm_hot: [%lu]\tnvm_cold: [%lu]\tdram_hot_ring: [%lu]\tdram_cold_ring: [%lu]\tnvm_hot_ring: [%lu]\tnvm_cold_ring: [%lu]\n",
+        HASH_CNT(phh, processes),
         dram_hot_pages,
         dram_cold_pages,
         nvm_hot_pages,

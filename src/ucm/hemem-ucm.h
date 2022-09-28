@@ -5,11 +5,12 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <sys/epoll.h>
+
 #include "uthash.h"
 #include "spsc-ring.h"
 #include "fifo.h"
-#include "pebs.h"
 #include "hemem-shared.h"
+#include "hemem-types.h"
 
 #define MAX_UFFD_MSGS	    (3)
 
@@ -20,66 +21,11 @@
 
 #define MAX_EVENTS 128
 
-struct hemem_page {
-  uint64_t va;
-  uint64_t devdax_offset;
-  pid_t pid;
-  long  uffd;
-  bool in_dram;
-  enum pagetypes pt;
-  volatile bool migrating;
-  bool present;
-  bool written;
-  bool hot;
-  uint64_t naccesses;
-  uint64_t migrations_up, migrations_down;
-  uint64_t local_clock;
-  bool ring_present;
-  uint64_t accesses[NPBUFTYPES];
-  uint64_t tot_accesses[NPBUFTYPES];
-  pthread_mutex_t page_lock;
-
-  UT_hash_handle hh;
-  struct hemem_page *next, *prev;
-  struct fifo_list *list;
-};
-
-struct hemem_process {
-  pid_t pid;
-  long uffd;
-  bool valid_uffd;
-  int remap_fd;
-  struct fifo_list dram_hot_list;
-  struct fifo_list dram_cold_list;
-  struct fifo_list nvm_hot_list;
-  struct fifo_list nvm_cold_list;
-  struct hemem_page* cur_cool_in_dram;
-  struct hemem_page* cur_cool_in_nvm;
-  volatile ring_handle_t hot_ring;
-  volatile ring_handle_t cold_ring;
-  volatile ring_handle_t free_page_ring;
-  pthread_mutex_t free_page_ring_lock;
-  struct hemem_page* start_dram_page;
-  struct hemem_page* start_nvm_page;
-  struct hemem_page* pages;
-  volatile bool need_cool_dram;
-  volatile bool need_cool_nvm;
-  pthread_mutex_t pages_lock;
-  UT_hash_handle hh;
-};
-
 extern int dramfd;
 extern int nvmfd;
 extern int devmemfd;
 extern pthread_t fault_thread;
 extern pthread_t request_thread;
-
-#define pagefault(...) pebs_pagefault(__VA_ARGS__)
-#define page_free(...) pebs_remove_page(__VA_ARGS__)
-#define paging_init(...) pebs_init(__VA_ARGS__)
-#define mmgr_remove(...) pebs_remove_page(__VA_ARGS__)
-#define mmgr_stats(...) pebs_stats(__VA_ARGS__)
-#define policy_shutdown(...) pebs_shutdown(__VA_ARGS__)
 
 void hemem_ucm_init();
 void hemem_ucm_stop();

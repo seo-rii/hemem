@@ -1,4 +1,5 @@
 #include "hemem-ucm.h"
+#include "pebs.h"
 
 int main(int argc, char *argv[])
 {
@@ -6,7 +7,7 @@ int main(int argc, char *argv[])
     hemem_ucm_init();
 
     fprintf(stdout, "setting up perf...\n");
-    paging_init();
+    pebs_init();
     fprintf(stdout, "ready\n");
     while (1) {
         ;

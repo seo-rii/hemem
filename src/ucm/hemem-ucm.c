@@ -27,6 +27,7 @@
 #include "channel-ucm.h"
 #include "timer.h"
 #include "logging.h"
+#include "pebs.h"
 
 pthread_t fault_thread;
 pthread_t request_thread;
@@ -258,7 +259,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
   assert(length != 0);
 
   for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
-    page = pagefault(process);
+    page = pebs_pagefault(process);
     assert(page != NULL);
 
     offset = page->devdax_offset;
@@ -333,7 +334,7 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
     pagesize = pt_to_pagesize(page->pt);
 
     remove_page(process, page);
-    page_free(page);
+    pebs_remove_page(page);
     mem_allocated -= pagesize;
   } 
   
@@ -401,21 +402,27 @@ static void *hemem_stats_thread() {
 void add_process(struct hemem_process *process) {
   struct hemem_process *p;
   pthread_mutex_lock(&processes_lock);
-  HASH_FIND(hh, processes, &(process->pid), sizeof(pid_t), p);
+  HASH_FIND(phh, processes, &(process->pid), sizeof(pid_t), p);
   assert(p == NULL);
-  HASH_ADD(hh, processes, pid, sizeof(pid_t), process);
+  HASH_ADD(phh, processes, pid, sizeof(pid_t), process);
+  ssize_t cnt = HASH_CNT(phh, processes);
+  fprintf(stderr, "Process hash table has %lu processes\n", cnt);
+  struct hemem_process *proc, *tmp;
+  HASH_ITER(phh, processes, proc, tmp) {
+    fprintf(stderr, "------------------\nprocess PID %u\n------------------\n", proc->pid);
+  }
   pthread_mutex_unlock(&processes_lock);
 }
 
 void remove_process(struct hemem_process *process) {
   pthread_mutex_lock(&processes_lock);
-  HASH_DEL(processes, process);
+  HASH_DELETE(phh, processes, process);
   pthread_mutex_unlock(&processes_lock);
 }
 
 struct hemem_process *find_process(pid_t pid) {
   struct hemem_process *process;
-  HASH_FIND(hh, processes, &pid, sizeof(pid_t), process);
+  HASH_FIND(phh, processes, &pid, sizeof(pid_t), process);
   return process;
 }
 
@@ -430,7 +437,7 @@ void add_page(struct hemem_process* process, struct hemem_page *page) {
 
 void remove_page(struct hemem_process* process, struct hemem_page *page) {
   pthread_mutex_lock(&(process->pages_lock));
-  HASH_DEL(process->pages, page);
+  HASH_DELETE(hh, process->pages, page);
   pthread_mutex_unlock(&(process->pages_lock));
 }
 
@@ -612,7 +619,7 @@ void hemem_ucm_stop() {
   }
 #endif
 
-  policy_shutdown();
+  pebs_shutdown();
 }
 
 
@@ -934,7 +941,7 @@ void handle_missing_fault(struct hemem_process *process,
 
   gettimeofday(&start, NULL);
   // let policy algorithm do most of the heavy lifting of finding a free page
-  page = pagefault(process);
+  page = pebs_pagefault(process);
   assert(page != NULL);
 
   gettimeofday(&end, NULL);
@@ -1004,7 +1011,7 @@ void *handle_fault() {
   for (;;) {
     struct hemem_process *process, *tmp;
 
-    HASH_ITER(hh, processes, process, tmp) {
+    HASH_ITER(phh, processes, process, tmp) {
       
       if (!process->valid_uffd) {
           continue;
@@ -1267,7 +1274,7 @@ void hemem_print_stats() {
       "[%lu]\tmigration_waits: [%lu]\n",
       mem_allocated, pages_allocated, missing_faults_handled, bytes_migrated,
       migrations_up, migrations_down, migration_waits);
-  mmgr_stats();
+  pebs_stats();
 }
 
 void hemem_clear_stats() {

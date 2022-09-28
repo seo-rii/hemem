@@ -6,7 +6,8 @@
 #include <inttypes.h>
 #include <linux/perf_event.h>
 #include <linux/hw_breakpoint.h>
-#include "hemem-ucm.h"
+
+#include "hemem-types.h"
 
 #define PEBS_KSWAPD_INTERVAL      (10000) // in us (10ms)
 #define PEBS_KSWAPD_MIGRATE_RATE  (10UL * 1024UL * 1024UL * 1024UL) // 10GB
@@ -16,7 +17,6 @@
 
 #define HOT_RING_REQS_THRESHOLD   (1024*1024)
 #define COLD_RING_REQS_THRESHOLD  (128)
-#define CAPACITY                  (128*1024*1024)
 #define COOLING_PAGES             (8192)
 
 #define PEBS_NPROCS 24
@@ -34,20 +34,11 @@ struct perf_sample {
     __u64 weight;      /* if PERF_SAMPLE_WEIGHT */
 };
 
-enum pbuftype {
-    DRAMREAD = 0,
-    NVMREAD = 1,
-//    WRITE = 2,
-    NPBUFTYPES
-};
-
-struct hemem_process;
-
 void *pebs_kswapd();
+void pebs_remove_page(struct hemem_page *page);
 struct hemem_page* pebs_pagefault(struct hemem_process *process);
 void pebs_init(void);
-void pebs_remove_page(struct hemem_page *page);
 void pebs_stats();
 void pebs_shutdown();
 
-#endif /*  HEMEM_LRU_MODIFIED_H  */
+#endif /*  HEMEM_PEBS_H  */

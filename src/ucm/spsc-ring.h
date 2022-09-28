@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 
+#define CAPACITY    (128*1024*1024)
+
 typedef struct ring_buf_t ring_buf_t;
 
 typedef ring_buf_t* ring_handle_t;
