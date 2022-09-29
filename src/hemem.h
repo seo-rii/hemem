@@ -36,8 +36,7 @@ extern "C" {
 #include "uthash.h"
 #include "fifo.h"
 
-#define HEMEM_DEBUG
-//#define USE_PEBS
+//#define HEMEM_DEBUG
 #define STATS_THREAD
 
 #define USE_DMA
@@ -75,8 +74,8 @@ extern "C" {
 
 extern FILE *hememlogf;
 //#define LOG(...) fprintf(stderr, __VA_ARGS__)
-//#define LOG(...)	fprintf(hememlogf, __VA_ARGS__)
-#define LOG(str, ...) while(0) {}
+#define LOG(...)	fprintf(hememlogf, __VA_ARGS__)
+//#define LOG(str, ...) while(0) {}
 
 extern FILE *timef;
 extern bool timing;
@@ -128,7 +127,6 @@ extern FILE *statsf;
 extern uint64_t cr3;
 extern int dramfd;
 extern int nvmfd;
-extern int devmemfd;
 extern bool is_init;
 extern uint64_t missing_faults_handled;
 extern uint64_t migrations_up;
@@ -137,7 +135,6 @@ extern __thread bool internal_malloc;
 extern __thread bool old_internal_call;
 extern __thread bool internal_call;
 extern __thread bool internal_munmap;
-extern void* devmem_mmap;
 
 enum memtypes {
   FASTMEM = 0,

@@ -34,7 +34,6 @@ pthread_t fault_thread;
 
 int dramfd = -1;
 int nvmfd = -1;
-int devmemfd = -1;
 long uffd = -1;
 
 bool is_init = false;
@@ -72,7 +71,6 @@ pthread_mutex_t pages_lock = PTHREAD_MUTEX_INITIALIZER;
 
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
-//void *devmem_mmap;
 
 __thread bool internal_call = false;
 __thread bool old_internal_call = false;
@@ -228,14 +226,6 @@ void hemem_init()
   }
   assert(nvmfd >= 0);
 
-#ifdef ALLOC_LRU
-  devmemfd = open("/dev/mem", O_RDWR | O_SYNC);
-  if (devmemfd < 0) {
-    perror("devmem open");
-    assert(0);
-  }
-#endif
-
   uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
   if (uffd == -1) {
     perror("uffd");
@@ -282,12 +272,6 @@ void hemem_init()
     assert(0);
   }
 
-  //devmem_mmap = libc_mmap(NULL, 6762176548864, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, devmemfd, 0);
-  //if (devmem_mmap == MAP_FAILED) {
-    //perror("devmem mmap");
-    //assert(0);
-  //}
-
 #ifndef USE_DMA 
   uint64_t i;
   int r = pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1);
@@ -304,10 +288,6 @@ void hemem_init()
 
   paging_init();
 
-#ifdef USE_PEBS
-  pebs_init();
-#endif
-  
   is_init = true;
 
   struct hemem_page *dummy_page = calloc(1, sizeof(struct hemem_page));
@@ -522,10 +502,6 @@ int hemem_munmap(void* addr, size_t length)
 
 
   //fprintf(stderr, "munmap(%p, %lu)\n", addr, length);
-#ifdef USE_PEBS
-  //pebs_print();
-  //pebs_clear();
-#endif
 
   // for each page in region specified...
   for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
@@ -646,7 +622,7 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   uffdio_dma_copy.mode = 0;
   uffdio_dma_copy.copy = 0;
   if (ioctl(uffd, UFFDIO_DMA_COPY, &uffdio_dma_copy) == -1) {
-    LOG("hemem_migrate_up, ioctl dma_copy fails for src:%lly, dst:%llu\n", old_addr, new_addr); 
+    LOG("hemem_migrate_up, ioctl dma_copy fails for src:%lx, dst:%lx\n", (uint64_t)old_addr, (uint64_t)new_addr); 
     assert(false);
   }
 #else
@@ -761,7 +737,7 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   uffdio_dma_copy.mode = 0;
   uffdio_dma_copy.copy = 0;
   if (ioctl(uffd, UFFDIO_DMA_COPY, &uffdio_dma_copy) == -1) {
-    LOG("hemem_migrate_down, ioctl dma_copy fails for src:%lly, dst:%llu\n", old_addr, new_addr); 
+    LOG("hemem_migrate_down, ioctl dma_copy fails for src:%lx, dst:%lx\n", (uint64_t)old_addr, (uint64_t)new_addr); 
     assert(false);
   }
 #else

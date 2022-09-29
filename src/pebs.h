@@ -22,14 +22,19 @@
 
 #define PEBS_NPROCS 24
 #define PERF_PAGES	(1 + (1 << 16))	// Has to be == 1+2^n, here 1MB
-//#define SAMPLE_PERIOD	10007
-#define SAMPLE_PERIOD 5003
+#define SAMPLE_PERIOD	10007
+//#define SAMPLE_PERIOD 5003
 //#define SAMPLE_FREQ	100
 
 #define HISTO_BIN_COUNT 8
 
 #define SCANNING_THREAD_CPU (FAULT_THREAD_CPU + 1)
 #define MIGRATION_THREAD_CPU (SCANNING_THREAD_CPU + 1)
+
+
+#define COOL_IN_PLACE
+//#define SAMPLE_BASED_COOLING
+//#define SAMPLE_COOLING_THRESHOLD 10000
 
 struct perf_sample {
   struct perf_event_header header;
@@ -43,7 +48,7 @@ struct perf_sample {
 enum pbuftype {
   DRAMREAD = 0,
   NVMREAD = 1,  
-  WRITE = 2,
+//  WRITE = 2,
   NPBUFTYPES
 };
 

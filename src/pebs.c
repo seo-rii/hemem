@@ -168,6 +168,10 @@ void make_cold_request(struct hemem_page* page)
 #ifdef MULTI_LIST
 void *pebs_scan_thread()
 {
+#ifdef SAMPLE_BASED_COOLING
+  uint64_t samples_since_cool = 0;
+#endif
+
   cpu_set_t cpuset;
   pthread_t thread;
 
@@ -495,6 +499,9 @@ void *pebs_scan_thread()
                 } 
         
                 }
+                #ifdef SAMPLE_BASED_COOLING
+                samples_since_cool++;
+                #endif
                 hemem_pages_cnt++;
               }
               else {
@@ -1060,8 +1067,6 @@ struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo
 {
   struct hemem_page *p;
   uint64_t tmp_accesses[NPBUFTYPES];
-  static struct hemem_page* start_dram_page = NULL;
-  static struct hemem_page* start_nvm_page = NULL;
 
   if (dram && !need_cool_dram) {
       return current;
@@ -1087,7 +1092,7 @@ struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo
         assert(p->in_dram);
     }
     else {
-      assert(!p->in_dram);
+        assert(!p->in_dram);
     }
 
 #if defined(DYNA_THRESH)
@@ -1098,8 +1103,8 @@ struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo
     for (int i = 0; i < NPBUFTYPES; i++) {
       tmp_accesses[i] = p->accesses[i] >> (global_clock - p->local_clock);
     }
-#endif
-    if ((tmp_accesses[WRITE] < writing_hot_thresh) && (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < reading_hot_thresh)) {
+
+    if (/*(tmp_accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
         p->hot = false;
     }
     
@@ -1734,14 +1739,13 @@ void *pebs_policy_thread()
         break;
       }
 
-      #ifdef COOL_IN_PLACE
-      p->list = &nvm_hot_list;
-      update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, p);
-      p->list = NULL;
-      update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, page);
-      #endif
-      
-      if ((p->accesses[WRITE] < HOT_WRITE_THRESHOLD) && (p->accesses[DRAMREAD] + p->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+#ifdef COOL_IN_PLACE
+      if (p == cur_cool_in_nvm) {
+        cur_cool_in_nvm = nvm_hot_list.first;
+      }
+#endif
+
+      if (/*(p->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (p->accesses[DRAMREAD] + p->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
         // it has been cooled, need to move it into the cold list
         p->hot = false;
         enqueue_fifo(&nvm_cold_list, p); 
@@ -1754,12 +1758,6 @@ void *pebs_policy_thread()
 
         if (np != NULL) {
           assert(!(np->present));
-
-          #ifdef COOL_IN_PLACE
-          np->list = &dram_free_list;
-          update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, np);
-          np->list = NULL;
-          #endif
 
           LOG("%lx: cold %lu -> hot %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
                 p->va, p->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
@@ -1793,25 +1791,13 @@ void *pebs_policy_thread()
         }
         assert(cp != NULL);
 
-        #ifdef COOL_IN_PLACE
-        cp->list = &dram_cold_list;
-        update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, cp);
-        cp->list = NULL;
-        #endif 
-
         // find a free nvm page to move the cold dram page to
         np = dequeue_fifo(&nvm_free_list);
         if (np != NULL) {
           assert(!(np->present));
 
-          #ifdef COOL_IN_PLACE 
-          np->list = &nvm_free_list;
-          update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, np);
-          np->list = NULL;
-          #endif
-
           LOG("%lx: hot %lu -> cold %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
-                cp>va, cp->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
+                cp->va, cp->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
 
           old_offset = cp->devdax_offset;
           pebs_migrate_down(cp, np->devdax_offset);
@@ -1840,7 +1826,7 @@ void *pebs_policy_thread()
     partial_cool(&dram_hot_list, &dram_cold_list, true);
     partial_cool(&nvm_hot_list, &nvm_cold_list, false);
     #endif
-
+ 
 out:
 #ifdef DYNA_THRESH
     gettimeofday(&start_histo, NULL);
@@ -1948,7 +1934,7 @@ void pebs_init(void)
     //perf_page[i][READ] = perf_setup(0x81d0, 0, i);   // MEM_INST_RETIRED.ALL_LOADS
     perf_page[i][DRAMREAD] = perf_setup(0x1d3, 0, i, DRAMREAD);      // MEM_LOAD_L3_MISS_RETIRED.LOCAL_DRAM
     perf_page[i][NVMREAD] = perf_setup(0x80d1, 0, i, NVMREAD);     // MEM_LOAD_RETIRED.LOCAL_PMM
-    perf_page[i][WRITE] = perf_setup(0x82d0, 0, i, WRITE);    // MEM_INST_RETIRED.ALL_STORES
+    //perf_page[i][WRITE] = perf_setup(0x82d0, 0, i, WRITE);    // MEM_INST_RETIRED.ALL_STORES
     //perf_page[i][WRITE] = perf_setup(0x12d0, 0, i);   // MEM_INST_RETIRED.STLB_MISS_STORES
   }
 
