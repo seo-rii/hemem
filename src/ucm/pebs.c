@@ -455,8 +455,9 @@ void *pebs_policy_thread()
     struct hemem_process *process, *tmp;
 
     //fprintf(stderr, "Processes Count: %u\n", HASH_CNT(phh, processes));
+    //fprintf(stderr, "Hash table addr: %p\n", processes);
     HASH_ITER(phh, processes, process, tmp) {
-      fprintf(stderr, "managing process %u\n", process->pid);
+      //printf(stderr, "managing process %u\n", process->pid);
       // free pages using free page ring buffer
       while(!ring_buf_empty(process->free_page_ring)) {
         struct fifo_list *list;

@@ -336,6 +336,7 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
     remove_page(process, page);
     pebs_remove_page(page);
     mem_allocated -= pagesize;
+    pages_freed += 1;
   } 
   
   response->header.status = SUCCESS;

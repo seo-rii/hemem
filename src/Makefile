@@ -1,6 +1,6 @@
 CC = gcc
-APP_CFLAGS = -Wall -g3 -O2 -fPIC
-UCM_CFLAGS = -Wall -g3 -O2
+APP_CFLAGS = -Wall -g3 -O0 -fPIC
+UCM_CFLAGS = -Wall -g3 -O0
 SHARED_CFLAGS = -Wall -g3 -O0
 #APP_CFLAGS = -Wall -O3 -fPIC
 #UCM_CFLAGS = -Wall -O3
