@@ -22,5 +22,7 @@ apps/silo_hemem/
 logs/
 results/
 scripts/
+build/
 *tags
 src/central-manager
+src/central-manager-base

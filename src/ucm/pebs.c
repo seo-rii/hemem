@@ -151,7 +151,7 @@ void *pebs_scan_thread()
             ps = (struct perf_sample*)ph;
             assert(ps != NULL);
             if(ps->addr != 0) {
-              __u64 pfn = ps->addr & HUGE_PFN_MASK;
+              __u64 pfn = ps->addr & PFN_MASK;
               process = find_process(ps->pid);
 
               //printf("page pid=%d, tid=%d\n", ps->pid, ps->tid);
@@ -700,8 +700,10 @@ void pebs_init(void)
   pthread_t kswapd_thread;
   pthread_t scan_thread;
   int ret;
+  struct timeval start, end;
 
-  LOG("pebs_init: started\n");
+  fprintf(stderr, "pebs_init: started\n");
+  gettimeofday(&start, NULL);
 
   for (int i = 0; i < PEBS_NPROCS; i++) {
     perf_page[i][DRAMREAD] = perf_setup(0x1d3, 0, i, DRAMREAD);      // MEM_LOAD_L3_MISS_RETIRED.LOCAL_DRAM
@@ -710,29 +712,29 @@ void pebs_init(void)
   }
 
   pthread_mutex_init(&(dram_free_list.list_lock), NULL);
+  struct hemem_page *p = calloc(DRAMSIZE / PAGE_SIZE, sizeof(struct hemem_page));
   for (int i = 0; i < DRAMSIZE / PAGE_SIZE; i++) {
-    struct hemem_page *p = calloc(1, sizeof(struct hemem_page));
-    p->devdax_offset = i * PAGE_SIZE;
-    p->present = false;
-    p->in_dram = true;
-    p->ring_present = false;
-    p->pt = pagesize_to_pt(PAGE_SIZE);
-    pthread_mutex_init(&(p->page_lock), NULL);
+    p[i].devdax_offset = i * PAGE_SIZE;
+    p[i].present = false;
+    p[i].in_dram = true;
+    p[i].ring_present = false;
+    p[i].pt = pagesize_to_pt(PAGE_SIZE);
+    pthread_mutex_init(&(p[i].page_lock), NULL);
 
-    enqueue_fifo(&dram_free_list, p);
+    enqueue_fifo(&dram_free_list, &p[i]);
   }
 
   pthread_mutex_init(&(nvm_free_list.list_lock), NULL);
+  p = calloc(NVMSIZE / PAGE_SIZE, sizeof(struct hemem_page));
   for (int i = 0; i < NVMSIZE / PAGE_SIZE; i++) {
-    struct hemem_page *p = calloc(1, sizeof(struct hemem_page));
-    p->devdax_offset = i * PAGE_SIZE;
-    p->present = false;
-    p->in_dram = false;
-    p->ring_present = false;
-    p->pt = pagesize_to_pt(PAGE_SIZE);
-    pthread_mutex_init(&(p->page_lock), NULL);
+    p[i].devdax_offset = i * PAGE_SIZE;
+    p[i].present = false;
+    p[i].in_dram = false;
+    p[i].ring_present = false;
+    p[i].pt = pagesize_to_pt(PAGE_SIZE);
+    pthread_mutex_init(&(p[i].page_lock), NULL);
 
-    enqueue_fifo(&nvm_free_list, p);
+    enqueue_fifo(&nvm_free_list, &p[i]);
   }
 
   ret = pthread_create(&scan_thread, NULL, pebs_scan_thread, NULL);
@@ -743,7 +745,8 @@ void pebs_init(void)
   
   LOG("Memory management policy is PEBS\n");
 
-  LOG("pebs_init: finished\n");
+  gettimeofday(&end, NULL);
+  fprintf(stderr, "pebs_init: finished, took %f s\n", elapsed(&start, &end));
 
 }
 

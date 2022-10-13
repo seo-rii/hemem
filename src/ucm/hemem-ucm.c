@@ -278,7 +278,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     page->pid = process->pid;
     page->uffd = process->uffd;
     assert(page->va != 0);
-    assert(page->va % HUGEPAGE_SIZE == 0);
+    assert(page->va % PAGE_SIZE == 0);
     page->migrating = false;
     page->migrations_up = page->migrations_down = 0;
     pthread_mutex_init(&(page->page_lock), NULL);
@@ -391,9 +391,9 @@ static void *hemem_stats_thread() {
   }
 
   for (;;) {
-    sleep(1);
+    sleep(5);
 
-    hemem_print_stats();
+    hemem_print_stats(stderr);
     hemem_clear_stats();
   }
   return NULL;
@@ -606,7 +606,7 @@ void hemem_ucm_init() {
   }
 #endif
 
-  LOG("hemem_init: finished\n");
+  LOG("hemem_init: finished, page size: %lu\n", PAGE_SIZE);
 }
 
 void hemem_ucm_stop() {
@@ -636,7 +636,7 @@ static void hemem_ucm_mmap_populate(struct hemem_page *page) {
   in_dram = page->in_dram;
   pagesize = pt_to_pagesize(page->pt);
   addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
-  assert((uint64_t)addr % HUGEPAGE_SIZE == 0);
+  assert((uint64_t)addr % PAGE_SIZE == 0);
 
 #ifndef USE_DMA
   hemem_parallel_memset(addr, 0, pagesize);
@@ -659,7 +659,7 @@ int hemem_ucm_munmap(struct hemem_page *page) {
   in_dram = page->in_dram;
   pagesize = pt_to_pagesize(page->pt);
   addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
-  assert((uint64_t)addr % HUGEPAGE_SIZE == 0);
+  assert((uint64_t)addr % PAGE_SIZE == 0);
 
   ret = munmap(addr, pagesize);
   return ret;
@@ -767,12 +767,12 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
   old_addr = dram_devdax_mmap + old_addr_offset;
   assert((uint64_t)old_addr_offset < DRAMSIZE);
   assert((uint64_t)old_addr_offset + pagesize <= DRAMSIZE);
-  assert((uint64_t)old_addr % HUGEPAGE_SIZE == 0);
+  assert((uint64_t)old_addr % PAGE_SIZE == 0);
 
   new_addr = nvm_devdax_mmap + new_addr_offset;
   assert((uint64_t)new_addr_offset < NVMSIZE);
   assert((uint64_t)new_addr_offset + pagesize <= NVMSIZE);
-  assert((uint64_t)new_addr % HUGEPAGE_SIZE == 0);
+  assert((uint64_t)new_addr % PAGE_SIZE == 0);
 
   gettimeofday(&start, NULL);
 #ifdef USE_DMA
@@ -822,7 +822,7 @@ void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
   // hemem_va_to_pa(addr));
 
   assert(addr != 0);
-  assert(addr % HUGEPAGE_SIZE == 0);
+  assert(addr % PAGE_SIZE == 0);
 
   gettimeofday(&start, NULL);
   wp.range.start = addr;
@@ -848,8 +848,8 @@ void handle_wp_fault(struct hemem_process *process, uint64_t page_boundry) {
 
   migration_waits++;
 
-  LOG("hemem: handle_wp_fault: waiting for migration for page %lx\n",
-      page_boundry);
+  //LOG("hemem: handle_wp_fault: waiting for migration for page %lx\n",
+  //    page_boundry);
 
   while (page->migrating)
     ;
@@ -938,6 +938,17 @@ void handle_missing_fault(struct hemem_process *process,
 
   assert(page_boundry != 0);
 
+  // Caused by race during page migration.
+  // TODO: See if there's a better fix
+  struct hemem_page *p;
+  pthread_mutex_lock(&(process->pages_lock));
+  HASH_FIND(hh, process->pages, &(page_boundry), sizeof(uint64_t), p);
+  pthread_mutex_unlock(&(process->pages_lock));
+  if(p != NULL) {
+    LOG("Caught page fault on existing page at %lx. Ignoring.\n", p->va);
+    return;
+  }
+
   gettimeofday(&missing_start, NULL);
 
   gettimeofday(&start, NULL);
@@ -964,7 +975,7 @@ void handle_missing_fault(struct hemem_process *process,
   // use mmap return addr to track new page's virtual address
   page->va = page_boundry;
   assert(page->va != 0);
-  assert(page->va % HUGEPAGE_SIZE == 0);
+  assert(page->va % PAGE_SIZE == 0);
   page->migrations_up = page->migrations_down = 0;
 
   mem_allocated += pagesize;
@@ -1139,7 +1150,7 @@ int process_msg(int fd)
   switch(request_header->operation) {
   case ALLOC_SPACE:
     struct alloc_request* alloc_req = (struct alloc_request*)recv_buf;
-    len = sizeof(struct alloc_response) + sizeof(struct hemem_page_app) * (alloc_req->length / HUGEPAGE_SIZE + (alloc_req->length % HUGEPAGE_SIZE != 0));
+    len = sizeof(struct alloc_response) + sizeof(struct hemem_page_app) * (alloc_req->length / PAGE_SIZE + (alloc_req->length % PAGE_SIZE != 0));
     if (len > MAX_SIZE) {
         new_send_buf = realloc(send_buf, len);
         send_buf = new_send_buf;
@@ -1269,19 +1280,26 @@ void *handle_request()
   }
 }
 
-void hemem_print_stats() {
-  LOG_STATS("mem_allocated: [%lu]\tpages_allocated: [%lu]\tmissing_faults_handled: "
-      "[%lu]\tbytes_migrated: [%lu]\tmigrations_up: [%lu]\tmigrations_down: "
-      "[%lu]\tmigration_waits: [%lu]\n",
+void hemem_print_stats(FILE *stream) {
+  fprintf(stream, "mem_allocated:\t%lu\tpages_allocated:\t%lu\tmissing_faults_handled: "
+      "[%lu]\tbytes_migrated:\t%lu\nmigrations_up:\t%lu\tmigrations_down:\t"
+      "%lu\tmigration_waits:\t%lu\n",
       mem_allocated, pages_allocated, missing_faults_handled, bytes_migrated,
       migrations_up, migrations_down, migration_waits);
   pebs_stats();
+  fflush(stream);
 }
 
 void hemem_clear_stats() {
   pages_allocated = 0;
   pages_freed = 0;
   missing_faults_handled = 0;
+  migrations_up = 0;
+  migrations_down = 0;
+}
+
+void hemem_clear_stats2() {
+  bytes_migrated = 0;
   migrations_up = 0;
   migrations_down = 0;
 }

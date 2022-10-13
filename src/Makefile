@@ -21,29 +21,41 @@ LIBS = -lm -lpthread
 HEMEM_LIBS = $(LIBS) -ldl -lsyscall_intercept
 
 default: all
-all:app central-manager
-app: libhemem.so
+all:app central-manager central-manager-base
+app: libhemem.so libhemem-base.so
 
-libhemem.so: hemem-app.o  interpose.o channel-shared-app.o channel-app.o logging-app.o
-	$(CC) $(LDFLAGS) -o libhemem.so hemem-app.o interpose.o channel-shared-app.o channel-app.o logging-app.o  $(HEMEM_LIBS)
+libhemem.so: hemem-app.o interpose.o channel-shared-app.o channel-app.o logging-app.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(HEMEM_LIBS) -D PAGE_SIZE=2097152UL
+
+libhemem-base.so: hemem-app-base.o interpose.o channel-shared-app.o channel-app.o logging-app.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(HEMEM_LIBS) -D PAGE_SIZE=4096UL
 
 hemem-app.o: ${APP}/hemem-app.c ${APP}/hemem-app.h
-	$(CC) $(APP_CFLAGS) $(APP_INCLUDES) -D ALLOC_HEMEM -c ${APP}/hemem-app.c -o hemem-app.o
+	$(CC) $(APP_CFLAGS) $(APP_INCLUDES) -D ALLOC_HEMEM -c $< -o $@ -D PAGE_SIZE=2097152UL
+
+hemem-app-base.o: ${APP}/hemem-app.c ${APP}/hemem-app.h
+	$(CC) $(APP_CFLAGS) $(APP_INCLUDES) -D ALLOC_HEMEM -c $< -o $@ -D PAGE_SIZE=4096UL
 
 interpose.o: ${APP}/interpose.c ${APP}/interpose.h
-	$(CC) $(APP_CFLAGS) $(APP_INCLUDES) -c ${APP}/interpose.c
+	$(CC) $(APP_CFLAGS) $(APP_INCLUDES) -c $<
 
 channel-app.o: ${APP}/channel-app.c ${APP}/channel-app.h
 	$(CC) $(APP_CFLAGS) $(APP_INCLUDES) -c ${APP}/channel-app.c
 
 central-manager: ucm.o channel-shared.o channel-ucm.o timer.o hemem-ucm.o pebs.o fifo.o spsc-ring.o logging.o
-	$(CC) -o central-manager ucm.o channel-shared.o channel-ucm.o timer.o pebs.o hemem-ucm.o fifo.o spsc-ring.o logging.o -lpthread
+	$(CC) -o $@ $^ -lpthread
+
+central-manager-base: ucm.o channel-shared.o channel-ucm.o timer.o hemem-ucm-base.o pebs-base.o fifo.o spsc-ring.o logging.o
+	$(CC) -o $@ $^ -lpthread
 
 ucm.o: ${UCM}/ucm.c
 	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/ucm.c
 
 hemem-ucm.o: ${UCM}/hemem-ucm.c ${UCM}/hemem-ucm.h ${UCM}/hemem-types.h
-	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/hemem-ucm.c -lpthread
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/hemem-ucm.c -lpthread -D PAGE_SIZE=2097152UL
+
+hemem-ucm-base.o: ${UCM}/hemem-ucm.c ${UCM}/hemem-ucm.h ${UCM}/hemem-types.h
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -o $@ -c ${UCM}/hemem-ucm.c -lpthread -D PAGE_SIZE=4096UL
 	
 channel-shared-app.o: ${SHARED}/channel-shared.c ${SHARED}/channel-shared.h
 	$(CC) $(APP_CFLAGS) $(SHARED_INCLUDES) -o channel-shared-app.o  -c ${SHARED}/channel-shared.c
@@ -58,7 +70,10 @@ timer.o: ${UCM}/timer.c ${UCM}/timer.h
 	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/timer.c
 
 pebs.o: ${UCM}/pebs.c ${UCM}/pebs.h ${UCM}/hemem-types.h
-	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/pebs.c -lpthread
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/pebs.c -lpthread -D PAGE_SIZE=2097152UL
+
+pebs-base.o: ${UCM}/pebs.c ${UCM}/pebs.h ${UCM}/hemem-types.h
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -o $@ -c ${UCM}/pebs.c -lpthread -D PAGE_SIZE=4096UL
 
 fifo.o: ${UCM}/fifo.c ${UCM}/fifo.h
 	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/fifo.c
@@ -73,4 +88,4 @@ logging-app.o: ${SHARED}/logging.c ${SHARED}/logging.h
 	$(CC) $(APP_CFLAGS) $(SHARED_INCLUDES) -o logging-app.o -c $(SHARED)/logging.c
 
 clean:
-	$(RM) *.o *.so central-manager
+	$(RM) *.o *.so central-manager central-manager-base

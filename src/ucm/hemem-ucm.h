@@ -14,7 +14,7 @@
 
 #define MAX_UFFD_MSGS	    (3)
 
-#define USE_DMA
+//#define USE_DMA
 #define NUM_CHANNS 1
 #define SIZE_PER_DMA_REQUEST (1024*1024)
 #define MAX_COPY_THREADS 4
@@ -47,8 +47,9 @@ struct hemem_page *find_page(struct hemem_process* process, uint64_t app_va);
 // from the ucm to the app
 int remap_pages(pid_t pid, int remap_fd, struct hemem_page_app* fault_pages, int num_fault_pages);
 
-void hemem_print_stats();
+void hemem_print_stats(FILE *stream);
 void hemem_clear_stats();
+void hemem_clear_stats2();
 
 void hemem_start_timing(void);
 void hemem_stop_timing(void);

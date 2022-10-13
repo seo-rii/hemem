@@ -20,6 +20,7 @@ int channel_client_init(enum channel_type type)
     snprintf(&client_addr.sun_path[1],
             sizeof(client_addr.sun_path) - 1,
             "client-%d-%d", type, getpid());
+    fprintf(stderr, "Opening client at %s\n", &client_addr.sun_path[1]);
 
     if (bind(fd, (struct sockaddr *)&client_addr, sizeof(client_addr)) < 0) {
         close(fd);

@@ -331,12 +331,11 @@ void hemem_app_init()
   char log_name[64];
 
   pid = getpid();
-  printf("process id = %d\n", pid);
   sprintf(log_name, "logs-app-%d", pid);
 
   log_init("app");
 
-  LOG("hemem_app_init: started\n");
+  LOG("hemem_app_init: started for %d\n", pid);
 
   dramfd = open(DRAMPATH, O_RDWR);
   if (dramfd < 0) {
@@ -517,7 +516,7 @@ static void hemem_mmap_populate(void* addr, size_t length)
 
 }
 
-#define PAGE_ROUND_UP(x) (((x) + (HUGEPAGE_SIZE)-1) & (~((HUGEPAGE_SIZE)-1)))
+#define PAGE_ROUND_UP(x) (((x) + (PAGE_SIZE)-1) & (~((PAGE_SIZE)-1)))
 
 void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 {
