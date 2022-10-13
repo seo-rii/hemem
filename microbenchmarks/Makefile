@@ -1,47 +1,85 @@
-HEMEMDIR = $(CURDIR)/../src/
+HEMEMDIR = $(CURDIR)/../src
 
 CC = gcc
-#CFLAGS = -g -Wall -O3
-CFLAGS = -g3 -Wall -O0
-INCLUDES = -I../linux/usr/include
-LIBS = -lm -lpthread
+CFLAGS = -g -Wall -O3
+#CFLAGS = -g3 -Wall -O0
+INCLUDES = -I../linux/usr/include -I${HEMEMDIR}/ucm -I${HEMEMDIR}/shared
+LIBS = -lm -lpthread -L../Hoard/src -lhoard
+BUILD = ./build
 
-default: gups-pebs #gups-random gups-hotset-move
+default: ${BUILD} ${BUILD}/gups-pebs-sparse ${BUILD}/gups-pebs-dense-sparse ${BUILD}/gups-sparse-oracle ${BUILD}/gups-sparse-oracle-base ${BUILD}/gups-dense-sparse-oracle
 
-all: gups-pebs gups-random gups-simple gups-lru gups-lru-swap gups-hotset-move #gups
+${BUILD}:
+	mkdir -p ${BUILD};
 
-gups-random: gups-random.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-random gups-random.o zipf.o ../src/timer.o $(LIBS) # -L$(HEMEMDIR) -lhemem
+${BUILD}/gups-random: ${BUILD}/gups-random.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) # -L$(HEMEMDIR) -lhemem
 
-gups-small: gups-small.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-small gups-small.o ../src/timer.o $(LIBS)
+${BUILD}/gups-small: ${BUILD}/gups-small.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ ../src/timer.o $(LIBS)
 
-gups: gups.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups gups.o zipf.o ../src/timer.o $(LIBS)
+${BUILD}/gups: ${BUILD}/gups.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS)
 
-gups-pebs: gups.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-pebs gups.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem
+${BUILD}/gups-pebs: ${BUILD}/gups.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -lhemem
 
-gups-hotset-move: gups-hotset-move.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-hotset-move gups-hotset-move.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem
+${BUILD}/gups-pebs-base: ${BUILD}/gups.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^$(LIBS) -L$(HEMEMDIR) -lhemem-base
 
-gups-simple: gups.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-simple gups.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem-simple
+${BUILD}/gups-pebs-sparse: ${BUILD}/gups-sparse.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS)
 
-gups-lru: gups.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-lru gups.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem-lru
+${BUILD}/gups-sparse-oracle: ${BUILD}/gups-sparse-oracle-huge.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -D PAGE_SIZE=2097152UL
 
-gups-lru-swap: gups.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-lru-swap gups.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem-lru-swap
+${BUILD}/gups-sparse-oracle-base: ${BUILD}/gups-sparse-oracle-base.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -D PAGE_SIZE=4096UL
 
-gups-random.o: gups-random.c zipf.c gups.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c gups-random.c zipf.c
+${BUILD}/gups-dense-sparse-oracle: ${BUILD}/gups-dense-sparse-oracle.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR)
 
-gups.o: gups.c zipf.c  gups.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c gups.c zipf.c
+${BUILD}/gups-pebs-dense-sparse: ${BUILD}/gups-dense-sparse.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR)
 
-gups-hotset-move.o: gups-hotset-move.c zipf.c gups.h
-	$(CC) $(CFLAGS) $(INCLUDES) -c gups-hotset-move.c zipf.c
+${BUILD}/gups-hotset-move: ${BUILD}/gups-hotset-move.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -lhemem
+
+${BUILD}/gups-simple: ${BUILD}/gups.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -lhemem-simple
+
+${BUILD}/gups-lru: ${BUILD}/gups.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -lhemem-lru
+
+${BUILD}/gups-lru-swap: ${BUILD}/gups.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -lhemem-lru-swap
+
+${BUILD}/gups-random.o: gups-random.c zipf.c gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c  $<
+
+${BUILD}/gups.o: gups.c zipf.c gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c  $<
+
+${BUILD}/gups-sparse.o: gups-sparse.c zipf.c  gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c $<
+
+${BUILD}/gups-sparse-oracle-base.o: gups-sparse-oracle.c gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c  $< -D PAGE_SIZE=4096UL
+
+${BUILD}/gups-sparse-oracle-huge.o: gups-sparse-oracle.c  gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c  $< -D PAGE_SIZE=2097152UL
+
+${BUILD}/gups-dense-sparse-oracle.o: gups-dense-sparse-oracle.c gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c $<
+
+${BUILD}/gups-dense-sparse.o: gups-dense-sparse.c zipf.c  gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c $<
+
+${BUILD}/gups-hotset-move.o: gups-hotset-move.c zipf.c gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c $<
+
+ ${BUILD}/zipf.o: zipf.c 
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c $<
 
 clean:
-	$(RM) *.o gups gups-hotset-move gups-lru-swap gups-lru gups-simple gups-random gups-pebs
+	$(RM) ${BUILD}/*
