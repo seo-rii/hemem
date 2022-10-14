@@ -4,10 +4,12 @@ CC = gcc
 CFLAGS = -g -Wall -O3
 #CFLAGS = -g3 -Wall -O0
 INCLUDES = -I../linux/usr/include -I${HEMEMDIR}/ucm -I${HEMEMDIR}/shared
-LIBS = -lm -lpthread -L../Hoard/src -lhoard
+LIBS = -lm -lpthread -L../Hoard/src -lhoard -L${HEMEMDIR}/
 BUILD = ./build
 
-default: ${BUILD} ${BUILD}/gups-pebs-sparse ${BUILD}/gups-pebs-dense-sparse ${BUILD}/gups-sparse-oracle ${BUILD}/gups-sparse-oracle-base ${BUILD}/gups-dense-sparse-oracle
+default: ${BUILD} ${BUILD}/gups-sparse-huge ${BUILD}/gups-sparse-base \
+	    ${BUILD}/gups-sparse-oracle ${BUILD}/gups-sparse-oracle-base \
+		${BUILD}/gups-dense-sparse-huge ${BUILD}/gups-dense-sparse-base ${BUILD}/gups-dense-sparse-oracle
 
 ${BUILD}:
 	mkdir -p ${BUILD};
@@ -21,14 +23,11 @@ ${BUILD}/gups-small: ${BUILD}/gups-small.o
 ${BUILD}/gups: ${BUILD}/gups.o ${BUILD}/zipf.o ../src/timer.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS)
 
-${BUILD}/gups-pebs: ${BUILD}/gups.o ${BUILD}/zipf.o ../src/timer.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -lhemem
+${BUILD}/gups-sparse-huge: ${BUILD}/gups-sparse.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -lhemem
 
-${BUILD}/gups-pebs-base: ${BUILD}/gups.o ${BUILD}/zipf.o ../src/timer.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^$(LIBS) -L$(HEMEMDIR) -lhemem-base
-
-${BUILD}/gups-pebs-sparse: ${BUILD}/gups-sparse.o ${BUILD}/zipf.o ../src/timer.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS)
+${BUILD}/gups-sparse-base: ${BUILD}/gups-sparse.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -lhemem-base
 
 ${BUILD}/gups-sparse-oracle: ${BUILD}/gups-sparse-oracle-huge.o ${BUILD}/zipf.o ../src/timer.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -D PAGE_SIZE=2097152UL
@@ -39,8 +38,11 @@ ${BUILD}/gups-sparse-oracle-base: ${BUILD}/gups-sparse-oracle-base.o ${BUILD}/zi
 ${BUILD}/gups-dense-sparse-oracle: ${BUILD}/gups-dense-sparse-oracle.o ${BUILD}/zipf.o ../src/timer.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR)
 
-${BUILD}/gups-pebs-dense-sparse: ${BUILD}/gups-dense-sparse.o ${BUILD}/zipf.o ../src/timer.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR)
+${BUILD}/gups-dense-sparse-huge: ${BUILD}/gups-dense-sparse.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -lhemem
+
+${BUILD}/gups-dense-sparse-base: ${BUILD}/gups-dense-sparse.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -lhemem-base
 
 ${BUILD}/gups-hotset-move: ${BUILD}/gups-hotset-move.o ${BUILD}/zipf.o ../src/timer.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR) -lhemem

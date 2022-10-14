@@ -35,7 +35,7 @@
 #include <stdbool.h>
 
 #include "../src/ucm/timer.h"
-//#include "../src/ucm/hemem-ucm.h"
+#include "../src/app/hemem-app.h"
 
 
 #include "gups.h"
@@ -363,9 +363,8 @@ int main(int argc, char **argv)
   filename = "indices2.txt";
 */
   fprintf(stderr, "Timing.\n");
+  hemem_clear_global_stats();
   gettimeofday(&starttime, NULL);
-
-  //hemem_clear_stats2();
   // spawn gups worker threads
   for (i = 0; i < threads; i++) {
     int r = pthread_create(&t[i], NULL, do_gups, (void*)ga[i]);
@@ -378,7 +377,7 @@ int main(int argc, char **argv)
     assert(r == 0);
   }
   gettimeofday(&stoptime, NULL);
-  //hemem_print_stats(stdout);
+  hemem_print_global_stats();
 
   secs = elapsed(&starttime, &stoptime);
   printf("Elapsed time:\t%.4f\tseconds.\t", secs);
