@@ -223,6 +223,40 @@ int record_remap_fd()
   return status;
 }
 
+int hemem_print_global_stats()
+{
+  struct stat_request request;
+  struct stat_response* response;
+  enum status_code status;
+
+  request.header.operation = OUTPUT_STATS;
+  request.header.pid = pid;
+  request.header.msg_size = sizeof(request);
+
+  response = process_request(request_fd, &request);
+  status = response->header.status;
+  free(response);
+
+  return status;
+}
+
+int hemem_clear_global_stats()
+{
+  struct stat_request request;
+  struct stat_response* response;
+  enum status_code status;
+
+  request.header.operation = CLEAR_STATS;
+  request.header.pid = pid;
+  request.header.msg_size = sizeof(request);
+
+  response = process_request(request_fd, &request);
+  status = response->header.status;
+  free(response);
+
+  return status;
+}
+
 void remap_page(struct hemem_page_app* page)
 {
   void *newptr;

@@ -29,7 +29,7 @@ extern "C" {
 
 #define MAX_UFFD_MSGS	    (1)
 #define MAX_MEM_LEN_PER_REQ (1 * HUGEPAGE_SIZE)
-//#define ONE_MEM_REQUEST
+#define ONE_MEM_REQUEST
 
 extern int dramfd;
 extern int nvmfd;
@@ -55,6 +55,10 @@ int add_process();
 int remove_process();
 int get_uffd(long uffd);
 int record_remap_channel();
+
+// Functions to help evaluate performance
+int hemem_print_global_stats();
+int hemem_clear_global_stats();
 
 #ifdef __cplusplus
 }

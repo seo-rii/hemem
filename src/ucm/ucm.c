@@ -3,12 +3,12 @@
 
 int main(int argc, char *argv[])
 {
-    fprintf(stdout, "hemem_ucm_init...\n");
+    fprintf(stderr, "hemem_ucm_init...\n");
     hemem_ucm_init();
 
-    fprintf(stdout, "setting up perf...\n");
+    fprintf(stderr, "setting up perf...\n");
     pebs_init();
-    fprintf(stdout, "ready\n");
+    fprintf(stderr, "ready\n");
     while (1) {
         ;
     }

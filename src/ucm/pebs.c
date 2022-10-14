@@ -37,8 +37,10 @@ uint64_t unthrottle_cnt = 0;
 uint64_t cools = 0;
 uint64_t dram_hot_pages = 0;
 uint64_t dram_cold_pages = 0;
+uint64_t dram_tot_density = 0;
 uint64_t nvm_hot_pages = 0;
 uint64_t nvm_cold_pages = 0;
+uint64_t nvm_tot_density = 0;
 uint64_t dram_hot_ring_pages = 0;
 uint64_t dram_cold_ring_pages = 0;
 uint64_t nvm_hot_ring_pages = 0;
@@ -165,6 +167,21 @@ void *pebs_scan_thread()
                   if (page->va != 0) {
                     page->accesses[j]++;
                     page->tot_accesses[j]++;
+                    // Find offset of base page in page
+                    // 12 bits = 4 KB = size of base page
+                    uint64_t bpage_offset = (ps->addr & (PAGE_SIZE - 1)) >> 12;
+                    uint64_t access_index = bpage_offset / BIT_SIZEOF(uint64_t);
+                    uint64_t access_bit   = bpage_offset % BIT_SIZEOF(uint64_t);
+                    // Set accessed, and modify stats appropriately 
+                    if(!(page->accessed_map[access_index] & (1 << access_bit))) {
+                      page->accessed_map[access_index] |= (1 << access_bit);
+                      page->density++;
+                      if(page->in_dram)
+                        dram_tot_density++;
+                      else
+                        nvm_tot_density++;
+                    }
+
                     //if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
                     //  if (!page->hot && !page->ring_present) {
                     //    make_hot_request(process, page);
@@ -316,6 +333,11 @@ void make_cold(struct hemem_process* process, struct hemem_page* page)
     return;
   }
 
+  // Reset density of page
+  uint64_t page_density = page->density;
+  page->density = 0;
+  memset(page->accessed_map, 0, sizeof(page->accessed_map));
+
   if (page->in_dram) {
     assert(page->list == &(process->dram_hot_list));
     page_list_remove_page(&(process->dram_hot_list), page);
@@ -323,6 +345,7 @@ void make_cold(struct hemem_process* process, struct hemem_page* page)
     page->hot = false;
     enqueue_fifo(&(process->dram_cold_list), page);
     dram_cold_pages++;
+    dram_tot_density -= page_density;
   }
   else {
     assert(page->list == &(process->nvm_hot_list));
@@ -331,6 +354,7 @@ void make_cold(struct hemem_process* process, struct hemem_page* page)
     page->hot = false;
     enqueue_fifo(&(process->nvm_cold_list), page);
     nvm_cold_pages++;
+    nvm_tot_density -= page_density;
   }
 }
 
@@ -398,11 +422,22 @@ struct hemem_page* partial_cool_peek_and_move(struct hemem_process* process, boo
     if (!p->hot) {
         current = p->next;
         page_list_remove_page(hot, p);
-        if (dram) dram_hot_pages--;
-        else nvm_hot_pages--;
+        // Reset density of page
+        uint64_t page_density = page->density;
+        page->density = 0;
+        memset(page->accessed_map, 0, sizeof(page->accessed_map));
+
+        if (dram) {
+          dram_hot_pages--;
+          dram_cold_pages++;
+          dram_tot_density -= page_density;
+        }
+        else {
+          nvm_hot_pages--;
+          nvm_cold_pages++;
+          nvm_tot_density -= page_density;
+        }
         enqueue_fifo(cold, p);
-        if (dram) dram_cold_pages++;
-        else nvm_cold_pages++;
     }
     else {
         current = p;
@@ -472,17 +507,21 @@ void *pebs_policy_thread()
         page_list_remove_page(list, page);
         if (page->in_dram) {
           if (page->hot) dram_hot_pages--;
-          else dram_cold_pages--;  
+          else dram_cold_pages--;
+          dram_tot_density -= page->density;
           enqueue_fifo(&dram_free_list, page);
         }
         else {
           if (page->hot) nvm_hot_pages--;
           else nvm_cold_pages--;
+          nvm_tot_density -= page->density;
           enqueue_fifo(&nvm_free_list, page);
         }
 
         page->present = false;
         page->hot = false;
+        memset(page->accessed_map, 0, sizeof(page->accessed_map));
+        page->density = 0;
         for (int i = 0; i < NPBUFTYPES; i++) {
           page->accesses[i] = 0;
           page->tot_accesses[i] = 0;
@@ -534,6 +573,7 @@ void *pebs_policy_thread()
           break;
         }
         nvm_hot_pages--;
+        nvm_tot_density -= p->density;
 
         update_current_cool_page(process, page);
       
@@ -542,6 +582,7 @@ void *pebs_policy_thread()
           p->hot = false;
           enqueue_fifo(&(process->nvm_cold_list), p); 
           nvm_cold_pages++;
+          nvm_tot_density += p->density;
           continue;
         } 
 
@@ -571,6 +612,7 @@ void *pebs_policy_thread()
 
             enqueue_fifo(&(process->dram_hot_list), p);
             dram_hot_pages++;
+            dram_tot_density += p->density;
             enqueue_fifo(&nvm_free_list, np);
 
             migrated_bytes += pt_to_pagesize(p->pt);
@@ -583,10 +625,12 @@ void *pebs_policy_thread()
             // all dram pages are hot, so put it back in list we got it from
             enqueue_fifo(&(process->nvm_hot_list), p);
             nvm_hot_pages++;
+            nvm_tot_density += p->density;
             goto out;
           }
           assert(cp != NULL);
           dram_cold_pages--;
+          dram_tot_density -= cp->density;
 
           update_current_cool_page(process, cp);
          
@@ -613,6 +657,7 @@ void *pebs_policy_thread()
             }
 
             enqueue_fifo(&(process->nvm_cold_list), cp);
+            nvm_tot_density += cp->density;
             nvm_cold_pages++;
             enqueue_fifo(&dram_free_list, np);
           }
@@ -760,7 +805,7 @@ void pebs_shutdown()
   }
 }
 
-void pebs_stats()
+void pebs_stats(FILE *stream)
 {
   /* TODO: change to per-process
   LOG_STATS("\tdram_hot_list.numentries: [%ld]\tdram_cold_list.numentries: [%ld]\tnvm_hot_list.numentries: [%ld]\tnvm_cold_list.numentries: [%ld]\themem_pages: [%lu]\ttotal_pages: [%lu]\tzero_pages: [%ld]\tthrottle/unthrottle_cnt: [%ld/%ld]\tcools: [%ld]\n",
@@ -777,7 +822,7 @@ void pebs_stats()
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
   */
 
-  LOG_STATS("\tnum_processes: [%u]\tdram_hot: [%lu]\tdram_cold: [%lu]\tnvm_hot: [%lu]\tnvm_cold: [%lu]\tdram_hot_ring: [%lu]\tdram_cold_ring: [%lu]\tnvm_hot_ring: [%lu]\tnvm_cold_ring: [%lu]\n",
+  fprintf(stream, "\tnum_processes: [%u]\tdram_hot: [%lu]\tdram_cold: [%lu]\tnvm_hot: [%lu]\tnvm_cold: [%lu]\tdram_hot_ring: [%lu]\tdram_cold_ring: [%lu]\tnvm_hot_ring: [%lu]\tnvm_cold_ring: [%lu]\n",
         HASH_CNT(phh, processes),
         dram_hot_pages,
         dram_cold_pages,
@@ -787,7 +832,7 @@ void pebs_stats()
         dram_cold_ring_pages,
         nvm_hot_ring_pages,
         nvm_cold_ring_pages);
-  LOG_STATS("\themem_pages: [%lu]\tother_pages: [%lu]\tzero_pages: [%ld]\tother_processes: [%ld]\tthrottle/unthrottle: [%ld/%ld]\tcools: [%ld]\n",
+  fprintf(stream, "\themem_pages: [%lu]\tother_pages: [%lu]\tzero_pages: [%ld]\tother_processes: [%ld]\tthrottle/unthrottle: [%ld/%ld]\tcools: [%ld]\n",
         hemem_pages_cnt,
         total_pages_cnt - hemem_pages_cnt,
         zero_pages_cnt,
@@ -796,5 +841,7 @@ void pebs_stats()
         unthrottle_cnt,
         cools);
   hemem_pages_cnt = total_pages_cnt = other_processes_cnt = throttle_cnt = unthrottle_cnt = 0;
-  
+  fprintf(stream, "Avg DRAM density:\t%f\tAvg NVM density:\t%f\n",
+    ((double)dram_tot_density) / (double)(dram_hot_pages + dram_cold_pages),
+    ((double)nvm_tot_density) / (double)(nvm_hot_pages + nvm_cold_pages));
 }

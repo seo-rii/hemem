@@ -281,6 +281,8 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     assert(page->va % PAGE_SIZE == 0);
     page->migrating = false;
     page->migrations_up = page->migrations_down = 0;
+    memset(page->accessed_map, 0, sizeof(page->accessed_map));
+    page->density = 0;
     pthread_mutex_init(&(page->page_lock), NULL);
 
     add_page(process, page);
@@ -375,6 +377,23 @@ int ucm_record_remap_fd(int fd, struct record_remap_fd_request* request, struct 
   return 0;
 }
 
+int ucm_stat(int fd, enum operation op, struct stat_request* request, struct stat_response* response)
+{
+  pid_t pid = request->header.pid;
+  struct hemem_process* process;
+
+  response->header.pid = pid;
+  response->header.operation = op;
+  response->header.msg_size = sizeof(struct stat_response);
+
+  process = find_process(request->header.pid);
+  if (process == NULL) {
+    response->header.status = FAILED;
+    return -1;
+  }
+  response->header.status = SUCCESS;
+  return 0;
+}
 
 #ifdef STATS_THREAD
 static void *hemem_stats_thread() {
@@ -977,7 +996,8 @@ void handle_missing_fault(struct hemem_process *process,
   assert(page->va != 0);
   assert(page->va % PAGE_SIZE == 0);
   page->migrations_up = page->migrations_down = 0;
-
+  memset(page->accessed_map, 0, sizeof(page->accessed_map));
+  page->density = 0;
   mem_allocated += pagesize;
 
   // place in hemem's page tracking list
@@ -1172,6 +1192,14 @@ int process_msg(int fd)
     ret = ucm_record_remap_fd(fd, (struct record_remap_fd_request*)recv_buf, (struct record_remap_fd_response*)send_buf);
     delete_epoll_ctl(epoll_fd, fd);
     break;
+  case OUTPUT_STATS:
+    hemem_print_stats(stdout);
+    ret = ucm_stat(fd, request_header->operation, (struct stat_request *)recv_buf, (struct stat_response *)send_buf);
+    break;
+  case CLEAR_STATS:
+    hemem_clear_stats2();
+    ret = ucm_stat(fd, request_header->operation, (struct stat_request *)recv_buf, (struct stat_response *)send_buf);
+    break;
   default:
     fprintf(stderr, "invalid request\n");
     //response_header->operation = request_header->operation;
@@ -1281,12 +1309,12 @@ void *handle_request()
 }
 
 void hemem_print_stats(FILE *stream) {
-  fprintf(stream, "mem_allocated:\t%lu\tpages_allocated:\t%lu\tmissing_faults_handled: "
-      "[%lu]\tbytes_migrated:\t%lu\nmigrations_up:\t%lu\tmigrations_down:\t"
-      "%lu\tmigration_waits:\t%lu\n",
+  fprintf(stream, "mem_allocated: [%lu]\tpages_allocated: [%lu]\tmissing_faults_handled: "
+      "[%lu]\tbytes_migrated:\t%lu\nmigrations_up:\t%lu\tmigrations_down: "
+      "[%lu]\tmigration_waits:\t%lu\n",
       mem_allocated, pages_allocated, missing_faults_handled, bytes_migrated,
       migrations_up, migrations_down, migration_waits);
-  pebs_stats();
+  pebs_stats(stream);
   fflush(stream);
 }
 

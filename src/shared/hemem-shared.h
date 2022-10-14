@@ -14,6 +14,8 @@
 
 #define MEM_BARRIER() __sync_synchronize()
 
+#define BIT_SIZEOF(x) (sizeof(x) * 8)
+
 //#define HEMEM_DEBUG
 
 #define NVMSIZE   (128L * (1024L * 1024L * 1024L))
@@ -79,7 +81,9 @@ enum operation {
   REMOVE_PROCESS = 3,
   GET_UFFD = 4,
   REMAP_PAGES = 5,
-  RECORD_REMAP_FD = 6
+  RECORD_REMAP_FD = 6,
+  OUTPUT_STATS = 7,
+  CLEAR_STATS = 8
 };
 
 enum status_code {
@@ -166,6 +170,14 @@ struct record_remap_fd_request {
 };
 
 struct record_remap_fd_response {
+  struct msg_header header;
+};
+
+struct stat_request {
+  struct msg_header header;
+};
+
+struct stat_response {
   struct msg_header header;
 };
 

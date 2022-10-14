@@ -26,6 +26,8 @@ struct hemem_page {
   uint64_t accesses[NPBUFTYPES];
   uint64_t tot_accesses[NPBUFTYPES];
   pthread_mutex_t page_lock;
+  uint64_t accessed_map[(HUGEPAGE_SIZE / BASEPAGE_SIZE) / BIT_SIZEOF(uint64_t)];
+  uint64_t density;
 
   UT_hash_handle hh;
   struct hemem_page *next, *prev;
