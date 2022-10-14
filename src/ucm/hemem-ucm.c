@@ -848,8 +848,8 @@ void handle_wp_fault(struct hemem_process *process, uint64_t page_boundry) {
 
   migration_waits++;
 
-  LOG("hemem: handle_wp_fault: waiting for migration for page %lx\n",
-      page_boundry);
+  //LOG("hemem: handle_wp_fault: waiting for migration for page %lx\n",
+  //    page_boundry);
 
   while (page->migrating)
     ;
@@ -962,6 +962,8 @@ void handle_missing_fault(struct hemem_process *process,
   memsets++;
 
   // use mmap return addr to track new page's virtual address
+  page->pid = process->pid;
+  page->uffd = process->uffd;
   page->va = page_boundry;
   assert(page->va != 0);
   assert(page->va % HUGEPAGE_SIZE == 0);
