@@ -147,36 +147,25 @@ void *pebs_scan_thread()
               __u64 pfn = ps->addr & HUGE_PFN_MASK;
               process = find_process(ps->pid);
 
-              //printf("page pid=%d, tid=%d\n", ps->pid, ps->tid);
               if (process != NULL) {
-                //printf("ps adr:0x%llx, type: %d\n", ps->addr, j);
-                //printf("page pid=%d, tid=%d, ps addr:0x%llx\n", ps->pid, ps->tid, ps->addr);
                 page = find_page(process, pfn);
                 if (page != NULL) {
-                  //printf("page pid=%d, tid=%d, ps addr:0x%llx\n", ps->pid, ps->tid, ps->addr);
-                  //printf("find page, ps adr:0x%llx, type: %d\n", ps->addr, j);
                   if (page->va != 0) {
                     page->accesses[j]++;
                     page->tot_accesses[j]++;
-                    //if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
-                    //  if (!page->hot && !page->ring_present) {
-                    //    make_hot_request(process, page);
-                    //  }
-                    //}
-                    /* else */if (page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= HOT_READ_THRESHOLD) {
+                    if ((page->accesses[DRAMREAD] + page->accesses[NVMREAD]) >= HOT_READ_THRESHOLD) {
                       if (!page->hot && !page->ring_present) {
                         make_hot_request(process, page);
                       }
                     }
-                    else if (/*page->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+                    else if ((page->accesses[DRAMREAD] + page->accesses[NVMREAD]) < HOT_READ_THRESHOLD) {
                       if (page->hot && !page->ring_present) {
                         make_cold_request(process, page);
                       }
-                  }
+                    }
 
                     page->accesses[DRAMREAD] >>= (global_clock - page->local_clock);
                     page->accesses[NVMREAD] >>= (global_clock - page->local_clock);
-                    //page->accesses[WRITE] >>= (global_clock - page->local_clock);
                     page->local_clock = global_clock;
                     if (page->accesses[j] > PEBS_COOLING_THRESHOLD) {
                       global_clock++;
@@ -188,7 +177,6 @@ void *pebs_scan_thread()
                   hemem_pages_cnt++;
                 }
                 else {
-                  //fprintf(stderr, "did not find page %llx\n", pfn);
                   other_pages_cnt++;
                 }
                 total_pages_cnt++;
@@ -203,8 +191,6 @@ void *pebs_scan_thread()
   	      break;
         case PERF_RECORD_THROTTLE:
         case PERF_RECORD_UNTHROTTLE:
-          //fprintf(stderr, "%s event!\n",
-          //   ph->type == PERF_RECORD_THROTTLE ? "THROTTLE" : "UNTHROTTLE");
           if (ph->type == PERF_RECORD_THROTTLE) {
               throttle_cnt++;
           }
@@ -346,8 +332,16 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
   // were inserted. The idea is, in this way, we cool the oldest pages first
   if (dram && (process->cur_cool_in_dram == NULL)) {
       process->cur_cool_in_dram = process->dram_hot_list.last;
+      // dram hot list might be empty, in which case we have nothing to cool
+      if (process->cur_cool_in_dram == NULL) {
+        return NULL;
+      }
   } else if ((!dram) && (process->cur_cool_in_nvm == NULL)) {
       process->cur_cool_in_nvm = process->nvm_hot_list.last;
+      // nvm hot list might be empty, in which case we have nothing to cool
+      if (process->cur_cool_in_nvm == NULL) {
+        return NULL;
+      }
   }
 
   // set hot and cold list pointers as appropriate for memory type
@@ -356,10 +350,12 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
     hot = &(process->dram_hot_list);
     cold = &(process->dram_cold_list);
     current = process->cur_cool_in_dram;
+    assert(process->cur_cool_in_dram->list == &(process->dram_hot_list));
   } else {
     hot = &(process->nvm_hot_list);
     cold = &(process->nvm_cold_list);
     current = process->cur_cool_in_nvm;
+    assert(process->cur_cool_in_nvm->list == &(process->nvm_hot_list));
   }
   
   // start from the current cooled page. This is either where we left off
@@ -415,11 +411,11 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
     // page to NULL to signify that we do not have a current page to cool and
     // set the needs cooling flag to false for the same reason
     if (dram && (p == process->dram_hot_list.first)) {
-        process->cur_cool_in_dram = NULL;
         process->need_cool_dram = false;
+        return NULL;
     } else if (!dram && (p == process->nvm_hot_list.first)) {
-        process->cur_cool_in_nvm = NULL;
         process->need_cool_nvm = false;
+        return NULL;
     } 
 
     // grab another page to cool
@@ -437,16 +433,12 @@ void update_current_cool_page(struct hemem_process *process, struct hemem_page *
 {
   if (page == process->cur_cool_in_dram) {
     // first a set of sanity checks
-    assert(process->cur_cool_in_dram->in_dram);
-    assert(process->cur_cool_in_dram->list == &(process->dram_hot_list));
     assert(page->in_dram);
     assert(page->list == &(process->dram_hot_list));
     // then just reset the bookmark pointer to the last page in list
     process->cur_cool_in_dram = process->dram_hot_list.last;
   } else if (page == process->cur_cool_in_nvm) {
     // first, a bunch of sanity checks
-    assert(!(process->cur_cool_in_nvm->in_dram));
-    assert(process->cur_cool_in_nvm->list == &(process->nvm_hot_list));
     assert(!(page->in_dram));
     assert(page->list == &(process->nvm_hot_list));
     // then just reset the bookmark pointer to the last page in list
@@ -464,6 +456,7 @@ void handle_ring_requests(struct hemem_process *process)
 {
   int num_ring_reqs;
   struct hemem_page* page = NULL;
+  uint64_t tmp_accesses[NPBUFTYPES];
 
   // free pages using free page ring buffer
   // we take all pages from the free ring rather than until
@@ -478,13 +471,31 @@ void handle_ring_requests(struct hemem_process *process)
     }
         
     list = page->list;
-    assert(list != NULL);    
+    assert(list != NULL);
 
+    // list sanity checks
+    if (page->in_dram) {
+      if (page->hot) assert(page->list == &(process->dram_hot_list));
+      else assert(page->list == &(process->dram_cold_list));
+    } else {
+      if (page->hot) assert(page->list == &(process->nvm_hot_list));
+      else assert(page->list == &(process->nvm_cold_list));
+    }
+    
     // check whether the page being freed is our bookmark cool page
     update_current_cool_page(process, page);
-
+    
     // remove page from its list and put it into the appropriate free list
     page_list_remove_page(list, page);
+
+    // reset page stats
+    page->present = false;
+    page->hot = false;
+    for (int i = 0; i < NPBUFTYPES; i++) {
+      page->accesses[i] = 0;
+      page->tot_accesses[i] = 0;
+    }
+
     if (page->in_dram) {
       if (page->hot) dram_hot_pages--;
       else dram_cold_pages--;  
@@ -494,14 +505,6 @@ void handle_ring_requests(struct hemem_process *process)
       if (page->hot) nvm_hot_pages--;
       else nvm_cold_pages--;
       enqueue_fifo(&nvm_free_list, page);
-    }
-
-    // reset page stats
-    page->present = false;
-    page->hot = false;
-    for (int i = 0; i < NPBUFTYPES; i++) {
-      page->accesses[i] = 0;
-      page->tot_accesses[i] = 0;
     }
   }
 
@@ -514,9 +517,15 @@ void handle_ring_requests(struct hemem_process *process)
       // ring buffer was empty
       break;
     }
+    
+    // compute the access samples this page would have had if it were up to date
+    // with cooling
+    for (int j = 0; j < NPBUFTYPES; j++) {
+        tmp_accesses[j] = page->accesses[j] >> (global_clock - page->local_clock);
+    }
    
     // is page even still hot?
-    if ((page->accesses[DRAMREAD] + page->accesses[NVMREAD]) < HOT_READ_THRESHOLD) {
+    if ((tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]) < HOT_READ_THRESHOLD) {
       // page has been cooled and is no longer hot, just move to cold list
       // first, check to see if we need to update our cooling bookmark
       update_current_cool_page(process, page);
@@ -544,6 +553,22 @@ void handle_ring_requests(struct hemem_process *process)
       // ring buffer was empty
       break;
     }
+    
+    // compute the access samples this page would have had if it were up to date
+    // with cooling
+    for (int j = 0; j < NPBUFTYPES; j++) {
+        tmp_accesses[j] = page->accesses[j] >> (global_clock - page->local_clock);
+    }
+
+    if ((tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]) >= HOT_READ_THRESHOLD) {
+      // page is now hot and should actually move to the hot list
+      // if not already there
+      update_current_cool_page(process, page);
+      page->ring_present = false;
+      num_ring_reqs++;
+      make_hot(process, page);
+      continue;
+    }
 
     // check if we need to update our cooling bookmark, then move page
     // to the cold list
@@ -565,6 +590,7 @@ void *pebs_policy_thread()
   uint64_t old_offset;
   int ret;
   uint64_t migrated_bytes;
+  uint64_t tmp_accesses[NPBUFTYPES];
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
@@ -645,11 +671,16 @@ void *pebs_policy_thread()
         nvm_hot_pages--;
 
         if (p == process->cur_cool_in_nvm) {
-          assert(process->cur_cool_in_nvm->list == &(process->nvm_hot_list));
           process->cur_cool_in_nvm = process->nvm_hot_list.last;
         }
 
-        if ((p->accesses[DRAMREAD] + p->accesses[NVMREAD]) < HOT_READ_THRESHOLD) {
+        // compute the access samples this page would have had if it were up to date
+        // with cooling
+        for (int j = 0; j < NPBUFTYPES; j++) {
+          tmp_accesses[j] = p->accesses[j] >> (global_clock - p->local_clock);
+        }
+
+        if ((tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]) < HOT_READ_THRESHOLD) {
           // page has been cooled and is no longer hot, just move to cold list
           p->hot = false;
           enqueue_fifo(&(process->nvm_cold_list), p);
