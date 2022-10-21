@@ -30,8 +30,6 @@ extern "C" {
 #define MAX_UFFD_MSGS	    (1)
 #define MAX_MEM_LEN_PER_REQ (1 * HUGEPAGE_SIZE)
 //#define ONE_MEM_REQUEST
-#define APP_PRIORITY 1
-#define EXPECT_MISS_RATIO 0.1
 
 extern int dramfd;
 extern int nvmfd;
