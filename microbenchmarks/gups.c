@@ -135,23 +135,14 @@ static void *prefill_hotset(void* arguments)
   uint64_t *field = (uint64_t*)(args->field);
   uint64_t i;
   uint64_t index1;
-  uint64_t elt_size = args->elt_size;
-  char data[elt_size];
 
   index1 = 0;
 
   for (i = 0; i < args->hotsize; i++) {
     index1 = i;
-    if (elt_size == 8) {
-      uint64_t  tmp = field[index1];
-      tmp = tmp + i;
-      field[index1] = tmp;
-    }
-    else {
-      memcpy(data, &field[index1 * elt_size], elt_size);
-      memset(data, data[0] + i, elt_size);
-      memcpy(&field[index1 * elt_size], data, elt_size);
-    }
+    uint64_t  tmp = field[index1];
+    tmp = tmp + i;
+    field[index1] = tmp;
   }
   return 0;
   
@@ -164,10 +155,7 @@ static void *do_gups(void *arguments)
   uint64_t *field = (uint64_t*)(args->field);
   uint64_t i;
   uint64_t index1, index2;
-  uint64_t elt_size = args->elt_size;
-  char data[elt_size];
   uint64_t lfsr;
-  uint64_t hot_num;
 
   srand(args->tid);
   lfsr = rand();
@@ -175,37 +163,23 @@ static void *do_gups(void *arguments)
   index1 = 0;
   index2 = 0;
 
-  fprintf(hotsetfile, "Thread %d region: %p - %p\thot set: %p - %p\n", args->tid, field, field + (args->size * elt_size), field + args->hot_start, field + args->hot_start + (args->hotsize * elt_size));   
+ // fprintf(hotsetfile, "Thread %d region: %p - %p\thot set: %p - %p\n", args->tid, field, field + (args->size * elt_size), field + args->hot_start, field + args->hot_start + (args->hotsize * elt_size));   
 
   for (i = 0; i < args->iters; i++) {
-    hot_num = lfsr_fast(lfsr) % 100;
-    if (hot_num < 90) {
+    lfsr = lfsr_fast(lfsr);
+    if (lfsr % 100 < 90) {
       lfsr = lfsr_fast(lfsr);
       index1 = args->hot_start + (lfsr % args->hotsize);
-      if (elt_size == 8) {
-        uint64_t  tmp = field[index1];
-        tmp = tmp + i;
-        field[index1] = tmp;
-      }
-      else {
-        memcpy(data, &field[index1 * elt_size], elt_size);
-        memset(data, data[0] + i, elt_size);
-        memcpy(&field[index1 * elt_size], data, elt_size);
-      }
+      uint64_t  tmp = field[index1];
+      tmp = tmp + i;
+      field[index1] = tmp;
     }
     else {
       lfsr = lfsr_fast(lfsr);
       index2 = lfsr % (args->size);
-      if (elt_size == 8) {
-        uint64_t tmp = field[index2];
-        tmp = tmp + i;
-        field[index2] = tmp;
-      }
-      else {
-        memcpy(data, &field[index2 * elt_size], elt_size);
-        memset(data, data[0] + i, elt_size);
-        memcpy(&field[index2 * elt_size], data, elt_size);
-      }
+      uint64_t tmp = field[index2];
+      tmp = tmp + i;
+      field[index2] = tmp;
     }
   }
 
