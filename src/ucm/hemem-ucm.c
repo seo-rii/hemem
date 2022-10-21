@@ -32,9 +32,13 @@
 pthread_t fault_thread;
 pthread_t request_thread;
 pthread_t listen_thread;
+pthread_t miss_ratio_thread;
 int epoll_fd = -1;
 struct epoll_event epoll_events[MAX_EVENTS];
 int listen_fd = -1;
+ring_handle_t over_miss_ratio_ring;
+ring_handle_t under_miss_ratio_ring;
+
 
 int dramfd = -1;
 int nvmfd = -1;
@@ -160,6 +164,8 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   }
 
   process->pid = request->header.pid;
+  process->priority = request->priority;
+  process->expect_miss_ratio = request->expect_miss_ratio;
   process->valid_uffd = false;
   pthread_mutex_init(&(process->dram_hot_list.list_lock), NULL);
   pthread_mutex_init(&(process->dram_cold_list.list_lock), NULL);
@@ -552,6 +558,12 @@ void hemem_ucm_init() {
   }
 
   ret = pthread_create(&request_thread, NULL, handle_request, 0);
+  if (ret != 0) {
+    perror("pthread_create");
+    assert(0);
+  }
+
+  ret = pthread_create(&miss_ratio_thread, NULL, handle_miss_ratio, 0);
   if (ret != 0) {
     perror("pthread_create");
     assert(0);
@@ -1269,6 +1281,28 @@ void *handle_request()
       }
     }
   }
+}
+
+
+void *handle_miss_ratio()
+{
+    struct hemem_process *process, *tmp;
+    double real_miss_ratio;
+    for(;;) {
+
+        HASH_ITER(phh, processes, process, tmp) {
+            real_miss_ratio = 1 - 1.0 * process->access_pages_in_dram / (process->access_pages_in_dram + process->access_pages_in_nvm);
+            process->access_pages_in_dram = 0;
+            process->access_pages_in_nvm = 0;
+
+            if (real_miss_ratio > process->expect_miss_ratio) {
+                ring_buf_put(over_miss_ratio_ring, (uint64_t*)process);
+            }
+            else if (real_miss_ratio < process->expect_miss_ratio) {
+                ring_buf_put(under_miss_ratio_ring, (uint64_t*)process);
+            }
+        }
+    }
 }
 
 void hemem_print_stats() {

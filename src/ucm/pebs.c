@@ -150,6 +150,13 @@ void *pebs_scan_thread()
               if (process != NULL) {
                 page = find_page(process, pfn);
                 if (page != NULL) {
+                  if (page->in_dram) {
+                    process->access_pages_in_dram++;
+                  }
+                  else {
+                    process->access_pages_in_nvm++;
+                  }
+
                   if (page->va != 0) {
                     page->accesses[j]++;
                     page->tot_accesses[j]++;
@@ -603,6 +610,8 @@ void *pebs_policy_thread()
 
   for (;;) {
     struct hemem_process *process, *tmp;
+
+    //TODO: handle the miss ratio rings
 
     //fprintf(stderr, "Processes Count: %u\n", HASH_CNT(phh, processes));
     //fprintf(stderr, "Hash table addr: %p\n", processes);

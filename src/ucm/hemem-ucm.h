@@ -31,6 +31,7 @@ void hemem_ucm_init();
 void hemem_ucm_stop();
 void *handle_fault();
 void *handle_request();
+void *handle_miss_ratio();
 void *accept_new_app();
 void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page, uint64_t dram_offset);
 void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *page, uint64_t nvm_offset);

@@ -161,6 +161,8 @@ int add_process()
 
   request.header.operation = ADD_PROCESS;
   request.header.pid = pid;
+  request.priority = APP_PRIORITY;
+  request.expect_miss_ratio = EXPECT_MISS_RATIO;
   request.header.msg_size = sizeof(request);
 
   response = process_request(request_fd, &request);
