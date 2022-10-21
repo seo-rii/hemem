@@ -21,7 +21,7 @@ LIBS = -lm -lpthread
 HEMEM_LIBS = $(LIBS) -ldl -lsyscall_intercept
 
 default: all
-all:app central-manager central-manager-base
+all:app central-manager central-manager-base central-manager-dense central-manager-sparse
 app: libhemem.so libhemem-base.so
 
 libhemem.so: hemem-app.o interpose.o channel-shared-app.o channel-app.o logging-app.o
@@ -43,6 +43,12 @@ channel-app.o: ${APP}/channel-app.c ${APP}/channel-app.h
 	$(CC) $(APP_CFLAGS) $(APP_INCLUDES) -c ${APP}/channel-app.c
 
 central-manager: ucm.o channel-shared.o channel-ucm.o timer.o hemem-ucm.o pebs.o fifo.o spsc-ring.o logging.o
+	$(CC) -o $@ $^ -lpthread
+
+central-manager-dense: ucm.o channel-shared.o channel-ucm.o timer.o hemem-ucm.o pebs-dense.o fifo.o spsc-ring.o logging.o
+	$(CC) -o $@ $^ -lpthread
+
+central-manager-sparse: ucm.o channel-shared.o channel-ucm.o timer.o hemem-ucm.o pebs-sparse.o fifo.o spsc-ring.o logging.o
 	$(CC) -o $@ $^ -lpthread
 
 central-manager-base: ucm.o channel-shared.o channel-ucm.o timer.o hemem-ucm-base.o pebs-base.o fifo.o spsc-ring.o logging.o
@@ -70,10 +76,16 @@ timer.o: ${UCM}/timer.c ${UCM}/timer.h
 	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/timer.c
 
 pebs.o: ${UCM}/pebs.c ${UCM}/pebs.h ${UCM}/hemem-types.h
-	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/pebs.c -lpthread -D PAGE_SIZE=2097152UL
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -o $@ -c ${UCM}/pebs.c -lpthread -D PAGE_SIZE=2097152UL -D DEQUEUE_POLICY=0
+
+pebs-dense.o: ${UCM}/pebs.c ${UCM}/pebs.h ${UCM}/hemem-types.h
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -o $@ -c ${UCM}/pebs.c -lpthread -D PAGE_SIZE=2097152UL -D DEQUEUE_POLICY=1
+
+pebs-sparse.o: ${UCM}/pebs.c ${UCM}/pebs.h ${UCM}/hemem-types.h
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -o $@ -c ${UCM}/pebs.c -lpthread -D PAGE_SIZE=2097152UL -D DEQUEUE_POLICY=2
 
 pebs-base.o: ${UCM}/pebs.c ${UCM}/pebs.h ${UCM}/hemem-types.h
-	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -o $@ -c ${UCM}/pebs.c -lpthread -D PAGE_SIZE=4096UL
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -o $@ -c ${UCM}/pebs.c -lpthread -D PAGE_SIZE=4096UL -D DEQUEUE_POLICY=0
 
 fifo.o: ${UCM}/fifo.c ${UCM}/fifo.h
 	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/fifo.c
@@ -88,4 +100,4 @@ logging-app.o: ${SHARED}/logging.c ${SHARED}/logging.h
 	$(CC) $(APP_CFLAGS) $(SHARED_INCLUDES) -o logging-app.o -c $(SHARED)/logging.c
 
 clean:
-	$(RM) *.o *.so central-manager central-manager-base
+	$(RM) *.o *.so central-manager central-manager-base central-manager-dense central-manager-sparse

@@ -16,9 +16,9 @@
 #define HOT_WRITE_THRESHOLD       (4)
 #define PEBS_COOLING_THRESHOLD    (10)
 #elif PAGE_SIZE == BASEPAGE_SIZE
-#define HOT_READ_THRESHOLD        (4)
-#define HOT_WRITE_THRESHOLD       (2)
-#define PEBS_COOLING_THRESHOLD    (4)
+#define HOT_READ_THRESHOLD        (8)
+#define HOT_WRITE_THRESHOLD       (4)
+#define PEBS_COOLING_THRESHOLD    (6)
 #endif
 
 #define HOT_RING_REQS_THRESHOLD   (1024*1024)
@@ -45,6 +45,7 @@ void pebs_remove_page(struct hemem_page *page);
 struct hemem_page* pebs_pagefault(struct hemem_process *process);
 void pebs_init(void);
 void pebs_stats();
+void pebs_clear_stats();
 void pebs_shutdown();
 
 #endif /*  HEMEM_PEBS_H  */

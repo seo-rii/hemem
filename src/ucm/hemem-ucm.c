@@ -410,7 +410,7 @@ static void *hemem_stats_thread() {
   }
 
   for (;;) {
-    sleep(5);
+    sleep(2);
 
     hemem_print_stats(stderr);
     hemem_clear_stats();
@@ -1330,6 +1330,7 @@ void hemem_clear_stats2() {
   bytes_migrated = 0;
   migrations_up = 0;
   migrations_down = 0;
+  pebs_clear_stats();
 }
 
 struct hemem_page *get_hemem_page(struct hemem_process* process, uint64_t va) {
