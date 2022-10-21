@@ -13,7 +13,7 @@
 #define PEBS_KSWAPD_MIGRATE_RATE  (10UL * 1024UL * 1024UL * 1024UL) // 10GB
 #define PEBS_MIGRATE_DOWN_RATE    (1UL * 1024UL * 1024UL * 1024UL) // 1GB
 #define PEBS_MIGRATE_UP_RATE      (1UL * 1024UL * 1024UL * 1024UL) // 1GB
-#define HOT_READ_THRESHOLD        (4)
+#define HOT_READ_THRESHOLD        (2)
 //#define HOT_WRITE_THRESHOLD       (4)
 #define PEBS_COOLING_THRESHOLD    (22)
 
@@ -22,7 +22,7 @@
 #define COOLING_PAGES             (8192)
 
 #define PEBS_NPROCS 24
-#define PERF_PAGES	(1 + (1 << 16))	// Has to be == 1+2^n, here 1MB
+#define PERF_PAGES	(1 + (1 << 8))	// Has to be == 1+2^n, here 1MB
 #define SAMPLE_PERIOD	10007
 //#define SAMPLE_PERIOD 5003
 //#define SAMPLE_FREQ	100

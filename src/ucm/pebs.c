@@ -36,10 +36,10 @@ uint64_t zero_pages_cnt = 0;
 uint64_t throttle_cnt = 0;
 uint64_t unthrottle_cnt = 0;
 uint64_t cools = 0;
-uint64_t dram_hot_pages = 0;
-uint64_t dram_cold_pages = 0;
-uint64_t nvm_hot_pages = 0;
-uint64_t nvm_cold_pages = 0;
+_Atomic uint64_t dram_hot_pages = 0;
+_Atomic uint64_t dram_cold_pages = 0;
+_Atomic uint64_t nvm_hot_pages = 0;
+_Atomic uint64_t nvm_cold_pages = 0;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
