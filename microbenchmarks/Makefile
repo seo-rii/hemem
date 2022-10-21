@@ -9,7 +9,8 @@ BUILD = ./build
 
 default: ${BUILD} ${BUILD}/gups-sparse-huge ${BUILD}/gups-sparse-base \
 	    ${BUILD}/gups-sparse-oracle ${BUILD}/gups-sparse-oracle-base \
-		${BUILD}/gups-dense-sparse-huge ${BUILD}/gups-dense-sparse-base ${BUILD}/gups-dense-sparse-oracle
+		${BUILD}/gups-dense-sparse-huge ${BUILD}/gups-dense-sparse-base ${BUILD}/gups-dense-sparse-oracle \
+		${BUILD}/gups-semisparse-huge ${BUILD}/gups-semisparse-oracle
 
 ${BUILD}:
 	mkdir -p ${BUILD};
@@ -25,6 +26,12 @@ ${BUILD}/gups: ${BUILD}/gups.o ${BUILD}/zipf.o ../src/timer.o
 
 ${BUILD}/gups-sparse-huge: ${BUILD}/gups-sparse.o ${BUILD}/zipf.o ../src/timer.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -lhemem
+
+${BUILD}/gups-semisparse-huge: ${BUILD}/gups-semisparse.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -lhemem
+
+${BUILD}/gups-semisparse-oracle: ${BUILD}/gups-semisparse-oracle.o ${BUILD}/zipf.o ../src/timer.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR)
 
 ${BUILD}/gups-sparse-base: ${BUILD}/gups-sparse.o ${BUILD}/zipf.o ../src/timer.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -lhemem-base
@@ -64,6 +71,12 @@ ${BUILD}/gups.o: gups.c zipf.c gups.h
 
 ${BUILD}/gups-sparse.o: gups-sparse.c zipf.c  gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c $<
+
+${BUILD}/gups-semisparse.o: gups-semisparse.c zipf.c  gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c $<
+
+${BUILD}/gups-semisparse-oracle.o: gups-semisparse-oracle.c  gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c  $<
 
 ${BUILD}/gups-sparse-oracle-base.o: gups-sparse-oracle.c gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c  $< -D PAGE_SIZE=4096UL
