@@ -13,6 +13,7 @@
 #define PEBS_KSWAPD_MIGRATE_RATE  (10UL * 1024UL * 1024UL * 1024UL) // 10GB
 #define PEBS_MIGRATE_DOWN_RATE    (1UL * 1024UL * 1024UL * 1024UL) // 1GB
 #define PEBS_MIGRATE_UP_RATE      (1UL * 1024UL * 1024UL * 1024UL) // 1GB
+#define PEBS_MIGRATE_MAX_UP_RATE      (10UL * 1024UL * 1024UL * 1024UL) // 10GB
 #define HOT_READ_THRESHOLD        (2)
 //#define HOT_WRITE_THRESHOLD       (4)
 #define PEBS_COOLING_THRESHOLD    (22)
@@ -42,5 +43,7 @@ struct hemem_page* pebs_pagefault(struct hemem_process *process);
 void pebs_init(void);
 void pebs_stats();
 void pebs_shutdown();
+void process_migrate_down();
+void process_migrate_up();
 
 #endif /*  HEMEM_PEBS_H  */

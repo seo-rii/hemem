@@ -26,6 +26,8 @@ extern int nvmfd;
 extern int devmemfd;
 extern pthread_t fault_thread;
 extern pthread_t request_thread;
+extern ring_handle_t over_miss_ratio_ring;
+extern ring_handle_t under_miss_ratio_ring;
 
 void hemem_ucm_init();
 void hemem_ucm_stop();
