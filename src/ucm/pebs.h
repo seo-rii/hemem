@@ -43,7 +43,5 @@ struct hemem_page* pebs_pagefault(struct hemem_process *process);
 void pebs_init(void);
 void pebs_stats();
 void pebs_shutdown();
-void process_migrate_down();
-void process_migrate_up();
 
 #endif /*  HEMEM_PEBS_H  */

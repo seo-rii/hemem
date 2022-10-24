@@ -21,25 +21,24 @@
 
 #define MAX_EVENTS 128
 
+#define MAX_PROCESSES 24
+
 extern int dramfd;
 extern int nvmfd;
 extern int devmemfd;
 extern pthread_t fault_thread;
 extern pthread_t request_thread;
-extern ring_handle_t over_miss_ratio_ring;
-extern ring_handle_t under_miss_ratio_ring;
 
 void hemem_ucm_init();
 void hemem_ucm_stop();
 void *handle_fault();
 void *handle_request();
-void *handle_miss_ratio();
 void *accept_new_app();
 void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page, uint64_t dram_offset);
 void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *page, uint64_t nvm_offset);
 void hemem_ucm_wp_page(struct hemem_page *page, bool protect);
-void hemem_ucm_promote_pages(uint64_t addr);
-void hemem_ucm_demote_pages(uint64_t addr);
+//void hemem_ucm_promote_pages(uint64_t addr);
+//void hemem_ucm_demote_pages(uint64_t addr);
 void add_process(struct hemem_process *process);
 void remove_process(struct hemem_process *process);
 struct hemem_process *find_process(pid_t pid);

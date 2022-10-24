@@ -36,7 +36,7 @@ struct hemem_process {
   pid_t pid;
   long uffd;
   int priority;
-  double expect_miss_ratio;
+  double target_miss_ratio;
   bool valid_uffd;
   int remap_fd;
   struct fifo_list dram_hot_list;
@@ -55,7 +55,7 @@ struct hemem_process {
   volatile bool need_cool_dram;
   volatile bool need_cool_nvm;
   pthread_mutex_t pages_lock;
-  uint64_t access_pages_in_dram;
+  uint64_t accessed_pages[NPBUFTYPES];
   uint64_t access_pages_in_nvm;
   UT_hash_handle phh;
 };

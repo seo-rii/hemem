@@ -41,6 +41,12 @@ _Atomic uint64_t dram_cold_pages = 0;
 _Atomic uint64_t nvm_hot_pages = 0;
 _Atomic uint64_t nvm_cold_pages = 0;
 
+#if 0
+pthread_t miss_ratio_thread;
+ring_handle_t over_miss_ratio_ring;
+ring_handle_t under_miss_ratio_ring;
+#endif 
+
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
 
@@ -150,14 +156,8 @@ void *pebs_scan_thread()
               if (process != NULL) {
                 page = find_page(process, pfn);
                 if (page != NULL) {
-                  if (page->in_dram) {
-                    process->access_pages_in_dram++;
-                  }
-                  else {
-                    process->access_pages_in_nvm++;
-                  }
-
                   if (page->va != 0) {
+                    process->accessed_pages[j]++;
                     page->accesses[j]++;
                     page->tot_accesses[j]++;
                     if ((page->accesses[DRAMREAD] + page->accesses[NVMREAD]) >= HOT_READ_THRESHOLD) {
@@ -591,15 +591,15 @@ void *pebs_policy_thread()
 {
   cpu_set_t cpuset;
   pthread_t thread;
-#if 0
   struct hemem_page *p;
   struct hemem_page *cp;
   struct hemem_page *np;
   uint64_t old_offset;
   uint64_t migrated_bytes;
   uint64_t tmp_accesses[NPBUFTYPES];
-#endif
   int ret;
+  uint64_t migrate_down_bytes, migrate_up_bytes;
+  double real_miss_ratio;
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
@@ -611,17 +611,34 @@ void *pebs_policy_thread()
   }
 
   for (;;) {
-
-    process_migrate_down();
-    process_migrate_up();
-
-#if 0
     struct hemem_process *process, *tmp;
     //fprintf(stderr, "Processes Count: %u\n", HASH_CNT(phh, processes));
     //fprintf(stderr, "Hash table addr: %p\n", processes);
     HASH_ITER(phh, processes, process, tmp) {
-      //printf(stderr, "managing process %u\n", process->pid);
+      // first, handle the ring requests and place pages into appropriate lists
       handle_ring_requests(process);
+
+
+      // next, calculate how many bytes to migrate up and down based on our
+      // target and real miss ratios
+      real_miss_ratio = 1 - ((1.0 * process->accessed_pages[DRAMREAD]) / (process->accessed_pages[DRAMREAD] + process->accessed_pages[NVMREAD]));
+      process->accessed_pages[DRAMREAD] = process->accessed_pages[NVMREAD] = 0;
+
+      if (real_miss_ratio > process->target_miss_ratio) {
+        // give DRAM to process, don't migrate anything down
+        // for now, try to migrate all of the hot NVM pages to DRAM
+        migrate_up_bytes = process->nvm_hot_list.numentries * PAGE_SIZE;
+        migrate_down_bytes = 0;
+      } else if (real_miss_ratio < process->target_miss_ratio) {
+        // take away DRAM from process, don't migrate anything up
+        // for now, free up some default amount of DRAM
+        migrate_up_bytes = 0;
+        migrate_down_bytes = PEBS_MIGRATE_DOWN_RATE;
+      } else {
+        // migrate up and down the same number of bytes
+        migrate_up_bytes = PEBS_MIGRATE_UP_RATE;
+        migrate_down_bytes = PEBS_MIGRATE_DOWN_RATE;
+      }
 
       if (process->nvm_hot_list.numentries == 0) {
         // no need to migrate if there are not hot pages to move up
@@ -629,7 +646,7 @@ void *pebs_policy_thread()
       }   
 
       // migrate down first to free up DRAM space
-      for (migrated_bytes = 0; migrated_bytes < (process->nvm_hot_list.numentries * HUGEPAGE_SIZE);) {
+      for (migrated_bytes = 0; migrated_bytes < migrate_down_bytes;) {
         if (migrated_bytes >= PEBS_MIGRATE_DOWN_RATE) {
           break;
         }
@@ -670,8 +687,7 @@ void *pebs_policy_thread()
       }
 
       // now migrate up to newly freed DRAM space
-      migrated_bytes = 0;
-      while (process->nvm_hot_list.numentries > 0) {
+      for (migrated_bytes = 0; migrated_bytes < migrate_up_bytes;) {
         if (migrated_bytes >= PEBS_MIGRATE_UP_RATE) {
           break;
         }
@@ -732,13 +748,35 @@ void *pebs_policy_thread()
       process->cur_cool_in_nvm = partial_cool(process, false);
     }
 
-    #endif
     LOG_TIME("migrate: %f s\n", elapsed(&start, &end));
   }
 
 
   return NULL;
 }
+
+#if 0
+void *handle_miss_ratio()
+{
+    struct hemem_process *process, *tmp;
+    double real_miss_ratio;
+    for(;;) {
+
+        HASH_ITER(phh, processes, process, tmp) {
+            real_miss_ratio = 1 - 1.0 * process->accessed_pages[DRAMREAD] / (process->accessed_pages[DRAMREAD] + process->accessed_pages[NVMREAD]);
+            process->accessed_pages[DRAMREAD] = 0;
+            process->accessed_pages[NVMREAD] = 0;
+
+            if (real_miss_ratio > process->expect_miss_ratio) {
+                ring_buf_put(over_miss_ratio_ring, (uint64_t*)process);
+            }
+            else if (real_miss_ratio < process->expect_miss_ratio) {
+                ring_buf_put(under_miss_ratio_ring, (uint64_t*)process);
+            }
+        }
+    }
+}
+#endif
 
 static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
 {
@@ -850,6 +888,23 @@ void pebs_init(void)
   ret = pthread_create(&kswapd_thread, NULL, pebs_policy_thread, NULL);
   assert(ret == 0);
   
+#if 0  
+  ret = pthread_create(&miss_ratio_thread, NULL, handle_miss_ratio, 0);
+  if (ret != 0) {
+    perror("pthread_create");
+    assert(0);
+  }
+
+  uint64_t **buffer;
+  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * MAX_PROCESSES);
+  assert(buffer);
+  over_miss_ratio_ring = ring_buf_init(buffer, MAX_PROCESSES);
+
+  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * MAX_PROCESSES);
+  assert(buffer);
+  under_miss_ratio_ring = ring_buf_init(buffer, MAX_PROCESSES);
+#endif
+    
   LOG("Memory management policy is PEBS\n");
 
   LOG("pebs_init: finished\n");
@@ -903,6 +958,7 @@ void pebs_stats()
   
 }
 
+#if 0
 void process_migrate_down()
 {
     struct hemem_process* proc;
@@ -1045,3 +1101,4 @@ void process_migrate_up()
         proc->cur_cool_in_nvm = partial_cool(proc, false);
     }
 }
+#endif
