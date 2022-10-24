@@ -69,6 +69,20 @@ uint64_t migration_waits = 0;
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
 
+//we define the higher number has the higher priority 
+int priority_sort(struct hemem_process* proc_a, struct hemem_process* proc_b)
+{
+    if (proc_a->priority == proc_b->priority) {
+        return 0;
+    }
+    else if (proc_a->priority > proc_b->priority) {
+        return -1;
+    }
+    else {
+        return 1;
+    }
+}
+
 #ifndef USE_DMA
 struct pmemcpy {
   pthread_mutex_t lock;
@@ -411,12 +425,16 @@ void add_process(struct hemem_process *process) {
   pthread_mutex_lock(&processes_lock);
   HASH_FIND(phh, processes, &(process->pid), sizeof(pid_t), p);
   assert(p == NULL);
+#ifdef HASH_SORT
+  HASH_ADD_KEYPTR_INORDER(phh, processes, &(process->pid), sizeof(pid_t), process, priority_sort);
+#else
   HASH_ADD(phh, processes, pid, sizeof(pid_t), process);
+#endif
   ssize_t cnt = HASH_CNT(phh, processes);
   fprintf(stderr, "Process hash table has %lu processes\n", cnt);
   struct hemem_process *proc, *tmp;
   HASH_ITER(phh, processes, proc, tmp) {
-    fprintf(stderr, "------------------\nprocess PID %u\n------------------\n", proc->pid);
+    fprintf(stderr, "------------------\nprocess PID %u, Priority %d\n------------------\n", proc->pid, proc->priority);
   }
   pthread_mutex_unlock(&processes_lock);
 }
