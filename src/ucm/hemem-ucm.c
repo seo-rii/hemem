@@ -69,17 +69,17 @@ uint64_t migration_waits = 0;
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
 
-//we define the higher number has the higher priority 
+//we define the smaller number has the higher priority 
 int priority_sort(struct hemem_process* proc_a, struct hemem_process* proc_b)
 {
     if (proc_a->priority == proc_b->priority) {
         return 0;
     }
     else if (proc_a->priority > proc_b->priority) {
-        return -1;
+        return 1;
     }
     else {
-        return 1;
+        return -1;
     }
 }
 
