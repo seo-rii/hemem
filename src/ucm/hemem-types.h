@@ -23,7 +23,6 @@ struct hemem_page {
   enum pagetypes pt;
   volatile bool migrating;
   bool present;
-  bool written;
   bool hot;
   uint64_t naccesses;
   uint64_t migrations_up, migrations_down;

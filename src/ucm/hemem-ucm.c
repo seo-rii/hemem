@@ -330,7 +330,7 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
   response->header.msg_size = sizeof(struct free_response);
 
   process = find_process(request->header.pid);
-  if (process != NULL) {
+  if (process == NULL) {
     response->header.status = FAILED;
     return -1;
   }

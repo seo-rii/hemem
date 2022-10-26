@@ -687,7 +687,15 @@ void *pebs_policy_thread()
         }
         cp = dequeue_page(&(process->dram_cold_list));
         if (cp == NULL) {
-          // no cold pages to move down
+          // no cold pages to move down -- are we a BE task?
+          if (process->priority == BESTEFFORT) {
+            // if BE task, choose a random dram hot page to move down
+            cp = dequeue_page(&(process->dram_hot_list));
+            if (cp == NULL) {
+              // BE process has no pages in DRAM, so just break and try again
+              break;
+            }
+          }
           break;
         }
         dram_cold_pages--;
@@ -870,7 +878,7 @@ void pebs_remove_page(struct hemem_page *page)
 {
   assert(page != NULL);
 
-  LOG("pebs: remove page, put this page into free_page_ring: va: 0x%lx\n", page->va);
+  //LOG("pebs: remove page, put this page into free_page_ring: va: 0x%lx\n", page->va);
 
   while (ring_buf_full(free_page_ring));
   pthread_mutex_lock(&free_page_ring_lock);
