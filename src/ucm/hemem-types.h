@@ -8,6 +8,12 @@ enum pbuftype {
     NPBUFTYPES
 };
 
+enum prioritytype {
+  BESTEFFORT = 0,
+  LATENCYCRITICAL = 1,
+  NPRIORITYTYPES
+};
+
 struct hemem_page {
   uint64_t va;
   uint64_t devdax_offset;
@@ -29,35 +35,33 @@ struct hemem_page {
 
   UT_hash_handle hh;
   struct hemem_page *next, *prev;
-  struct fifo_list *list;
+  struct page_list *list;
 };
 
 struct hemem_process {
   pid_t pid;
   long uffd;
-  int priority;
+  enum prioritytype priority;
   double target_miss_ratio;
+  uint64_t migrate_up_bytes;
+  uint64_t migrate_down_bytes;
   bool valid_uffd;
   int remap_fd;
-  struct fifo_list dram_hot_list;
-  struct fifo_list dram_cold_list;
-  struct fifo_list nvm_hot_list;
-  struct fifo_list nvm_cold_list;
+  struct page_list dram_hot_list;
+  struct page_list dram_cold_list;
+  struct page_list nvm_hot_list;
+  struct page_list nvm_cold_list;
   struct hemem_page* cur_cool_in_dram;
   struct hemem_page* cur_cool_in_nvm;
+  volatile bool need_cool;
   volatile ring_handle_t hot_ring;
   volatile ring_handle_t cold_ring;
-  volatile ring_handle_t free_page_ring;
-  pthread_mutex_t free_page_ring_lock;
-  struct hemem_page* start_dram_page;
-  struct hemem_page* start_nvm_page;
   struct hemem_page* pages;
-  volatile bool need_cool_dram;
-  volatile bool need_cool_nvm;
   pthread_mutex_t pages_lock;
   uint64_t accessed_pages[NPBUFTYPES];
-  uint64_t access_pages_in_nvm;
   UT_hash_handle phh;
+  struct hemem_process *next, *prev;
+  struct process_list *list;
 };
 
 #endif

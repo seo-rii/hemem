@@ -66,6 +66,7 @@ uint64_t migration_waits = 0;
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
 
+#if 0
 //we define the smaller number has the higher priority 
 int priority_sort(struct hemem_process* proc_a, struct hemem_process* proc_b)
 {
@@ -79,6 +80,7 @@ int priority_sort(struct hemem_process* proc_a, struct hemem_process* proc_b)
         return -1;
     }
 }
+#endif
 
 #ifndef USE_DMA
 struct pmemcpy {
@@ -183,7 +185,6 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   pthread_mutex_init(&(process->nvm_hot_list.list_lock), NULL);
   pthread_mutex_init(&(process->nvm_cold_list.list_lock), NULL);
   pthread_mutex_init(&(process->pages_lock), NULL);
-  pthread_mutex_init(&(process->free_page_ring_lock), NULL);
 
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
@@ -191,20 +192,16 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
   process->cold_ring = ring_buf_init(buffer, CAPACITY);
-  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
-  assert(buffer); 
-  process->free_page_ring = ring_buf_init(buffer, CAPACITY);
 
   process->cur_cool_in_dram = NULL;
   process->cur_cool_in_nvm = NULL;
-  process->start_dram_page = NULL;
-  process->start_nvm_page = NULL;
   process->pages = NULL;
 
-  process->need_cool_dram = false;
-  process->need_cool_nvm = false;
+  process->need_cool = false;
 
   add_process(process);
+
+  pebs_add_process(process);
 
   response->header.status = SUCCESS;
   response->header.pid = pid;
@@ -233,7 +230,6 @@ int ucm_remove_process(struct remove_process_request* request, struct remove_pro
   //todo:free memory, pages, linked list, hash table...
   ring_buf_free(process->hot_ring);
   ring_buf_free(process->cold_ring);
-  ring_buf_free(process->free_page_ring);
   free(process);
 
   response->header.status = SUCCESS;
@@ -422,11 +418,7 @@ void add_process(struct hemem_process *process) {
   pthread_mutex_lock(&processes_lock);
   HASH_FIND(phh, processes, &(process->pid), sizeof(pid_t), p);
   assert(p == NULL);
-#ifdef HASH_SORT
-  HASH_ADD_KEYPTR_INORDER(phh, processes, &(process->pid), sizeof(pid_t), process, priority_sort);
-#else
   HASH_ADD(phh, processes, pid, sizeof(pid_t), process);
-#endif
   ssize_t cnt = HASH_CNT(phh, processes);
   fprintf(stderr, "Process hash table has %lu processes\n", cnt);
   struct hemem_process *proc, *tmp;

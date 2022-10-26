@@ -29,6 +29,10 @@
 //#define SAMPLE_FREQ	100
 
 
+#define MISS_RATIO_TOLERANCE (0.1)
+
+extern struct hemem_process *process_list[NPRIORITYTYPES];
+
 struct perf_sample {
     struct perf_event_header header;
     __u64	ip;
@@ -37,11 +41,11 @@ struct perf_sample {
     __u64 weight;      /* if PERF_SAMPLE_WEIGHT */
 };
 
-void *pebs_kswapd();
 void pebs_remove_page(struct hemem_page *page);
 struct hemem_page* pebs_pagefault(struct hemem_process *process);
 void pebs_init(void);
 void pebs_stats();
 void pebs_shutdown();
+void pebs_add_process(struct hemem_process *process); 
 
 #endif /*  HEMEM_PEBS_H  */

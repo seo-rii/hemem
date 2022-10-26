@@ -583,11 +583,7 @@ int hemem_munmap(void* addr, size_t length)
   internal_call = true;
   //fprintf(stderr, "munmap(%p, %lu)\n", addr, length);
 
-  ret = libc_munmap(addr, length);
-  if (ret != 0) {
-      perror("libc_mumap");
-      assert(0);
-  }
+  fprintf(stderr, "calling free space\n");
 
   #ifdef ONE_MEM_REQUEST
   free_space(addr, length);
@@ -602,6 +598,12 @@ int hemem_munmap(void* addr, size_t length)
     page_boundry += req_mem_size;
   }
   #endif
+  
+  ret = libc_munmap(addr, length);
+  if (ret != 0) {
+      perror("libc_mumap");
+      assert(0);
+  }
 
   internal_call = false;
 

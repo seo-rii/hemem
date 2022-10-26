@@ -25,9 +25,6 @@
 
 extern int dramfd;
 extern int nvmfd;
-extern int devmemfd;
-extern pthread_t fault_thread;
-extern pthread_t request_thread;
 
 void hemem_ucm_init();
 void hemem_ucm_stop();
