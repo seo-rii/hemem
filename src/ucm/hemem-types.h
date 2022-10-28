@@ -55,6 +55,8 @@ struct hemem_process {
   volatile bool need_cool;
   volatile ring_handle_t hot_ring;
   volatile ring_handle_t cold_ring;
+  volatile ring_handle_t free_page_ring;
+  pthread_mutex_t free_page_ring_lock;
   struct hemem_page* pages;
   pthread_mutex_t pages_lock;
   uint64_t accessed_pages[NPBUFTYPES];

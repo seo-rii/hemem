@@ -24,8 +24,8 @@
 
 #define PEBS_NPROCS 24
 #define PERF_PAGES	(1 + (1 << 8))	// Has to be == 1+2^n, here 1MB
-#define SAMPLE_PERIOD	10007
-//#define SAMPLE_PERIOD 5003
+//#define SAMPLE_PERIOD	10007
+#define SAMPLE_PERIOD 5003
 //#define SAMPLE_FREQ	100
 
 
@@ -41,7 +41,7 @@ struct perf_sample {
     __u64 weight;      /* if PERF_SAMPLE_WEIGHT */
 };
 
-void pebs_remove_page(struct hemem_page *page);
+void pebs_remove_page(struct hemem_process *process, struct hemem_page *page);
 struct hemem_page* pebs_pagefault(struct hemem_process *process);
 void pebs_init(void);
 void pebs_stats();

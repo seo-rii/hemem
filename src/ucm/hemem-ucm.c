@@ -192,6 +192,10 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
   process->cold_ring = ring_buf_init(buffer, CAPACITY);
+  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
+  assert(buffer); 
+  process->free_page_ring = ring_buf_init(buffer, CAPACITY);
+  pthread_mutex_init(&(process->free_page_ring_lock), NULL);
 
   process->cur_cool_in_dram = NULL;
   process->cur_cool_in_nvm = NULL;
@@ -347,7 +351,7 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
     pagesize = pt_to_pagesize(page->pt);
 
     remove_page(process, page);
-    pebs_remove_page(page);
+    pebs_remove_page(process, page);
     mem_allocated -= pagesize;
     pages_freed += 1;
   } 
@@ -1264,13 +1268,13 @@ void *handle_request()
 
       if ((epoll_events[i].events & EPOLLERR)
         || (epoll_events[i].events & EPOLLHUP)
-        || (!epoll_events[i].events & EPOLLIN)) {
+        || (!(epoll_events[i].events & EPOLLIN))) {
         ret = delete_epoll_ctl(epoll_fd, ready_fd); 
         if (ret != 0) {
           perror("delete_epoll_ctl");
           //todo: what should we do if error
         } 
-
+        fprintf(stderr, "deleted epoll fd %d\n", ready_fd);
         close(ready_fd);
         continue;
       }

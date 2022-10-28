@@ -415,6 +415,18 @@ void hemem_app_init()
     assert(0);  
   }
 
+  priority_str = getenv("PRIORITY");
+  if (priority_str != NULL) {
+    priority = atoi(priority_str);
+  }
+
+  target_miss_ratio_str = getenv("MISS_RATIO");
+  if (target_miss_ratio_str != NULL) {
+    target_miss_ratio = atof(target_miss_ratio_str);
+  }
+
+  LOG("priority=%d\tmiss_ratio=%f\n", priority, target_miss_ratio);
+
   status = add_process();
   if (status != 0) {
     perror("add process");
@@ -431,16 +443,6 @@ void hemem_app_init()
   if (status != 0) {
     perror("record remap fd");
     assert(0);
-  }
-
-  priority_str = getenv("PRIORITY");
-  if (priority_str != NULL) {
-    priority = atoi(priority_str);
-  }
-
-  target_miss_ratio_str = getenv("MISS_TRATIO");
-  if (target_miss_ratio_str != NULL) {
-    target_miss_ratio = atof(target_miss_ratio_str);
   }
   
   is_init = true;
