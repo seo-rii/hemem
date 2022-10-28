@@ -51,6 +51,9 @@ uint64_t mem_allocated = 0;
 uint64_t pages_allocated = 0;
 uint64_t pages_freed = 0;
 
+double target_miss_ratio =  0.1;
+int priority = 1;
+
 void* process_request(int fd, void* request)
 {
   int len;
@@ -161,8 +164,8 @@ int add_process()
 
   request.header.operation = ADD_PROCESS;
   request.header.pid = pid;
-  request.priority = APP_PRIORITY;
-  request.target_miss_ratio = TARGET_MISS_RATIO;
+  request.priority = priority;
+  request.target_miss_ratio = target_miss_ratio;
   request.header.msg_size = sizeof(request);
 
   response = process_request(request_fd, &request);
@@ -331,6 +334,8 @@ void hemem_app_init()
   internal_call = true;
   enum status_code status;
   char log_name[64];
+  char* priority_str = NULL;
+  char* target_miss_ratio_str = NULL;
 
   pid = getpid();
   printf("process id = %d\n", pid);
@@ -426,6 +431,16 @@ void hemem_app_init()
   if (status != 0) {
     perror("record remap fd");
     assert(0);
+  }
+
+  priority_str = getenv("PRIORITY");
+  if (priority_str != NULL) {
+    priority = atoi(priority_str);
+  }
+
+  target_miss_ratio_str = getenv("MISS_TRATIO");
+  if (target_miss_ratio_str != NULL) {
+    target_miss_ratio = atof(target_miss_ratio_str);
   }
   
   is_init = true;
