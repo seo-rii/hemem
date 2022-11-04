@@ -45,7 +45,7 @@ pthread_t stats_thread;
 pthread_t copy_threads[MAX_COPY_THREADS];
 #endif
 
-struct hemem_process *processes = NULL;
+volatile struct hemem_process *processes = NULL;
 pthread_mutex_t processes_lock = PTHREAD_MUTEX_INITIALIZER;
 
 uint64_t mem_mmaped = 0;
@@ -229,12 +229,13 @@ int ucm_remove_process(struct remove_process_request* request, struct remove_pro
   process = find_process(request->header.pid);
   if (process != NULL) {
     remove_process(process);
-  }
+    pebs_remove_process(process);
 
-  //todo:free memory, pages, linked list, hash table...
-  ring_buf_free(process->hot_ring);
-  ring_buf_free(process->cold_ring);
-  free(process);
+    //todo:free memory, pages, linked list, hash table...
+    ring_buf_free(process->hot_ring);
+    ring_buf_free(process->cold_ring);
+    free(process);
+  }
 
   response->header.status = SUCCESS;
   response->header.pid = pid;
@@ -440,7 +441,9 @@ void remove_process(struct hemem_process *process) {
 
 struct hemem_process *find_process(pid_t pid) {
   struct hemem_process *process;
+  pthread_mutex_lock(&processes_lock);
   HASH_FIND(phh, processes, &pid, sizeof(pid_t), process);
+  pthread_mutex_unlock(&processes_lock);
   return process;
 }
 
@@ -870,14 +873,6 @@ void handle_wp_fault(struct hemem_process *process, uint64_t page_boundry) {
 
   while (page->migrating)
     ;
-  
-  #if 0
-  page_app.va = page->va;
-  page_app.devdax_offset = page->devdax_offset;
-  page_app.in_dram = page->in_dram;
-  page_app.pt = page_app->pt;
-  remap_pages(process->pid, process->remap_fd, &page_app, 1);
-  #endif
 }
 
 void* process_request(int fd, void* request)

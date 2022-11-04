@@ -29,6 +29,9 @@
 //#define SAMPLE_FREQ	100
 
 
+//#define HEMEM_QOS
+
+
 #define MISS_RATIO_TOLERANCE (0.1)
 
 extern struct hemem_process *process_list[NPRIORITYTYPES];
@@ -47,5 +50,6 @@ void pebs_init(void);
 void pebs_stats();
 void pebs_shutdown();
 void pebs_add_process(struct hemem_process *process); 
+void pebs_remove_process(struct hemem_process *process);
 
 #endif /*  HEMEM_PEBS_H  */

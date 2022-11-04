@@ -15,7 +15,7 @@
 #define MAX_UFFD_MSGS	    (3)
 
 #define USE_DMA
-#define NUM_CHANNS 1
+#define NUM_CHANNS 2
 #define SIZE_PER_DMA_REQUEST (1024*1024)
 #define MAX_COPY_THREADS 4
 
@@ -52,6 +52,6 @@ void hemem_clear_stats();
 void hemem_start_timing(void);
 void hemem_stop_timing(void);
 
-extern struct hemem_process *processes;
-
+extern volatile struct hemem_process *processes;
+extern pthread_mutex_t processes_lock;
 #endif /* HEMEM_UCM_H */
