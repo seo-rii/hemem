@@ -1128,7 +1128,7 @@ void pebs_shutdown()
 void count_pages()
 {
   struct hemem_process *process;
-  pthread_mutex_lock(&(lc_list.list_lock));
+  //thread_mutex_lock(&(lc_list.list_lock));
   process = lc_list.first;
   for (int i = 0; i < lc_list.numentries; i++) {
     dram_hot_pages += process->dram_hot_list.numentries;
@@ -1138,7 +1138,7 @@ void count_pages()
 
     process = process->next;
   }
-  pthread_mutex_unlock(&(lc_list.list_lock));
+  //pthread_mutex_unlock(&(lc_list.list_lock));
 }
 
 void pebs_stats()

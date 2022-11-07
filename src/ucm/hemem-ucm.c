@@ -32,20 +32,21 @@
 pthread_t fault_thread;
 pthread_t request_thread;
 pthread_t listen_thread;
-int epoll_fd = -1;
-struct epoll_event epoll_events[MAX_EVENTS];
+int request_epoll_fd = -1;
+int fault_epoll_fd = -1;
 int listen_fd = -1;
 
+struct hemem_process* uffds[1024];
 
 int dramfd = -1;
 int nvmfd = -1;
-long uffd = -1;
+int uffd = -1;
 pthread_t stats_thread;
 #ifndef USE_DMA
 pthread_t copy_threads[MAX_COPY_THREADS];
 #endif
 
-volatile struct hemem_process *processes = NULL;
+struct hemem_process volatile *processes = NULL;
 pthread_mutex_t processes_lock = PTHREAD_MUTEX_INITIALIZER;
 
 uint64_t mem_mmaped = 0;
@@ -162,6 +163,45 @@ static void hemem_parallel_memcpy(void *dst, void *src, size_t length) {
   pthread_mutex_unlock(&(pmemcpy.lock));
 }
 #endif
+
+int add_epoll_ctl(int epoll, int fd)
+{
+  int ret;
+  struct epoll_event event;
+
+  event.data.fd = fd;
+  event.events = EPOLLIN | EPOLLET;
+
+  ret = epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &event);
+  #ifdef HEMEM_DEBUG
+  printf("add_epoll_ctl, fd=%d\n", fd);
+  #endif
+
+  if (ret != 0) {
+    perror("epoll_ctl");
+    return -1;
+  }
+
+  return 0;
+}
+
+int delete_epoll_ctl(int epoll, int fd)
+{
+  int ret;
+  ret = epoll_ctl(epoll, EPOLL_CTL_DEL, fd, NULL);
+
+  #ifdef HEMEM_DEBUG
+  printf("delete socket fd:%d\n", fd);
+  #endif
+
+  if (ret != 0) {
+    perror("epoll_ctl");
+    return -1;
+  }
+
+  return 0;
+}
+
 
 struct hemem_process* ucm_add_process(int fd, struct add_process_request* request, struct add_process_response* response)
 {
@@ -366,6 +406,10 @@ int ucm_get_uffd(int fd, struct hemem_process* process, struct get_uffd_response
   process->uffd = recv_fd(fd);
   process->valid_uffd = true;
 
+  uffds[process->uffd] = process;
+  add_epoll_ctl(fault_epoll_fd, process->uffd);
+  fprintf(stderr, "added uffd %ld to fault epoll\n", process->uffd);
+
   response->header.status = SUCCESS;
   response->header.pid = process->pid;
   response->header.operation = GET_UFFD;
@@ -426,7 +470,7 @@ void add_process(struct hemem_process *process) {
   HASH_ADD(phh, processes, pid, sizeof(pid_t), process);
   ssize_t cnt = HASH_CNT(phh, processes);
   fprintf(stderr, "Process hash table has %lu processes\n", cnt);
-  struct hemem_process *proc, *tmp;
+  volatile struct hemem_process *proc, *tmp;
   HASH_ITER(phh, processes, proc, tmp) {
     fprintf(stderr, "------------------\nprocess PID %u, Priority %d\n------------------\n", proc->pid, proc->priority);
   }
@@ -470,44 +514,6 @@ struct hemem_page *find_page(struct hemem_process *process, uint64_t va) {
   return page;
 }
 
-int add_epoll_ctl(int epoll, int fd)
-{
-  int ret;
-  struct epoll_event event;
-
-  event.data.fd = fd;
-  event.events = EPOLLIN | EPOLLET;
-
-  ret = epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &event);
-  #ifdef HEMEM_DEBUG
-  printf("add_epoll_ctl, fd=%d\n", fd);
-  #endif
-
-  if (ret != 0) {
-    perror("epoll_ctl");
-    return -1;
-  }
-
-  return 0;
-}
-
-int delete_epoll_ctl(int epoll, int fd)
-{
-  int ret;
-  ret = epoll_ctl(epoll, EPOLL_CTL_DEL, fd, NULL);
-
-  #ifdef HEMEM_DEBUG
-  printf("delete socket fd:%d\n", fd);
-  #endif
-
-  if (ret != 0) {
-    perror("epoll_ctl");
-    return -1;
-  }
-
-  return 0;
-}
-
 void hemem_ucm_init() {
   struct uffdio_api uffdio_api;
 #ifdef USE_DMA
@@ -517,7 +523,7 @@ void hemem_ucm_init() {
 
   log_init("ucm");
 
-  LOG("hemem_init: started\n");
+  LOG("hemem_init: started\n");  
 
   dramfd = open(DRAMPATH, O_RDWR);
   if (dramfd < 0) {
@@ -530,7 +536,7 @@ void hemem_ucm_init() {
     perror("nvm open");
   }
   assert(nvmfd >= 0);
-
+  
   uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
   if (uffd == -1) {
     perror("uffd");
@@ -547,8 +553,14 @@ void hemem_ucm_init() {
     assert(0);
   }
 
-  epoll_fd = epoll_create1(0);
-  if (epoll_fd == -1) {
+  request_epoll_fd = epoll_create1(0);
+  if (request_epoll_fd == -1) {
+    perror("epoll_create1");
+    assert(0);
+  }
+
+  fault_epoll_fd = epoll_create1(0);
+  if (fault_epoll_fd == -1) {
     perror("epoll_create1");
     assert(0);
   }
@@ -1010,6 +1022,9 @@ void *handle_fault() {
   int ret;
   int nmsgs;
   int i;
+  int num_ready_fds, ready_fd;
+  struct epoll_event epoll_events[MAX_EVENTS];
+  struct hemem_process *process;
 
   cpu_set_t cpuset;
   pthread_t thread;
@@ -1024,46 +1039,19 @@ void *handle_fault() {
   }
 
   for (;;) {
-    struct hemem_process *process, *tmp;
+    num_ready_fds = epoll_wait(fault_epoll_fd, epoll_events, MAX_EVENTS, 0);
+    for (i = 0; i < num_ready_fds; i++) {
+      ready_fd = epoll_events[i].data.fd;
 
-    HASH_ITER(phh, processes, process, tmp) {
-      
-      if (!process->valid_uffd) {
-          continue;
-      } 
-
-      struct pollfd pollfd;
-      int pollres;
-      long uffd = process->uffd;
-      pollfd.fd = uffd;
-      pollfd.events = POLLIN;
-
-      pollres = poll(&pollfd, 1, 0);
-
-      switch (pollres) {
-      case -1:
-        perror("poll");
-        assert(0);
-      case 0:
-        //fprintf(stderr, "poll read 0\n");
-        continue;
-      case 1:
-        break;
-      default:
-        fprintf(stderr, "unexpected poll result\n");
-        assert(0);
-      }
-
-      if (pollfd.revents & POLLERR) {
-        fprintf(stderr, "pollerr\n");
-        assert(0);
-      }
-
-      if (!pollfd.revents & POLLIN) {
+      if ((epoll_events[i].events & EPOLLERR) || (epoll_events[i].events & EPOLLHUP) || (!(epoll_events[i].events & EPOLLIN))) {
+        fprintf(stderr, "epoll not EPOLLIN in for uffd\n");
         continue;
       }
 
-      nread = read(uffd, &msg[0], MAX_UFFD_MSGS * sizeof(struct uffd_msg));
+      //TODO: map uffd to process
+      process = uffds[ready_fd];
+
+      nread = read(ready_fd, &msg[0], MAX_UFFD_MSGS * sizeof(struct uffd_msg));
       if (nread == 0) {
         fprintf(stderr, "EOF on userfaultfd\n");
         assert(0);
@@ -1104,7 +1092,7 @@ void *handle_fault() {
           range.start = (uint64_t)page_boundry;
           range.len = PAGE_SIZE;
 
-          ret = ioctl(uffd, UFFDIO_WAKE, &range);
+          ret = ioctl(process->uffd, UFFDIO_WAKE, &range);
 
           if (ret < 0) {
             perror("uffdio wake");
@@ -1173,7 +1161,7 @@ int process_msg(int fd)
     break;
   case RECORD_REMAP_FD:
     ret = ucm_record_remap_fd(fd, (struct record_remap_fd_request*)recv_buf, (struct record_remap_fd_response*)send_buf);
-    delete_epoll_ctl(epoll_fd, fd);
+    delete_epoll_ctl(request_epoll_fd, fd);
     break;
   default:
     fprintf(stderr, "invalid request\n");
@@ -1228,7 +1216,7 @@ void *accept_new_app()
       assert(0);
     }
 
-    ret = add_epoll_ctl(epoll_fd, cli_fd);
+    ret = add_epoll_ctl(request_epoll_fd, cli_fd);
     if (ret != 0) {
       perror("add_epoll_ctl");
       assert(0);
@@ -1257,14 +1245,14 @@ void *handle_request()
   }
 
   while (1) {
-    num_ready_fds = epoll_wait(epoll_fd, epoll_events, MAX_EVENTS, 0);
+    num_ready_fds = epoll_wait(request_epoll_fd, epoll_events, MAX_EVENTS, 0);
     for (int i = 0; i < num_ready_fds; i++) {
       ready_fd = epoll_events[i].data.fd;
 
       if ((epoll_events[i].events & EPOLLERR)
         || (epoll_events[i].events & EPOLLHUP)
         || (!(epoll_events[i].events & EPOLLIN))) {
-        ret = delete_epoll_ctl(epoll_fd, ready_fd); 
+        ret = delete_epoll_ctl(request_epoll_fd, ready_fd); 
         if (ret != 0) {
           perror("delete_epoll_ctl");
           //todo: what should we do if error
