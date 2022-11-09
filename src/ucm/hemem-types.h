@@ -30,7 +30,6 @@ struct hemem_page {
   bool ring_present;
   uint64_t accesses[NPBUFTYPES];
   uint64_t tot_accesses[NPBUFTYPES];
-  pthread_mutex_t page_lock;
 
   UT_hash_handle hh;
   struct hemem_page *next, *prev;
@@ -42,8 +41,10 @@ struct hemem_process {
   long uffd;
   enum prioritytype priority;
   double target_miss_ratio;
-  uint64_t migrate_up_bytes;
-  uint64_t migrate_down_bytes;
+  //uint64_t migrate_up_bytes;
+  //uint64_t migrate_down_bytes;
+  uint64_t current_dram;
+  uint64_t allowed_dram;
   bool valid_uffd;
   int remap_fd;
   struct page_list dram_hot_list;
@@ -63,6 +64,8 @@ struct hemem_process {
   UT_hash_handle phh;
   struct hemem_process *next, *prev;
   struct process_list *list;
+
+  pthread_mutex_t process_lock;
 };
 
 #endif

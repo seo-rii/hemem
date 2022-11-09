@@ -40,9 +40,10 @@ struct hemem_process* uffds[1024];
 
 int dramfd = -1;
 int nvmfd = -1;
-int uffd = -1;
 pthread_t stats_thread;
-#ifndef USE_DMA
+#ifdef USE_DMA
+int uffd = -1;
+#else
 pthread_t copy_threads[MAX_COPY_THREADS];
 #endif
 
@@ -339,15 +340,19 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     assert(page->va % HUGEPAGE_SIZE == 0);
     page->migrating = false;
     page->migrations_up = page->migrations_down = 0;
-    pthread_mutex_init(&(page->page_lock), NULL);
 
     add_page(process, page);
+
+    if (in_dram) {
+      process->current_dram += pagesize;
+    }
 
     page_app = &(response->pages[response->num_pages]);
     page_app->va = page_boundry;
     page_app->devdax_offset = offset;
     page_app->in_dram = in_dram;
     page_app->pt = page->pt;
+    page_app->migrated = false;
     response->num_pages++;
     page_boundry += pagesize;
 
@@ -408,7 +413,6 @@ int ucm_get_uffd(int fd, struct hemem_process* process, struct get_uffd_response
 
   uffds[process->uffd] = process;
   add_epoll_ctl(fault_epoll_fd, process->uffd);
-  fprintf(stderr, "added uffd %ld to fault epoll\n", process->uffd);
 
   response->header.status = SUCCESS;
   response->header.pid = process->pid;
@@ -468,12 +472,6 @@ void add_process(struct hemem_process *process) {
   HASH_FIND(phh, processes, &(process->pid), sizeof(pid_t), p);
   assert(p == NULL);
   HASH_ADD(phh, processes, pid, sizeof(pid_t), process);
-  ssize_t cnt = HASH_CNT(phh, processes);
-  fprintf(stderr, "Process hash table has %lu processes\n", cnt);
-  volatile struct hemem_process *proc, *tmp;
-  HASH_ITER(phh, processes, proc, tmp) {
-    fprintf(stderr, "------------------\nprocess PID %u, Priority %d\n------------------\n", proc->pid, proc->priority);
-  }
   pthread_mutex_unlock(&processes_lock);
 }
 
@@ -515,8 +513,8 @@ struct hemem_page *find_page(struct hemem_process *process, uint64_t va) {
 }
 
 void hemem_ucm_init() {
-  struct uffdio_api uffdio_api;
 #ifdef USE_DMA
+  struct uffdio_api uffdio_api;
   struct uffdio_dma_channs uffdio_dma_channs;
 #endif
   int ret;
@@ -536,7 +534,8 @@ void hemem_ucm_init() {
     perror("nvm open");
   }
   assert(nvmfd >= 0);
-  
+
+#ifdef USE_DMA  
   uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
   if (uffd == -1) {
     perror("uffd");
@@ -552,6 +551,7 @@ void hemem_ucm_init() {
     perror("ioctl uffdio_api");
     assert(0);
   }
+#endif
 
   request_epoll_fd = epoll_create1(0);
   if (request_epoll_fd == -1) {
@@ -760,11 +760,13 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
 
   bytes_migrated += pagesize;
 
+  process->current_dram += pagesize;
 
   page_app.va = page->va;
   page_app.devdax_offset = page->devdax_offset;
   page_app.in_dram = page->in_dram;
   page_app.pt = page->pt;
+  page_app.migrated = true;
   remap_pages(process->pid, process->remap_fd, &page_app, 1);
   gettimeofday(&migrate_end, NULL);
   LOG_TIME("hemem_migrate_up: %f s\n", elapsed(&migrate_start, &migrate_end));
@@ -833,10 +835,13 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
 
   bytes_migrated += pagesize;
 
+  process->current_dram -= pagesize;
+
   page_app.va = page->va;
   page_app.devdax_offset = page->devdax_offset;
   page_app.in_dram = page->in_dram;
   page_app.pt = page->pt;
+  page_app.migrated = true;
   remap_pages(process->pid, process->remap_fd, &page_app, 1);
 
   gettimeofday(&migrate_end, NULL);
@@ -998,6 +1003,10 @@ void handle_missing_fault(struct hemem_process *process,
   // place in hemem's page tracking list
   add_page(process, page);
 
+  if (in_dram) {
+    process->current_dram += pagesize;
+  }
+
   missing_faults_handled++;
   pages_allocated++;
   gettimeofday(&missing_end, NULL);
@@ -1008,6 +1017,7 @@ void handle_missing_fault(struct hemem_process *process,
   page_app.devdax_offset = page->devdax_offset;
   page_app.in_dram = page->in_dram;
   page_app.pt = page->pt;
+  page_app.migrated = false;
 
   remap_pages(process->pid, process->remap_fd, &page_app, 1);  
 }
