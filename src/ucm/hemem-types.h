@@ -43,8 +43,8 @@ struct hemem_process {
   double target_miss_ratio;
   //uint64_t migrate_up_bytes;
   //uint64_t migrate_down_bytes;
-  uint64_t current_dram;
-  uint64_t allowed_dram;
+  volatile uint64_t current_dram;
+  volatile uint64_t allowed_dram;
   bool valid_uffd;
   int remap_fd;
   struct page_list dram_hot_list;

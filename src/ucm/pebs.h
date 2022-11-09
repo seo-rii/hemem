@@ -28,9 +28,7 @@
 #define SAMPLE_PERIOD 499
 //#define SAMPLE_FREQ	100
 
-
-//#define HEMEM_QOS
-
+#define HEMEM_QOS
 
 #define MISS_RATIO_TOLERANCE (0.1)
 
