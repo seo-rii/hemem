@@ -69,7 +69,7 @@ static struct perf_event_mmap_page* perf_setup(__u64 config, __u64 config1, __u6
   attr.config1 = config1;
   attr.sample_period = SAMPLE_PERIOD;
 
-  attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_WEIGHT | PERF_SAMPLE_ADDR;
+  attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_PERIOD | PERF_SAMPLE_ADDR;
   attr.disabled = 0;
   //attr.inherit = 1;
   attr.exclude_kernel = 1;
@@ -142,6 +142,7 @@ void *pebs_scan_thread()
         case PERF_RECORD_SAMPLE:
             ps = (struct perf_sample*)ph;
             assert(ps != NULL);
+            assert(ps->period == SAMPLE_PERIOD);
             if(ps->addr != 0) {
               __u64 pfn = ps->addr & HUGE_PFN_MASK;
               process = find_process(ps->pid);
@@ -150,7 +151,9 @@ void *pebs_scan_thread()
                 page = find_page(process, pfn);
                 if (page != NULL) {
                   if (page->va != 0) {
+#ifdef HEMEM_QOS
                     process->accessed_pages[j]++;
+#endif
                     page->accesses[j]++;
                     page->tot_accesses[j]++;
                     if ((page->accesses[DRAMREAD] + page->accesses[NVMREAD]) >= HOT_READ_THRESHOLD) {
@@ -721,6 +724,10 @@ static inline double calc_miss_ratio(struct hemem_process *process)
   return ((1.0 * process->accessed_pages[NVMREAD]) / (process->accessed_pages[DRAMREAD] + process->accessed_pages[NVMREAD]));
 }
 
+// TODO: Instead of this, consider a function to find the
+// LC task with the biggest difference between the target
+// miss ratio and the current miss ratio and return that
+// process and how much cold DRAM it is using?
 static inline uint64_t calc_lc_dram_util()
 {
   uint64_t dram_util = 0;
@@ -737,6 +744,10 @@ static inline uint64_t calc_lc_dram_util()
   return dram_util;
 }
 
+
+// TODO: Instead of this, consider a function to find the
+// BE task with the most DRAM and return both that BE process
+// and the amount of DRAM it is using
 static inline uint64_t calc_be_dram_util()
 {
   uint64_t dram_util = 0;
@@ -764,11 +775,11 @@ void *pebs_policy_thread()
   struct timeval start, end;
   double migrate_time;
 #ifdef HEMEM_QOS
-  double real_miss_ratio;
   uint64_t dram_util;
   uint64_t dram_share;
   uint64_t dram_needed;
-  struct hemem_process *be_process;
+  double miss_ratio_diff;
+  struct hemem_process *be_process, *lc_process, *victim_process;
 #endif
   
   struct hemem_process *process;
@@ -785,16 +796,34 @@ void *pebs_policy_thread()
   for (;;) {
    gettimeofday(&start, NULL);
 #ifdef HEMEM_QOS
+    // go through LC list once to handle ring requests and compute miss ratio
     pthread_mutex_lock(&(lc_list.list_lock));
     process = lc_list.first;
     pthread_mutex_unlock(&(lc_list.list_lock));
     while (process != NULL) {
       handle_ring_requests(process);
 
-      real_miss_ratio = calc_miss_ratio(process);
+      process->current_miss_ratio = calc_miss_ratio(process);
       process->accessed_pages[DRAMREAD] = process->accessed_pages[NVMREAD] = 0;
 
-      if (real_miss_ratio > process->target_miss_ratio) {
+      process = process->next;
+    }
+
+    // Now go through BE list tohandle ring requests
+    pthread_mutex_lock(&(be_list.list_lock));
+    be_process = be_list.first;
+    pthread_mutex_unlock(&(be_list.list_lock));
+    while (be_process != NULL) {
+      handle_ring_requests(be_process);
+      be_process = be_process->next;
+    }
+    
+    // now go through the LC processes and allocate more DRAM if needed
+    pthread_mutex_lock(&(lc_list.list_lock));
+    process = lc_list.first;
+    pthread_mutex_unlock(&(lc_list.list_lock));
+    while (process != NULL) {
+      if (process->current_miss_ratio > process->target_miss_ratio) {
         // application needs more DRAM, so find some dram to give it
         process->allowed_dram += PEBS_MIGRATE_UP_RATE;
         dram_needed = PEBS_MIGRATE_UP_RATE;
@@ -834,9 +863,24 @@ void *pebs_policy_thread()
             // still need additional dram, try to find some from LC tasks
             dram_util = calc_lc_dram_util();
             if (dram_util > 0) {
-              // we can take cold pages from a lc task
-              // TODO: iterate through lc processes, find who has
-              // cold memory we can take from
+              // we can take cold pages from the lc task with the best curren
+              // miss ratio difference
+              victim_process = NULL;
+              miss_ratio_diff = 0;
+              pthread_mutex_lock(&(lc_list.list_lock));
+              lc_process = lc_list.first;
+              pthread_mutex_unlock(&(lc_list.list_lock));
+              while (lc_process != NULL) {
+                if (lc_process == process) {
+                  // skip current process
+                  lc_process = lc_process->next;
+                  continue;
+                }
+                if ((lc_process->target_miss_ratio - lc_process->current_miss_ratio) > miss_ratio_diff) {
+                  victim_process = lc_process;
+                  miss_ratio_diff = lc_process->target_miss_ratio - lc_process->current_miss_ratio;
+                }
+              }
             }
           }
         } else {
@@ -855,8 +899,6 @@ void *pebs_policy_thread()
     be_process = be_list.first;
     pthread_mutex_unlock(&(be_list.list_lock));
     while (be_process != NULL) {
-      handle_ring_requests(be_process);
-
       if (be_process->allowed_dram > be_process->current_dram) {
         // process can have more DRAM, so it can migrate things up if it can
         migrate_up_bytes = be_process->allowed_dram - be_process->current_dram;
@@ -888,8 +930,6 @@ void *pebs_policy_thread()
     process = lc_list.first;
     pthread_mutex_unlock(&(lc_list.list_lock));
     while (process != NULL) {
-      handle_ring_requests(process);
-      
       if (process->allowed_dram > process->current_dram) {
         // process can have more DRAM, so it can migrate things up if it can
         migrate_up_bytes = process->allowed_dram - process->current_dram;
@@ -916,7 +956,6 @@ void *pebs_policy_thread()
       
       process = process->next;
     }
-
 #else
     pthread_mutex_lock(&(lc_list.list_lock));
     process = lc_list.first;
@@ -953,8 +992,8 @@ void *pebs_policy_thread()
 #endif
     gettimeofday(&end, NULL);
     migrate_time = elapsed(&start, &end);
-    if (migrate_time < 1) {
-      sleep(1 - (uint64_t)elapsed);
+    if (migrate_time < 1.0) {
+      sleep((uint64_t)(1.0 - migrate_time));
     }
   }
 

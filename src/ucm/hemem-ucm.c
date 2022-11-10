@@ -218,8 +218,10 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   }
 
   process->pid = request->header.pid;
+#ifdef HEMEM_QOS
   process->priority = request->priority;
   process->target_miss_ratio = request->target_miss_ratio;
+#endif
   process->valid_uffd = false;
   pthread_mutex_init(&(process->dram_hot_list.list_lock), NULL);
   pthread_mutex_init(&(process->dram_cold_list.list_lock), NULL);

@@ -1,6 +1,8 @@
 #ifndef HEMEM_TYPES_H
 #define HEMEM_TYPES_H
 
+#define HEMEM_QOS
+
 enum pbuftype {
     DRAMREAD = 0,
     NVMREAD = 1,
@@ -39,8 +41,12 @@ struct hemem_page {
 struct hemem_process {
   pid_t pid;
   long uffd;
+#ifdef HEMEM_QOS
+  uint64_t accessed_pages[NPBUFTYPES];
   enum prioritytype priority;
   double target_miss_ratio;
+  double current_miss_ratio;
+#endif
   //uint64_t migrate_up_bytes;
   //uint64_t migrate_down_bytes;
   volatile uint64_t current_dram;
@@ -60,7 +66,6 @@ struct hemem_process {
   pthread_mutex_t free_page_ring_lock;
   struct hemem_page* pages;
   pthread_mutex_t pages_lock;
-  uint64_t accessed_pages[NPBUFTYPES];
   UT_hash_handle phh;
   struct hemem_process *next, *prev;
   struct process_list *list;
