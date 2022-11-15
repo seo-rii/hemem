@@ -665,6 +665,7 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   uffdio_register.ioctls = 0;
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
     perror("ioctl uffdio_register");
+    dump_samples();
     assert(0);
   }
   gettimeofday(&end, NULL);
@@ -779,6 +780,7 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   uffdio_register.ioctls = 0;
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
     perror("ioctl uffdio_register");
+    dump_samples();
     assert(0);
   }
   gettimeofday(&end, NULL);
@@ -828,6 +830,7 @@ void hemem_wp_page(struct hemem_page *page, bool protect)
 
   if (ret < 0) {
     perror("uffdio writeprotect");
+    dump_samples();
     assert(0);
   }
   gettimeofday(&end, NULL);

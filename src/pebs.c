@@ -21,9 +21,19 @@
 #include "timer.h"
 #include "spsc-ring.h"
 
-#define HOT  2
-#define WARM 1
-#define COLD 0
+#define MULTI_LIST
+
+
+enum HOTNESS{
+  COLD,
+  HOT1,
+  HOT2,
+  HOT3,
+  HOT4,
+  HOT5,
+  HOT6,
+  NUM_HOTNESS_LEVELS
+};
 
 static struct fifo_list dram_hot_list;
 static struct fifo_list dram_cold_list;
@@ -36,22 +46,20 @@ static ring_handle_t cold_ring;
 static ring_handle_t free_page_ring;
 static pthread_mutex_t free_page_ring_lock = PTHREAD_MUTEX_INITIALIZER;
 
-//#ifdef MULTI_LIST
-static struct fifo_list dram_touched_list;
-static struct fifo_list nvm_touched_list;
-static ring_handle_t touched_ring;
-static struct fifo_list* dram_hotness_to_list[] = {&dram_cold_list, &dram_touched_list, &dram_hot_list};
-static struct fifo_list* nvm_hotness_to_list[]  = {&nvm_cold_list, & nvm_touched_list, &nvm_hot_list};
-//#endif
+#ifdef MULTI_LIST
+// 0 is free, 1 is 0 access, 2 is 1 access, 3 is 2 access, 4 is 4 access. 
+static struct fifo_list dram_lists[NUM_HOTNESS_LEVELS + 1]; 
+static struct fifo_list nvm_lists[NUM_HOTNESS_LEVELS + 1];
+static ring_handle_t make_hotter_ring;
+static ring_handle_t make_colder_ring;
 
-#if  defined(DYNA_THRESH) || defined(MULTI_LIST)
-uint64_t  read_global_clock  = 0;
-uint64_t  NVM_global_clock   = 0;
-uint64_t  write_global_clock = 0;
-uint64_t* global_clock_maps[3] = {&read_global_clock, &NVM_global_clock, &write_global_clock};
-#else
-uint64_t global_clock = 0;
+#define PEBS_SAMPLE_B_SIZE 16000000
+static uint64_t pebs_samples[PEBS_SAMPLE_B_SIZE] = {0};
+static uint64_t period_samples[PEBS_SAMPLE_B_SIZE] = {0};
+static uint64_t pebs_sample_buffer_idx = 0;
 #endif
+
+uint64_t global_clock = 0;
 
 uint64_t hemem_pages_cnt = 0;
 uint64_t other_pages_cnt = 0;
@@ -117,7 +125,7 @@ static struct perf_event_mmap_page* perf_setup(__u64 config, __u64 config1, __u6
   attr.sample_period = SAMPLE_PERIOD;
   attr.freq = 0;
 
-  attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_WEIGHT | PERF_SAMPLE_ADDR;
+  attr.sample_type = PERF_SAMPLE_IP | PERF_SAMPLE_TID | PERF_SAMPLE_ADDR | PERF_SAMPLE_PERIOD;
   attr.disabled = 0;
   //attr.inherit = 1;
   attr.exclude_kernel = 1;
@@ -152,20 +160,27 @@ void make_hot_request(struct hemem_page* page)
 }
 
 #ifdef MULTI_LIST
-void make_warm_request(struct hemem_page* page)
-{
+void make_hotter_req(struct hemem_page* page) {
   page->ring_present = true;
-  ring_buf_put(touched_ring, (uint64_t*)page);
-}
-#endif 
-
-void make_cold_request(struct hemem_page* page)
-{
-    page->ring_present = true;
-    ring_buf_put(cold_ring, (uint64_t*)page);
+  ring_buf_put(make_hotter_ring, (uint64_t*)page);
 }
 
-#ifdef MULTI_LIST
+void make_colder_req(struct hemem_page* page) {
+  page->ring_present = true;
+  ring_buf_put(make_colder_ring, (uint64_t*)page);
+}
+
+int access_to_index(uint64_t num) {
+  if(num == 0) {
+    return 0;
+  }
+  int ret = 64-__builtin_clzll(num);
+  if(ret > NUM_HOTNESS_LEVELS-1) {
+    return NUM_HOTNESS_LEVELS-1;
+  }
+  return ret;
+}
+
 void *pebs_scan_thread()
 {
 #ifdef SAMPLE_BASED_COOLING
@@ -204,51 +219,42 @@ void *pebs_scan_thread()
         case PERF_RECORD_SAMPLE:
             ps = (struct perf_sample*)ph;
             assert(ps != NULL);
+            pebs_samples[pebs_sample_buffer_idx++ % PEBS_SAMPLE_B_SIZE] = ps->addr;
             if(ps->addr != 0) {
               __u64 pfn = ps->addr & HUGE_PFN_MASK;
             
+
               page = get_hemem_page(pfn);
               if (page != NULL) {
+                period_samples[pebs_sample_buffer_idx % PEBS_SAMPLE_B_SIZE] = page->devdax_offset + ((page->in_dram ? 0:1)<<63);
                 if (page->va != 0) {
                   
                 
                   // update access counts
-                  page->accesses[NVMREAD]  >>= (NVM_global_clock - page->NVM_local_clock);
-                  page->NVM_local_clock = NVM_global_clock;
-                  page->accesses[DRAMREAD] >>= (read_global_clock - page->read_local_clock);
-                  page->read_local_clock = read_global_clock;
-                  page->accesses[WRITE] >>= (write_global_clock - page->write_local_clock);
-                  page->write_local_clock = write_global_clock;
+                  page->accesses[NVMREAD]  >>= (global_clock - page->local_clock);
+                  page->accesses[DRAMREAD] >>= (global_clock - page->local_clock);
+                  page->local_clock = global_clock;
 
                   // cool down pages
                   if (page->accesses[j] > PEBS_COOLING_THRESHOLD) {
                     cools++;
-                    (*(global_clock_maps[j]))++;
+                    global_clock++;
                     need_cool_dram = true;
                     need_cool_nvm = true;
-#ifdef DEBUG
-                    LOG_STATS("%s", "COOLING HAPPENED\n");
-#endif
                   }
+
 
                   page->accesses[j]++;
                   page->tot_accesses[j]++; 
 
-                  // check for newly hot, touched, and cold pages
-                  if (page->accesses[WRITE] >= writing_hot_thresh || page->accesses[DRAMREAD] + page->accesses[NVMREAD] >= reading_hot_thresh) {
-                    if (page->hot != HOT && !page->ring_present) {
-                      make_hot_request(page); 
-                    }
+                  uint64_t total_accesses = page->accesses[DRAMREAD] + page->accesses[NVMREAD];
+                  int new_hotness = access_to_index(total_accesses);
+                  // check for hotness change and add to ring
+                  if(new_hotness > page->hot) {
+                    make_hotter_req(page);
                   }
-                  else if (page->accesses[WRITE] == 1 || page->accesses[DRAMREAD] + page->accesses[NVMREAD] == 1) {
-                    if(page->hot != WARM && !page->ring_present) {
-                      make_warm_request(page);
-                    }
-                  }
-                  else if ((page->accesses[WRITE] < 1) && (page->accesses[DRAMREAD] + page->accesses[NVMREAD] < 1)) {
-                    if (page->hot != COLD && !page->ring_present) {
-                      make_cold_request(page);
-                    }
+                  else if(new_hotness < page->hot) {
+                    make_colder_req(page);
                   }
                 }
                 hemem_pages_cnt++;
@@ -262,6 +268,7 @@ void *pebs_scan_thread()
             else {
               zero_pages_cnt++;
             }
+            good_samples++;
   	      break;
         case PERF_RECORD_THROTTLE:
         case PERF_RECORD_UNTHROTTLE:
@@ -333,29 +340,24 @@ void *pebs_scan_thread()
 		            // Cool pages BEFORE we increment
 		            // FIXME: reads can cool writes and writes can cool reads.
 		            // no enforcement of which access cools off the pages and then the next page access gets the cool.
-#ifdef DEBUG		    
-		            LOG_STATS("%s", "----------------START---------------------\n");
-                LOG_STATS("Read_global_Clock: [%" PRIu64 "], Write_global_Clock: [%" PRIu64 "]\n", read_global_clock, write_global_clock);
-                LOG_STATS("Read_local_Clock: [%" PRIu64 "], Write_local_Clock: [%" PRIu64 "]\n", page->read_local_clock, page->write_local_clock);
-#endif
                 if (j == DRAMREAD || j == NVMREAD) {		    
-                  uint64_t shift_amount = read_global_clock - page->read_local_clock;
+                  uint64_t shift_amount = read_global_clock - page->local_clock;
                   if(shift_amount >= 64) {
                     shift_amount = 63;
                   }
                   page->accesses[NVMREAD]  >>= (shift_amount);
                   page->accesses[DRAMREAD] >>= (shift_amount);
-                  page->read_local_clock = read_global_clock;		    
+                  page->local_clock = read_global_clock;		    
                   page->cur_read_bin = shift_amount > page->cur_read_bin ? 0 : page->cur_read_bin - shift_amount;
                   
                 }
                 else if (j == WRITE) {
-                  uint64_t shift_amount = write_global_clock - page->write_local_clock;
+                  uint64_t shift_amount = write_global_clock - page->local_clock;
                   if(shift_amount >= 64) {
                     shift_amount = 63;
                   }
                   page->accesses[WRITE] >>= (shift_amount);
-                  page->write_local_clock = write_global_clock;
+                  page->local_clock = write_global_clock;
                   page->cur_write_bin = shift_amount > page->cur_write_bin ? 0 : page->cur_write_bin - shift_amount;
                   
                 }
@@ -381,7 +383,7 @@ void *pebs_scan_thread()
                     read_global_clock++;
                     page->accesses[NVMREAD]  >>= (1);
                     page->accesses[DRAMREAD] >>= (1);
-                    page->read_local_clock = read_global_clock;
+                    page->local_clock = read_global_clock;
                     page->cur_read_bin = 1 > page->cur_read_bin ? 0 : page->cur_read_bin - 1;
                     
                     new_bin_0_loc = (reading_bin_0_loc + 1) & (HISTO_BIN_COUNT-1);
@@ -395,7 +397,7 @@ void *pebs_scan_thread()
                     // cooling writes
                     write_global_clock++;
                     page->accesses[WRITE] >>= (1);
-                    page->write_local_clock = write_global_clock;
+                    page->local_clock = write_global_clock;
                     page->cur_write_bin = 1 > page->cur_write_bin ? 0 : page->cur_write_bin - 1;
                     
                     new_bin_0_loc = (writing_bin_0_loc + 1) & (HISTO_BIN_COUNT-1);
@@ -408,9 +410,6 @@ void *pebs_scan_thread()
                     assert(false && "Cooling case fail.\n");
                   }
 #endif		    
-#ifdef DEBUG
-	  	            LOG_STATS("%s", "COOLING HAPPENED\n");
-#endif
                 }
                 pebs_sample_since_cool++;
 
@@ -422,13 +421,13 @@ void *pebs_scan_thread()
                 if (j == DRAMREAD || j == NVMREAD) {
                   current_histo_bin0 = reading_bin_0_loc;
                   acc_temp = page->accesses[DRAMREAD] + page->accesses[NVMREAD];
-                  assert(page->read_local_clock == read_global_clock);
+                  assert(page->local_clock == read_global_clock);
                   prev_bin = ((page->cur_read_bin + current_histo_bin0) & (HISTO_BIN_COUNT-1));
                 }
                 else if (j == WRITE) {
                   current_histo_bin0 = writing_bin_0_loc;
                   acc_temp = page->accesses[WRITE];
-                  assert(page->write_local_clock == write_global_clock);
+                  assert(page->local_clock == write_global_clock);
                   prev_bin = ((page->cur_write_bin + current_histo_bin0) & (HISTO_BIN_COUNT-1));
                 }
                 else {
@@ -465,30 +464,12 @@ void *pebs_scan_thread()
                 }		  
                   
                 if (j == DRAMREAD || j == NVMREAD) { 
-#ifdef DEBUG
-                  LOG_STATS("reading from addr [%p]\n", (void*)page->va);
-                  log_histogram(reading_page_histogram, "reading");
-                  LOG_STATS("accessess: [%ld], cools: [%ld]\n", acc_temp, cools);
-                  LOG_STATS("prev_bin: [%ld], Next bin: [%ld]\n", prev_bin, next_bin);
-                  LOG_STATS("Global_Read_Clock: [%ld], Global_Write_Clock: [%ld]\n", read_global_clock, write_global_clock);
-                  LOG_STATS("Read_Clock: [%" PRIu64 "], Write_Clock: [%" PRIu64 "]\n", page->read_local_clock, page->write_local_clock);
-                  LOG_STATS("%s", "------------------------------------------\n");
-#endif
                   assert(reading_page_histogram[prev_bin] != 0);
                   reading_page_histogram[prev_bin] -= 1;
                   reading_page_histogram[next_bin] += 1;
                   page->cur_read_bin = log2fast;
                 }
                 else if (j == WRITE) {
-#ifdef DEBUG
-                  LOG_STATS("writing to addr [%p]\n", (void*)page->va);
-                  log_histogram(writing_page_histogram, "writing");
-                  LOG_STATS("accessess: [%ld], cools: [%ld]\n", acc_temp, cools);
-                  LOG_STATS("prev_bin: [%ld], Next bin: [%ld]\n", prev_bin, next_bin);
-                  LOG_STATS("Global_Read_Clock: [%ld], Global_Write_Clock: [%ld]\n", read_global_clock, write_global_clock);
-                  LOG_STATS("Read_Clock: [%" PRIu64 "], Write_Clock: [%" PRIu64 "]\n", page->read_local_clock, page->write_local_clock);
-                  LOG_STATS("%s", "------------------------------------------\n");
-#endif
                   assert(writing_page_histogram[prev_bin] != 0);
                   writing_page_histogram[prev_bin] -= 1; 
                   writing_page_histogram[next_bin] += 1;
@@ -703,30 +684,6 @@ void make_hot(struct hemem_page* page)
   assert(page != NULL);
   assert(page->va != 0);
 
-#ifdef MULTI_LIST
-  if (page->hot == HOT) {
-    if (page->in_dram) {
-      assert(page->list == &dram_hot_list);
-    }
-    else {
-      assert(page->list == &nvm_hot_list);
-    }
-    return;
-  }
-
-  if (page->in_dram) {
-    assert(page->list != dram_hotness_to_list[HOT]);
-    page_list_remove_page(dram_hotness_to_list[page->hot], page);
-    page->hot = HOT;
-    enqueue_fifo(&dram_hot_list, page);
-  }
-  else {
-    assert(page->list != nvm_hotness_to_list[HOT]);
-    page_list_remove_page(nvm_hotness_to_list[page->hot], page);
-    page->hot = HOT;
-    enqueue_fifo(&nvm_hot_list, page);
-  }
-#else
   if (page->hot) {
     if (page->in_dram) {
       assert(page->list == &dram_hot_list);
@@ -749,7 +706,6 @@ void make_hot(struct hemem_page* page)
     page->hot = true;
     enqueue_fifo(&nvm_hot_list, page);
   }
-#endif
 }
 
 // moves page to cold list -- called by migrate thread
@@ -758,30 +714,7 @@ void make_cold(struct hemem_page* page)
   assert(page != NULL);
   assert(page->va != 0);
 
-#ifdef MULTI_LIST
-  if (page->hot == COLD) {
-    if (page->in_dram) {
-      assert(page->list == &dram_cold_list);
-    }
-    else {
-      assert(page->list == &nvm_cold_list);
-    }
-    return;
-  }
 
-  if (page->in_dram) {
-    assert(page->list != dram_hotness_to_list[COLD]);
-    page_list_remove_page(dram_hotness_to_list[page->hot], page);
-    page->hot = COLD;
-    enqueue_fifo(&dram_cold_list, page);
-  }
-  else {
-    assert(page->list != nvm_hotness_to_list[COLD]);
-    page_list_remove_page(nvm_hotness_to_list[page->hot], page);
-    page->hot = COLD;
-    enqueue_fifo(&nvm_cold_list, page);
-  }
-#else
   if (!page->hot) {
     if (page->in_dram) {
       assert(page->list == &dram_cold_list);
@@ -805,40 +738,37 @@ void make_cold(struct hemem_page* page)
     page->hot = false;
     enqueue_fifo(&nvm_cold_list, page);
   }
-#endif
 }
 
 #ifdef MULTI_LIST
-// moves page to warm list -- called by migrate thread
-void make_warm(struct hemem_page* page) {
+void change_page_list(struct hemem_page* page, int new_hotness) {
   assert(page != NULL);
   assert(page->va != 0);
 
-  if (page->hot == WARM) {
+  if (page->hot == new_hotness) {
     if (page->in_dram) {
-      assert(page->list == &dram_touched_list);
+      assert(page->list == &dram_lists[new_hotness]);
     }
     else {
-      assert(page->list == &nvm_touched_list);
+      assert(page->list == &nvm_lists[new_hotness]);
     }
     return;
   }
 
   if (page->in_dram) {
-    assert(page->list != dram_hotness_to_list[WARM]);
-    page_list_remove_page(dram_hotness_to_list[page->hot], page);
-    page->hot = WARM;
-    enqueue_fifo(&dram_touched_list, page);
+    assert(page->list == &dram_lists[page->hot]);
+    page_list_remove_page(page->list, page);
+    page->hot = new_hotness;
+    enqueue_fifo(&dram_lists[new_hotness], page);
   }
   else {
-    assert(page->list != nvm_hotness_to_list[WARM]);
-    page_list_remove_page(nvm_hotness_to_list[page->hot], page);
-    page->hot = WARM;
-    enqueue_fifo(&nvm_touched_list, page);
+    assert(page->list == &nvm_lists[page->hot]);
+    page_list_remove_page(page->list, page);
+    page->hot = new_hotness;
+    enqueue_fifo(&nvm_lists[new_hotness], page);
   }
 }
 #endif
-
 
 static struct hemem_page* start_dram_page = NULL;
 static struct hemem_page* start_nvm_page = NULL;
@@ -881,16 +811,15 @@ struct hemem_page* partial_cool(struct fifo_list *hot, struct fifo_list *cold, b
     }
 
 #if defined(MULTI_LIST)
-    tmp_accesses[WRITE] = p->accesses[WRITE] >> (write_global_clock - p->write_local_clock);
-    tmp_accesses[NVMREAD] = p->accesses[NVMREAD] >> (NVM_global_clock - p->NVM_local_clock);
-    tmp_accesses[DRAMREAD] = p->accesses[DRAMREAD] >> (read_global_clock - p->read_local_clock);
+    tmp_accesses[NVMREAD] = p->accesses[NVMREAD] >> (global_clock - p->local_clock);
+    tmp_accesses[DRAMREAD] = p->accesses[DRAMREAD] >> (global_clock - p->local_clock);
 #else
     for (int j = 0; j < NPBUFTYPES; j++) {
         tmp_accesses[j] = p->accesses[j] >> (global_clock - p->local_clock);
     }
 #endif
 
-    if ((tmp_accesses[WRITE] < HOT_WRITE_THRESHOLD) && (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+    if ((tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
         p->hot = false;
     }
     
@@ -954,9 +883,9 @@ static void partial_cool(struct fifo_list *hot, struct fifo_list *cold, bool dra
     }
 
 #if defined(MULTI_LIST)
-    tmp_accesses[WRITE] = p->accesses[WRITE] >> (write_global_clock - p->write_local_clock);
-    tmp_accesses[NVMREAD] = p->accesses[NVMREAD] >> (NVM_global_clock - p->NVM_local_clock);
-    tmp_accesses[DRAMREAD] = p->accesses[DRAMREAD] >> (read_global_clock - p->read_local_clock);
+    tmp_accesses[WRITE] = p->accesses[WRITE] >> (global_clock - p->local_clock);
+    tmp_accesses[NVMREAD] = p->accesses[NVMREAD] >> (global_clock - p->local_clock);
+    tmp_accesses[DRAMREAD] = p->accesses[DRAMREAD] >> (global_clock - p->local_clock);
 #else
     for (int j = 0; j < NPBUFTYPES; j++) {
         tmp_accesses[j] = p->accesses[j] >> (global_clock - p->local_clock);
@@ -987,81 +916,115 @@ static void partial_cool(struct fifo_list *hot, struct fifo_list *cold, bool dra
 }
 #endif
 
-
 #ifdef MULTI_LIST
-struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo_list *cold, bool dram, struct hemem_page* current, bool *finished_cool)
+// we will never finish cooling....
+// need to fix that -Kayvan
+bool partial_cool_peek_and_move(bool dram, struct hemem_page** cur_hotlist_index, int* list_index)
 {
-  struct hemem_page *p;
+  // to keep track of if we finished up or not.
+  static struct hemem_page* starting_dram_page = NULL;
+  static int starting_list_dram = 0;
+  static struct hemem_page* starting_nvm_page = NULL;
+  static int starting_list_nvm = 0;
+
   uint64_t tmp_accesses[NPBUFTYPES];
-  static struct hemem_page* start_dram_page = NULL;
-  static struct hemem_page* start_nvm_page = NULL;
+  struct hemem_page *p = NULL;
+  int cur_list_index = *list_index;
+
+  bool ret = true;
 
   if (dram && !need_cool_dram) {
-      return current;
+      return true;
   }
   if (!dram && !need_cool_nvm) {
-      return current;
+      return true;
   }
 
-  if (start_dram_page == NULL && dram) {
-      start_dram_page = hot->last;
+  // if this is the first time we have done a cool. then set the starts. 
+  if (starting_dram_page == NULL && dram) {
+      starting_dram_page = dram_lists[NUM_HOTNESS_LEVELS-1].last;
+      starting_list_dram = NUM_HOTNESS_LEVELS-1;
+  }
+  if (starting_nvm_page == NULL && !dram) {
+      starting_nvm_page = nvm_lists[NUM_HOTNESS_LEVELS-1].last;
+      starting_list_nvm = NUM_HOTNESS_LEVELS-1;
   }
 
-  if (start_nvm_page == NULL && !dram) {
-      start_nvm_page = hot->last;
+  // if we don't have a bookmark on the pages then we can just start from the top!
+  if(cur_list_index < 1) {
+    cur_list_index = NUM_HOTNESS_LEVELS-1;
   }
 
-  for (int i = 0; i < COOLING_PAGES; i++) {
-    next_page(hot, current, &p);
-    if (p == NULL) {
-        break;
+  for (int j = 0; j < COOLING_PAGES; j++) {
+    // iterate the pages. 
+    if(dram) {
+      next_page(&dram_lists[cur_list_index], *cur_hotlist_index, &p);
     }
+    else {
+      next_page(&nvm_lists[cur_list_index], *cur_hotlist_index, &p);
+    }
+
+    if(p == NULL) {
+      // done with pages in this list! yay!
+      // move to the next list.
+      if(cur_list_index > 1) {
+        cur_list_index--;
+        *cur_hotlist_index = NULL;
+        (*list_index)--;
+        continue;
+
+      } else {
+
+        // no next list. is done.
+        if(dram) {
+          starting_dram_page = NULL;
+          need_cool_dram = false;
+          *cur_hotlist_index = NULL;
+          (*list_index) = 0;
+          return true;
+        } else {
+          starting_nvm_page = NULL;
+          need_cool_nvm = false;
+          *cur_hotlist_index = NULL;
+          (*list_index) = 0;
+          return true;
+        }
+      }
+      break;
+    }
+
     uint64_t old_hotness = p->hot;
     if (dram) {
-        assert(p->in_dram);
+      assert(p->in_dram);
     }
     else {
       assert(!p->in_dram);
     }
 
-    tmp_accesses[WRITE] = p->accesses[WRITE] >> (write_global_clock - p->write_local_clock);
-    tmp_accesses[NVMREAD] = p->accesses[NVMREAD] >> (NVM_global_clock - p->NVM_local_clock);
-    tmp_accesses[DRAMREAD] = p->accesses[DRAMREAD] >> (read_global_clock - p->read_local_clock);
+    tmp_accesses[NVMREAD] = p->accesses[NVMREAD] >> (global_clock - p->local_clock);
+    tmp_accesses[DRAMREAD] = p->accesses[DRAMREAD] >> (global_clock - p->local_clock);
 
-    if ((tmp_accesses[WRITE] == 1) || (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] == 1)) {
-        p->hot = WARM;
-    }
-    else if ((tmp_accesses[WRITE] < 1) && (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < 1)) {
-        p->hot = COLD;
-    }
-    
-    if (dram && p == start_dram_page) {
-        start_dram_page = NULL;
-        *finished_cool = false;
-    }
+    p->hot = access_to_index(tmp_accesses[DRAMREAD] + tmp_accesses[DRAMREAD]);
 
-    if (!dram && p == start_nvm_page) {
-        start_nvm_page = NULL;
-        *finished_cool = false;
-    } 
-
+    // if we got cooled then cool. duh.
     if (old_hotness > p->hot) {
-        current = p->next;
-        page_list_remove_page(hot, p);
+        *cur_hotlist_index = p->next;
+        page_list_remove_page(p->list, p);
         if(dram) {
-          enqueue_fifo(dram_hotness_to_list[p->hot], p);
+          enqueue_fifo(&(dram_lists[p->hot]), p);
         }
         else {
-          enqueue_fifo(nvm_hotness_to_list[p->hot], p);
+          enqueue_fifo(&(nvm_lists[p->hot]), p);
         }
     }
     else {
-        current = p;
+        *cur_hotlist_index = p;
     }
   }
 
-  return current;
+  return false;
 }
+
 #else
 struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo_list *cold, bool dram, struct hemem_page* current)
 {
@@ -1096,13 +1059,14 @@ struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo
     }
 
 #if defined(DYNA_THRESH)
-    tmp_accesses[WRITE] = p->accesses[WRITE] >> (write_global_clock - p->write_local_clock);
-    tmp_accesses[NVMREAD] = p->accesses[NVMREAD] >> (read_global_clock - p->read_local_clock);
-    tmp_accesses[DRAMREAD] = p->accesses[DRAMREAD] >> (read_global_clock - p->read_local_clock);
+    tmp_accesses[WRITE] = p->accesses[WRITE] >> (write_global_clock - p->local_clock);
+    tmp_accesses[NVMREAD] = p->accesses[NVMREAD] >> (read_global_clock - p->local_clock);
+    tmp_accesses[DRAMREAD] = p->accesses[DRAMREAD] >> (read_global_clock - p->local_clock);
 #else
     for (int i = 0; i < NPBUFTYPES; i++) {
       tmp_accesses[i] = p->accesses[i] >> (global_clock - p->local_clock);
     }
+#endif
 
     if (/*(tmp_accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
         p->hot = false;
@@ -1133,19 +1097,26 @@ struct hemem_page* partial_cool_peek_and_move(struct fifo_list *hot, struct fifo
 #endif
 
 #ifdef MULTI_LIST
-void update_current_cool_page(struct hemem_page** cur_index_dram, struct hemem_page** cur_index_nvm, struct hemem_page* page)
+// check if page is any of our partial cooling indexes. 
+// if it is one of those indexes then move to the next page in the list. 
+// really we should be able to return after the first match. -Kayvan
+void update_current_cool_page(struct hemem_page** cur_cool_in_dram, struct hemem_page** cur_cool_in_nvm, struct hemem_page* page)
 {
   if (page == NULL) {
     return;
   }
 
-  if (page == *cur_index_dram) {
-    assert(page->list != &dram_cold_list);
-    next_page(page->list, page, cur_index_dram);
+  if (page == *cur_cool_in_dram) {
+    assert(page->list == (*cur_cool_in_dram)->list);
+    next_page(page->list, page, cur_cool_in_dram);
+    if((*cur_cool_in_dram) != NULL) 
+      assert((*cur_cool_in_dram)->list == page->list);
   }
-  if (page == *cur_index_nvm) {
-    assert(page->list != &nvm_cold_list);
-    next_page(page->list, page, cur_index_nvm);
+  if (page == *cur_cool_in_nvm) {
+    assert(page->list == (*cur_cool_in_nvm)->list);
+    next_page(page->list, page, cur_cool_in_nvm);
+    if ((*cur_cool_in_nvm) != NULL)
+      assert((*cur_cool_in_nvm)->list == page->list);
   }
 }
 #elif defined(COOL_IN_PLACE)
@@ -1282,13 +1253,6 @@ void log_histogram() {
   LOG_STATS(" \nwriting Sum: [%d], reading Sum: [%d]\n", wsum, rsum);
 }
 
-int access_to_index(uint64_t num) {
-  if(num == 0) {
-    return 0;
-  }
-  return 64-__builtin_clzll(num);
-}
-
 int update_histogram(uint64_t* histo, bool is_read)
 {
   // get the "first page" of the list
@@ -1399,6 +1363,31 @@ int update_thresholds() {
 #endif
 
 #ifdef MULTI_LIST
+
+struct hemem_page* find_cadidate_nvm_page() {
+  struct hemem_page* p;
+  for(int i = NUM_HOTNESS_LEVELS-1; i >= 0; i--) {
+    p = (struct hemem_page*)dequeue_fifo(&(nvm_lists[i]));
+    if (p != NULL) {
+      // found something hot. we should try to promote it.
+      return p;
+    }
+  }
+  return NULL;
+}
+
+struct hemem_page* find_dram_victim(int64_t max_hotness) {
+  struct hemem_page* p;
+  for(int i = max_hotness-1; i >= 0; i--) {
+    p = (struct hemem_page*)dequeue_fifo(&(dram_lists[i]));
+    if (p != NULL) {
+      // found something cold. we should try to evict it.
+      return p;
+    }
+  }
+  return NULL;
+}
+
 void *pebs_policy_thread()
 {
   cpu_set_t cpuset;
@@ -1411,10 +1400,10 @@ void *pebs_policy_thread()
   uint64_t old_offset;
   int num_ring_reqs;
   struct hemem_page* page = NULL;
-  struct hemem_page* cur_dram_hotlist_index  = NULL;
-  struct hemem_page* cur_nvm_hotlist_index = NULL;
-  struct hemem_page* cur_dram_warmlist_index  = NULL;
-  struct hemem_page* cur_nvm_warmlist_index = NULL;
+  struct hemem_page* cur_dram_cooling_index = NULL;
+  int dram_list_index = 0;
+  struct hemem_page* cur_nvm_cooling_index = NULL;
+  int nvm_list_index = 0;
   struct timeval start_histo, end_histo;
   
   thread = pthread_self();
@@ -1427,6 +1416,7 @@ void *pebs_policy_thread()
   }
 
   for (;;) {    
+    continue;
     // put pages that got freed back onto their free lists
     while(!ring_buf_empty(free_page_ring)) {
         struct fifo_list *list;
@@ -1438,8 +1428,7 @@ void *pebs_policy_thread()
         list = page->list;
         assert(list != NULL);
         #ifdef COOL_IN_PLACE
-        update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, page);
-        update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, page);
+        update_current_cool_page(&cur_dram_cooling_index, &cur_nvm_cooling_index, page);
         #endif
         page_list_remove_page(list, page);
         if (page->in_dram) {
@@ -1450,84 +1439,53 @@ void *pebs_policy_thread()
         }
     }
 
-    // move a page from ANYWHERE to hot
+    // move a page from the ring to where it needs to go. since we enforce a hotter and colder ring then we can 
+    // only check above. This is something I want to check with amanda about first. - Kayvan
     num_ring_reqs = 0;
-    while(!ring_buf_empty(hot_ring) && num_ring_reqs < HOT_RING_REQS_THRESHOLD) {
-		    page = (struct hemem_page*)ring_buf_get(hot_ring);
+    while(!ring_buf_empty(make_hotter_ring) && num_ring_reqs < HOT_RING_REQS_THRESHOLD) {
+		    page = (struct hemem_page*)ring_buf_get(make_hotter_ring);
         if (page == NULL) {
             continue;
         }
         
         #ifdef COOL_IN_PLACE
-        update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, page);
-        update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, page);
+        update_current_cool_page(&cur_dram_cooling_index, &cur_nvm_cooling_index, page);
         #endif
         page->ring_present = false;
         num_ring_reqs++;
-        make_hot(page);
-        //printf("hot ring, hot pages:%llu\n", num_ring_reqs);
+        change_page_list(page, access_to_index(page->accesses[DRAMREAD] + page->accesses[NVMREAD]));
     }
-
-    // move a page from ANYWHERE to cool
     num_ring_reqs = 0;
-    while(!ring_buf_empty(cold_ring) && num_ring_reqs < COLD_RING_REQS_THRESHOLD) {
-        page = (struct hemem_page*)ring_buf_get(cold_ring);
+    while(!ring_buf_empty(make_colder_ring) && num_ring_reqs < COLD_RING_REQS_THRESHOLD) {
+		    page = (struct hemem_page*)ring_buf_get(make_colder_ring);
         if (page == NULL) {
             continue;
         }
-
+        
         #ifdef COOL_IN_PLACE
-        update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, page);
-        update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, page);
+        update_current_cool_page(&cur_dram_cooling_index, &cur_nvm_cooling_index, page);
         #endif
         page->ring_present = false;
         num_ring_reqs++;
-        make_cold(page);
-        //printf("cold ring, cold pages:%llu\n", num_ring_reqs);
-    }
-
-    // move a page from ANYWHERE to touched
-    num_ring_reqs = 0;
-    while(!ring_buf_empty(touched_ring) && num_ring_reqs < COLD_RING_REQS_THRESHOLD) {
-        page = (struct hemem_page*)ring_buf_get(touched_ring);
-        if (page == NULL) {
-            continue;
-        }
-
-        #ifdef COOL_IN_PLACE
-        update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, page);
-        update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, page);
-        #endif
-        page->ring_present = false;
-        num_ring_reqs++;
-        make_warm(page);
-        //printf("warm ring, warm pages:%llu\n", num_ring_reqs);
+        change_page_list(page, access_to_index(page->accesses[DRAMREAD] + page->accesses[NVMREAD]));
     }
     
     // move each hot NVM page to DRAM
-    struct fifo_list* p_src_lst;
     for (migrated_bytes = 0; migrated_bytes < PEBS_KSWAPD_MIGRATE_RATE;) {
-      p = dequeue_fifo(&nvm_hot_list);
-      p_src_lst = &nvm_hot_list;
-      if (p == NULL) {
-        // else look for a warm thing to move up? 
-        p = dequeue_fifo(&nvm_touched_list);
-        p_src_lst = &nvm_touched_list;
-        if (p == NULL) {
-          // truly there is nothing here for us
-          break;
-        }
+      p = find_cadidate_nvm_page();
+      if(p == NULL) {
+        // didn't find hot page to move up. bail.
+        break;
       }
 
       #ifdef COOL_IN_PLACE
-      update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, page);
-      update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, page);
+      update_current_cool_page(&cur_dram_cooling_index, &cur_nvm_cooling_index, page); // never set page here? wtf?
       #endif
 
-      if ((p->accesses[WRITE] < 1) && (p->accesses[DRAMREAD] + p->accesses[NVMREAD] < 1)) {
+      if (access_to_index(p->accesses[DRAMREAD] + p->accesses[NVMREAD]) < p->hot) {
         // it has been cooled, need to move it into the cold list
-        p->hot = COLD;
-        enqueue_fifo(&nvm_cold_list, p); 
+        p->hot = access_to_index(p->accesses[DRAMREAD] + p->accesses[NVMREAD]);
+        enqueue_fifo(&nvm_lists[p->hot], p); 
         continue;
       }
 
@@ -1539,8 +1497,7 @@ void *pebs_policy_thread()
           assert(!(np->present));
 
           #ifdef COOL_IN_PLACE
-          update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, np);
-          update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, np);
+          update_current_cool_page(&cur_dram_cooling_index, &cur_nvm_cooling_index, np);
           #endif
 
           LOG("%lx: cold %lu -> hot %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
@@ -1551,13 +1508,13 @@ void *pebs_policy_thread()
           np->devdax_offset = old_offset;
           np->in_dram = false;
           np->present = false;
-          np->hot = COLD;
+          np->hot = 0;
           for (int i = 0; i < NPBUFTYPES; i++) {
             np->accesses[i] = 0;
             np->tot_accesses[i] = 0;
           }
 
-          enqueue_fifo(dram_hotness_to_list[p->hot], p);
+          enqueue_fifo(&(dram_lists[p->hot]), p);
           enqueue_fifo(&nvm_free_list, np);
 
           migrated_bytes += pt_to_pagesize(p->pt);
@@ -1565,23 +1522,16 @@ void *pebs_policy_thread()
         }
 
         // no free dram page, try to find a cold dram page to move down
-        cp = dequeue_fifo(&dram_cold_list);
-        if (cp == NULL) {
-          // if p is hot it can evit a warm.
-          if(p->hot == HOT) {
-            cp = dequeue_fifo(&dram_touched_list);
-          }
-          if(cp == NULL) {
-            // no victim
-            enqueue_fifo(p_src_lst, p);
-            goto out;
-          }
+        cp = find_dram_victim(p->hot);
+        if(cp == NULL) {
+          // no victim
+          enqueue_fifo(&nvm_lists[p->hot], p);
+          goto out;
         }
         assert(cp != NULL);
 
         #ifdef COOL_IN_PLACE
-        update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, cp);
-        update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, cp);
+        update_current_cool_page(&cur_dram_cooling_index, &cur_nvm_cooling_index, cp);
         #endif 
          
         // find a free nvm page to move the cold dram page to
@@ -1590,26 +1540,25 @@ void *pebs_policy_thread()
           assert(!(np->present));
 
           #ifdef COOL_IN_PLACE
-          update_current_cool_page(&cur_dram_hotlist_index, &cur_nvm_hotlist_index, np);
-          update_current_cool_page(&cur_dram_warmlist_index, &cur_nvm_warmlist_index, np);
+          update_current_cool_page(&cur_dram_cooling_index, &cur_nvm_cooling_index, np);
           #endif 
 
           LOG("%lx: hot %lu -> cold %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
-                cp>va, cp->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
+                cp->va, cp->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
 
           old_offset = cp->devdax_offset;
           pebs_migrate_down(cp, np->devdax_offset);
           np->devdax_offset = old_offset;
           np->in_dram = true;
           np->present = false;
-          np->hot = COLD;
+          np->hot = 0;
           for (int i = 0; i < NPBUFTYPES; i++) {
             np->accesses[i] = 0;
             np->tot_accesses[i] = 0;
           }
 
           // move it and try again I guess
-          enqueue_fifo(nvm_hotness_to_list[cp->hot], cp);
+          enqueue_fifo(&nvm_lists[cp->hot], cp);
           enqueue_fifo(&dram_free_list, np);
         }
         assert(np != NULL);
@@ -1621,14 +1570,8 @@ void *pebs_policy_thread()
     // Since there are no accesses PEBS thread will never request they go cold.
     // Thus we iterate te hot and warm list to move pages down to the cold list.
     #ifdef COOL_IN_PLACE
-    bool dram_hot_list_finished = false, dram_warmlist_finished = false;
-    bool nvm_hot_list_finished = false, nvm_warmlist_finished = false;
-    cur_dram_hotlist_index = partial_cool_peek_and_move(&dram_hot_list, &dram_touched_list, true, cur_dram_hotlist_index, &dram_hot_list_finished);
-    cur_nvm_hotlist_index = partial_cool_peek_and_move(&nvm_hot_list, &nvm_touched_list, false, cur_nvm_hotlist_index, &nvm_hot_list_finished);
-    cur_dram_warmlist_index = partial_cool_peek_and_move(&dram_touched_list, &dram_cold_list, true, cur_dram_warmlist_index, &dram_warmlist_finished);
-    cur_nvm_warmlist_index = partial_cool_peek_and_move(&nvm_touched_list, &nvm_cold_list, false, cur_nvm_warmlist_index, &nvm_warmlist_finished);
-    need_cool_dram = !(dram_hot_list_finished && dram_warmlist_finished);
-    need_cool_nvm =  !(nvm_hot_list_finished && nvm_warmlist_finished);
+    partial_cool_peek_and_move(true, &cur_dram_cooling_index, &dram_list_index);
+    partial_cool_peek_and_move(false, &cur_nvm_cooling_index, &nvm_list_index);
     #else
     partial_cool(&dram_hot_list, &dram_cold_list, true);
     partial_cool(&nvm_hot_list, &nvm_cold_list, false);
@@ -1860,7 +1803,11 @@ static struct hemem_page* pebs_allocate_page()
     assert(!page->present);
 
     page->present = true;
+  #ifdef MULTI_LIST
+    enqueue_fifo(&dram_lists[0], page);
+  #else
     enqueue_fifo(&dram_cold_list, page);
+  #endif
 
     gettimeofday(&end, NULL);
     LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
@@ -1875,8 +1822,11 @@ static struct hemem_page* pebs_allocate_page()
     assert(!page->present);
 
     page->present = true;
+#ifdef MULTI_LIST
+    enqueue_fifo(&nvm_lists[0], page);
+#else
     enqueue_fifo(&nvm_cold_list, page);
-
+#endif
 
     gettimeofday(&end, NULL);
     LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
@@ -1910,11 +1860,8 @@ void pebs_remove_page(struct hemem_page *page)
   pthread_mutex_unlock(&free_page_ring_lock);
 
   page->present = false;
-#ifdef MULTI_LIST
-  page->hot = COLD;
-#else
   page->hot = false;
-#endif
+
   for (int i = 0; i < NPBUFTYPES; i++) {
     page->accesses[i] = 0;
     page->tot_accesses[i] = 0;
@@ -1978,9 +1925,16 @@ void pebs_init(void)
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
   free_page_ring = ring_buf_init(buffer, CAPACITY);
+
+  #ifdef MULTI_LIST
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
-  touched_ring = ring_buf_init(buffer, CAPACITY);
+  make_hotter_ring = ring_buf_init(buffer, CAPACITY);
+
+  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
+  assert(buffer); 
+  make_colder_ring = ring_buf_init(buffer, CAPACITY);
+  #endif
 
   int total_pages = dram_hot_list.numentries + dram_cold_list.numentries + dram_free_list.numentries +
                     nvm_hot_list.numentries + nvm_cold_list.numentries + nvm_free_list.numentries;
@@ -2007,18 +1961,45 @@ void pebs_shutdown()
       //munmap(perf_page[i][j], sysconf(_SC_PAGESIZE) * PERF_PAGES);
     }
   }
+  dump_samples();
+}
+
+void dump_samples() {
+  FILE* f = fopen("./pebs_trace.txt", "w+");
+  if(pebs_sample_buffer_idx >= PEBS_SAMPLE_B_SIZE) {
+    fprintf(f, "Sample buffer overflowed\n");
+  }
+  uint64_t s = pebs_sample_buffer_idx > PEBS_SAMPLE_B_SIZE ? PEBS_SAMPLE_B_SIZE : pebs_sample_buffer_idx;
+  fprintf(f, "num samples: %d\n", s);
+  for(uint64_t i = 0; i < s; i++) {
+    fprintf(f, "%ld %ld\n", pebs_samples[i], period_samples[i]);
+  }
+  fclose(f);
+}
+
+void log_multi_list()  {
+  LOG_STATS("DRAM multi lists: [", NULL);
+  for (int i = 0; i < NUM_HOTNESS_LEVELS; i++) {
+    LOG_STATS("%ld, ", dram_lists[i].numentries);
+  }
+  LOG_STATS("]\n", NULL);
+
+  LOG_STATS("NVM multi lists: [", NULL);
+  for (int i = 0; i < NUM_HOTNESS_LEVELS; i++) {
+    LOG_STATS("%ld, ", nvm_lists[i].numentries);
+  }
+  LOG_STATS("]\n", NULL);
 }
 
 void pebs_stats()
 {
-  LOG_STATS("\tdram_hot_list.numentries: [%ld]\tdram_cold_list.numentries: [%ld]\t"
+  LOG_STATS("dram_hot_list.numentries: [%ld]\tdram_cold_list.numentries: [%ld]\t"
             "nvm_hot_list.numentries: [%ld]\tnvm_cold_list.numentries: [%ld]\t"
             "fifo_list dram_free_list.numentries: [%ld]\tfifo_list nvm_free_list.numentries: [%ld]\t"
             "hemem_pages: [%lu]\ttotal_pages: [%lu]\tzero_pages: [%ld]\t"
             "throttle/unthrottle_cnt: [%ld/%ld]\tcools: [%ld]\tpages_read_cnt: [%ld]\t"
             "read_hot_thresh: [%ld]\twrite_hot_thresh: [%ld]\ttime_taken_histo: [%f]\t"
-            "dram_touched_list.numentries: [%ld]\tnvm_touched_list.numentries: [%ld]\t"
-            "touched_ring empty[%d]\tcold_ring empty[%d]\thot_ring empty[%d]\tLost samples: [%ld]\n",
+            "Lost samples: [%ld]\n",
 	    dram_hot_list.numentries,
 	    dram_cold_list.numentries,
 	    nvm_hot_list.numentries,
@@ -2035,15 +2016,12 @@ void pebs_stats()
 	    reading_hot_thresh,
 	    writing_hot_thresh,
 	    time_taken_histo,
-      dram_touched_list.numentries,
-      nvm_touched_list.numentries,
-      ring_buf_empty(touched_ring),
-      ring_buf_empty(cold_ring),
-      ring_buf_empty(hot_ring),
       lost_sample);
       LOG_STATS("Good/throttle samples: [%ld/%ld]\n", good_samples, throttle_cnt);
 
   log_histogram();
-  
+#ifdef MULTI_LIST
+  log_multi_list();
+#endif
   hemem_pages_cnt = total_pages_cnt = throttle_cnt = unthrottle_cnt = good_samples = 0;
 }

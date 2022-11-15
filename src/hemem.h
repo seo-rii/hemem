@@ -40,7 +40,7 @@ extern "C" {
 #define STATS_THREAD
 
 #define USE_DMA
-#define NUM_CHANNS 2
+#define NUM_CHANNS 1
 #define SIZE_PER_DMA_REQUEST (1024*1024)
 
 #define MEM_BARRIER() __sync_synchronize()
@@ -163,13 +163,7 @@ struct hemem_page {
 #endif  
   uint64_t naccesses;
   uint64_t migrations_up, migrations_down;
-#if defined(DYNA_THRESH) || defined(MULTI_LIST) 
-  uint64_t read_local_clock;
-  uint64_t write_local_clock;
-  uint64_t NVM_local_clock;
-#else
   uint64_t local_clock;
-#endif
 #ifdef DYNA_THRESH
   int8_t cur_read_bin;
   int8_t cur_write_bin;

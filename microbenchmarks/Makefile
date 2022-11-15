@@ -6,9 +6,9 @@ CFLAGS = -g -Wall -O3
 INCLUDES = -I../linux/usr/include
 LIBS = -lm -lpthread
 
-default: gups-pebs gups-random gups-hotset-move fixed-access gups_warmset
+default: gups-pebs gups-random gups-hotset-move fixed-access gups_warmset gups_only_hot
 
-all: gups-pebs gups-random gups-simple gups-lru gups-lru-swap gups-hotset-move #gups
+all: gups-pebs gups-random gups-simple gups-lru gups-lru-swap gups-hotset-move gups_only_hot #gups
 
 fixed-access: fixed-access.o
 	$(CC) $(CFLAGS) $(INCLUDES) -O0 -o fixed-access fixed-access.o $(LIBS) -L$(HEMEMDIR) -lhemem
@@ -24,6 +24,9 @@ gups: gups.o
 
 gups_warmset: gups_warmset.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups_warmset gups_warmset.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem
+
+gups_only_hot: gups_only_hot.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups_only_hot gups_only_hot.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem
 
 gups-pebs: gups.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups-pebs gups.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem
@@ -45,6 +48,9 @@ gups-random.o: gups-random.c zipf.c gups.h
 
 gups_warmset.o: gups_warmset.c zipf.c  gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c gups_warmset.c zipf.c
+
+gups_only_hot.o: gups_only_hot.c zipf.c  gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c gups_only_hot.c zipf.c
 
 gups.o: gups.c zipf.c  gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c gups.c zipf.c

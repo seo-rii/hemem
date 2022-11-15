@@ -47,7 +47,7 @@ static int mmap_filter(void *addr, size_t length, int prot, int flags, int fd, o
     //return 1;
   //}
   
-  if ((fd == dramfd) || (fd == nvmfd) || (fd == devmemfd && devmemfd != -1)) {
+  if ((fd == dramfd) || (fd == nvmfd)) {
     //LOG("hemem interpose: calling libc mmap due to hemem devdax mapping\n");
 #ifdef DEBUG
     printf("mmapping the devdax stuff\n");
