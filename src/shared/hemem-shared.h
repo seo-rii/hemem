@@ -120,7 +120,6 @@ struct free_response {
 
 struct add_process_request {
   struct msg_header header; 
-  int priority;
   double target_miss_ratio;
 };
 

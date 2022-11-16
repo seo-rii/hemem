@@ -49,7 +49,6 @@ uint64_t dram_allocated = 0;
 uint64_t nvm_allocated = 0;
 
 double target_miss_ratio =  0.1;
-int priority = 1;
 
 #ifdef STATS_THREAD
 pthread_t stats_thread;
@@ -192,7 +191,6 @@ int add_process()
 
   request.header.operation = ADD_PROCESS;
   request.header.pid = pid;
-  request.priority = priority;
   request.target_miss_ratio = target_miss_ratio;
   request.header.msg_size = sizeof(request);
 
@@ -370,7 +368,6 @@ void hemem_app_init()
   internal_call = true;
   enum status_code status;
   char log_name[64];
-  char* priority_str = NULL;
   char* target_miss_ratio_str = NULL;
 
   pid = getpid();
@@ -451,17 +448,12 @@ void hemem_app_init()
     assert(0);  
   }
 
-  priority_str = getenv("PRIORITY");
-  if (priority_str != NULL) {
-    priority = atoi(priority_str);
-  }
-
   target_miss_ratio_str = getenv("MISS_RATIO");
   if (target_miss_ratio_str != NULL) {
     target_miss_ratio = atof(target_miss_ratio_str);
   }
 
-  LOG("priority=%d\tmiss_ratio=%f\n", priority, target_miss_ratio);
+  LOG("miss_ratio=%f\n",  target_miss_ratio);
 
   status = add_process();
   if (status != 0) {
@@ -497,7 +489,7 @@ void hemem_app_init()
 
 void hemem_app_stop()
 {
-  // policy_shutdown();
+  remove_process();
 }
 
 static void hemem_mmap_populate(void* addr, size_t length)

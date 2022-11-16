@@ -10,12 +10,6 @@ enum pbuftype {
     NPBUFTYPES
 };
 
-enum prioritytype {
-  BESTEFFORT = 0,
-  LATENCYCRITICAL = 1,
-  NPRIORITYTYPES
-};
-
 struct hemem_page {
   uint64_t va;
   uint64_t devdax_offset;
@@ -43,12 +37,10 @@ struct hemem_process {
   long uffd;
 #ifdef HEMEM_QOS
   uint64_t accessed_pages[NPBUFTYPES];
-  enum prioritytype priority;
   double target_miss_ratio;
   double current_miss_ratio;
+  bool victimized;
 #endif
-  //uint64_t migrate_up_bytes;
-  //uint64_t migrate_down_bytes;
   volatile uint64_t current_dram;
   volatile uint64_t allowed_dram;
   bool valid_uffd;

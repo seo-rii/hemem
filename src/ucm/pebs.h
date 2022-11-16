@@ -30,15 +30,11 @@
 
 #define MISS_RATIO_TOLERANCE (0.1)
 
-extern struct hemem_process *process_list[NPRIORITYTYPES];
-
 struct perf_sample {
     struct perf_event_header header;
     __u64	ip;
     __u32 pid, tid;    /* if PERF_SAMPLE_TID */
     __u64 addr;        /* if PERF_SAMPLE_ADDR */
-//    __u64 weight;      /* if PERF_SAMPLE_WEIGHT */
-    __u64 period;      /* if PERF_SAMPLE_PERIOD */
 };
 
 void pebs_remove_page(struct hemem_process *process, struct hemem_page *page);

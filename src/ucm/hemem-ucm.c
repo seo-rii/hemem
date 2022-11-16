@@ -219,7 +219,6 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
 
   process->pid = request->header.pid;
 #ifdef HEMEM_QOS
-  process->priority = request->priority;
   process->target_miss_ratio = request->target_miss_ratio;
 #endif
   process->valid_uffd = false;
@@ -228,6 +227,7 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   pthread_mutex_init(&(process->nvm_hot_list.list_lock), NULL);
   pthread_mutex_init(&(process->nvm_cold_list.list_lock), NULL);
   pthread_mutex_init(&(process->pages_lock), NULL);
+  pthread_mutex_init(&(process->process_lock), NULL);
 
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
@@ -328,11 +328,11 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     pagesize = pt_to_pagesize(page->pt);
 
     ucm_addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
-  #ifndef USE_DMA
-    hemem_parallel_memset(ucm_addr, 0, pagesize);
-  #else
+//  #ifndef USE_DMA
+//    hemem_parallel_memset(ucm_addr, 0, pagesize);
+//  #else
     memset(ucm_addr, 0, pagesize);
-  #endif
+//  #endif
     memsets++;
 
     page->va = page_boundry;
@@ -985,11 +985,11 @@ void handle_missing_fault(struct hemem_process *process,
 
   addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
 
-#ifdef USE_DMA
+//#ifdef USE_DMA
   memset(addr, 0, pagesize);
-#else
-  hemem_parallel_memset(addr, 0, pagesize);
-#endif
+//#else
+//  hemem_parallel_memset(addr, 0, pagesize);
+//#endif
   memsets++;
 
   // use mmap return addr to track new page's virtual address

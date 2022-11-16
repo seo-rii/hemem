@@ -14,7 +14,7 @@
 
 #define MAX_UFFD_MSGS	    (3)
 
-#define USE_DMA
+//#define USE_DMA
 
 #ifdef USE_DMA
 #define NUM_CHANNS 1
