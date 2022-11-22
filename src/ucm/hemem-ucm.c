@@ -222,10 +222,17 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   process->target_miss_ratio = request->target_miss_ratio;
 #endif
   process->valid_uffd = false;
+#ifdef MULTI_LIST
+  for (int i = 0; i < NUM_HOTNESS_LEVELS; i++) {
+    pthread_mutex_init(&(process->dram_lists[i].list_lock), NULL);
+    pthread_mutex_init(&(process->nvm_lists[i].list_lock), NULL);
+  }
+#else
   pthread_mutex_init(&(process->dram_hot_list.list_lock), NULL);
   pthread_mutex_init(&(process->dram_cold_list.list_lock), NULL);
   pthread_mutex_init(&(process->nvm_hot_list.list_lock), NULL);
   pthread_mutex_init(&(process->nvm_cold_list.list_lock), NULL);
+#endif
   pthread_mutex_init(&(process->pages_lock), NULL);
   pthread_mutex_init(&(process->process_lock), NULL);
 
@@ -1151,7 +1158,7 @@ int process_msg(int fd)
   #endif
 
   switch(request_header->operation) {
-  case ALLOC_SPACE:
+  case ALLOC_SPACE: {
     struct alloc_request* alloc_req = (struct alloc_request*)recv_buf;
     len = sizeof(struct alloc_response) + sizeof(struct hemem_page_app) * (alloc_req->length / HUGEPAGE_SIZE + (alloc_req->length % HUGEPAGE_SIZE != 0));
     if (len > MAX_SIZE) {
@@ -1160,6 +1167,7 @@ int process_msg(int fd)
     }
     ret = ucm_alloc_space((struct alloc_request*)recv_buf, (struct alloc_response*)send_buf);
     break;
+  }
   case FREE_SPACE:
     ret = ucm_free_space((struct free_request*)recv_buf, (struct free_response*)send_buf);
     break;

@@ -24,6 +24,8 @@ int channel_server_init()
             sizeof(server_addr.sun_path) - 1,
             "server.sock");
 
+    unlink(server_addr.sun_path);
+    fprintf(stderr, "Addrs: %s\n", server_addr.sun_path);
     ret = bind(fd, (struct sockaddr *)&server_addr, sizeof(server_addr));
     if (ret != 0) {
         close(fd);

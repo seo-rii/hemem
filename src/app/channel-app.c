@@ -21,6 +21,8 @@ int channel_client_init(enum channel_type type)
             sizeof(client_addr.sun_path) - 1,
             "client-%d-%d", type, getpid());
 
+    unlink(client_addr.sun_path);
+    fprintf(stderr, "Addrs: %s\n", client_addr.sun_path);
     if (bind(fd, (struct sockaddr *)&client_addr, sizeof(client_addr)) < 0) {
         close(fd);
         perror("bind");

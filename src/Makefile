@@ -2,9 +2,9 @@ CC = gcc
 #APP_CFLAGS = -Wall -g3 -O0 -fPIC
 #UCM_CFLAGS = -Wall -g3 -O0
 #SHARED_CFLAGS = -Wall -g3 -O0
-APP_CFLAGS = -Wall -O3 -g3 -fPIC
-UCM_CFLAGS = -Wall -O3 -g3
-SHARED_CFLAGS = -Wall -O3 -g3
+APP_CFLAGS = -Wall -O0 -g3 -fPIC
+UCM_CFLAGS = -Wall -O0 -g3
+SHARED_CFLAGS = -Wall -O0 -g3
 #CFLAGS = -g3 -Wall -O0 -fPIC
 UCM = ucm
 APP = app
@@ -24,6 +24,9 @@ default: all
 all:app central-manager
 app: libhemem.so
 
+ml: UCM_CFLAGS += -DMULTI_LIST
+ml: app central-manager-multi
+
 libhemem.so: hemem-app.o  interpose.o channel-shared-app.o channel-app.o logging-app.o
 	$(CC) $(LDFLAGS) -o libhemem.so hemem-app.o interpose.o channel-shared-app.o channel-app.o logging-app.o  $(HEMEM_LIBS)
 
@@ -38,6 +41,12 @@ channel-app.o: ${APP}/channel-app.c ${APP}/channel-app.h
 
 central-manager: ucm.o channel-shared.o channel-ucm.o timer.o hemem-ucm.o pebs.o fifo.o spsc-ring.o logging.o
 	$(CC) -o central-manager ucm.o channel-shared.o channel-ucm.o timer.o pebs.o hemem-ucm.o fifo.o spsc-ring.o logging.o -lpthread
+
+central-manager-multi: ucm.o channel-shared.o channel-ucm.o timer.o hemem-ucm.o pebs-multi.o fifo.o spsc-ring.o logging.o
+	$(CC) -o central-manager ucm.o channel-shared.o channel-ucm.o timer.o pebs-multi.o hemem-ucm.o fifo.o spsc-ring.o logging.o -lpthread
+
+pebs-multi.o: ${UCM}/pebs_multilist.c ${UCM}/pebs.h ${UCM}/hemem-types.h
+	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -o pebs-multi.o -c ${UCM}/pebs_multilist.c -lpthread
 
 ucm.o: ${UCM}/ucm.c
 	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/ucm.c
