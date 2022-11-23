@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
 
 #include "hemem-ucm.h"
 #include "channel-ucm.h"
@@ -35,6 +36,8 @@ pthread_t listen_thread;
 int request_epoll_fd = -1;
 int fault_epoll_fd = -1;
 int listen_fd = -1;
+
+struct timeval startup;
 
 struct hemem_process* uffds[1024];
 
@@ -68,22 +71,6 @@ uint64_t migration_waits = 0;
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
 
-#if 0
-//we define the smaller number has the higher priority 
-int priority_sort(struct hemem_process* proc_a, struct hemem_process* proc_b)
-{
-    if (proc_a->priority == proc_b->priority) {
-        return 0;
-    }
-    else if (proc_a->priority > proc_b->priority) {
-        return 1;
-    }
-    else {
-        return -1;
-    }
-}
-#endif
-
 #ifndef USE_DMA
 struct pmemcpy {
   pthread_mutex_t lock;
@@ -102,8 +89,19 @@ void *hemem_parallel_memcpy_thread(void *arg) {
   void *dst;
   size_t length;
   size_t chunk_size;
+  cpu_set_t cpuset;
+  pthread_t thread;
 
   assert(tid < MAX_COPY_THREADS);
+
+  thread = pthread_self();
+  CPU_ZERO(&cpuset);
+  CPU_SET(PARALLEL_MIGRATE_THREAD_CPU + tid, &cpuset);
+  int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+  if (s != 0) {
+    perror("pthread_setaffinity_np");
+    assert(0);
+  }
 
   for (;;) {
     int r = pthread_barrier_wait(&pmemcpy.barrier);
@@ -131,6 +129,7 @@ void *hemem_parallel_memcpy_thread(void *arg) {
   return NULL;
 }
 
+#if 0
 static void hemem_parallel_memset(void *addr, int c, size_t n) {
   pthread_mutex_lock(&(pmemcpy.lock));
   pmemcpy.dst = addr;
@@ -145,6 +144,7 @@ static void hemem_parallel_memset(void *addr, int c, size_t n) {
 
   pthread_mutex_unlock(&(pmemcpy.lock));
 }
+#endif
 
 static void hemem_parallel_memcpy(void *dst, void *src, size_t length) {
   pthread_mutex_lock(&(pmemcpy.lock));
@@ -210,6 +210,9 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   struct hemem_process* process;
   uint64_t** buffer;
   int ret;
+#ifdef HEMEM_QOS
+  char logpath[20];
+#endif
 
   process = (struct hemem_process*)calloc(1, sizeof(struct hemem_process));
   if (process == NULL) {
@@ -218,6 +221,7 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   }
 
   process->pid = request->header.pid;
+  process->exited = false;
 #ifdef HEMEM_QOS
   process->target_miss_ratio = request->target_miss_ratio;
 #endif
@@ -246,6 +250,15 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
 
   process->need_cool = false;
 
+#ifdef HEMEM_QOS  
+  snprintf(&logpath[0], sizeof(logpath) - 1, "log-%d.txt", process->pid);
+  process->logfd = fopen(logpath, "w");
+  if (process->logfd == NULL) {
+    perror("process log fopen");
+  }
+  assert(process->logfd != NULL);
+#endif
+
   add_process(process);
 
   pebs_add_process(process);
@@ -271,13 +284,14 @@ int ucm_remove_process(struct remove_process_request* request, struct remove_pro
 
   process = find_process(request->header.pid);
   if (process != NULL) {
+    process->exited = true;
     remove_process(process);
     pebs_remove_process(process);
 
     //todo:free memory, pages, linked list, hash table...
     ring_buf_free(process->hot_ring);
     ring_buf_free(process->cold_ring);
-    free(process);
+    //free(process);
   }
 
   response->header.status = SUCCESS;
@@ -341,6 +355,8 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     assert(page->va != 0);
     assert(page->va % HUGEPAGE_SIZE == 0);
     page->migrating = false;
+    page->in_migrate_up_queue = false;
+    page->in_migrate_down_queue = false;
     page->migrations_up = page->migrations_down = 0;
 
     add_page(process, page);
@@ -640,6 +656,8 @@ void hemem_ucm_init() {
   }
 #endif
 
+  gettimeofday(&startup, NULL);
+
   LOG("hemem_init: finished\n");
 }
 
@@ -870,8 +888,15 @@ void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
   ret = ioctl(page->uffd, UFFDIO_WRITEPROTECT, &wp);
 
   if (ret < 0) {
-    perror("uffdio writeprotect");
-    assert(0);
+    if (errno == EBADF) {
+      if (!(uffds[page->uffd]->exited)) {
+        perror("uffdio writeprotect");
+        assert(0);
+      }
+    } else {
+      perror("uffdio writeprotect");
+      assert(0);
+    }
   }
   gettimeofday(&end, NULL);
 
@@ -1107,8 +1132,15 @@ void *handle_fault() {
           ret = ioctl(process->uffd, UFFDIO_WAKE, &range);
 
           if (ret < 0) {
-            perror("uffdio wake");
-            assert(0);
+            if (errno == EBADF) {
+              if (!process->exited) {
+                perror("uffdio wake");
+                assert(0);
+              }
+            } else {
+              perror("uffdio wake");
+              assert(0);
+            }
           }
         } else if (msg[i].event & UFFD_EVENT_UNMAP) {
           fprintf(stderr, "Received an unmap event\n");

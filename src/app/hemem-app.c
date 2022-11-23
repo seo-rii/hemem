@@ -55,7 +55,7 @@ pthread_t stats_thread;
 
 void app_print_stats()
 {
-  LOG_STATS("dram_allocated: [%lu]\tnvm_allocated: [%lu]\n", dram_allocated, nvm_allocated);
+//  LOG_STATS("dram_allocated: [%lu]\tnvm_allocated: [%lu]\n", dram_allocated, nvm_allocated);
 }
 
 static void *app_stats_thread()

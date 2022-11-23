@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <sys/epoll.h>
+#include <sys/time.h>
 
 #include "uthash.h"
 #include "spsc-ring.h"
@@ -27,8 +28,23 @@
 
 #define MAX_PROCESSES 24
 
+#define FAULT_THREAD_CPU  (0)
+#define LISTEN_THREAD_CPU (FAULT_THREAD_CPU)
+#define REQUEST_THREAD_CPU (FAULT_THREAD_CPU + 1)
+#define SCANNING_THREAD_CPU (REQUEST_THREAD_CPU + 1)
+#define POLICY_THREAD_CPU (SCANNING_THREAD_CPU + 1)
+#define MIGRATION_THREAD_CPU (POLICY_THREAD_CPU + 1)
+#ifdef USE_DMA
+#define LAST_HEMEM_THREAD (MIGRATION_THREAD_CPU)
+#else
+#define PARALLEL_MIGRATE_THREAD_CPU (MIGRATION_THREAD_CPU + 1)
+#define LAST_HEMEM_THREAD (MIGRATION_THREAD_CPU + MAX_COPY_THREADS)
+#endif
+
+
 extern int dramfd;
 extern int nvmfd;
+extern struct timeval startup;
 
 void hemem_ucm_init();
 void hemem_ucm_stop();

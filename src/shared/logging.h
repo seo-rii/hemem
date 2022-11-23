@@ -6,8 +6,8 @@
 #include <stdarg.h>
 
 extern FILE *hememlogf;
-#define LOG(...) fprintf(stderr, __VA_ARGS__)
-//#define LOG(...) fprintf(hememlogf, __VA_ARGS__)
+//#define LOG(...) fprintf(stderr, __VA_ARGS__)
+#define LOG(...) { fprintf(hememlogf, __VA_ARGS__); fflush(hememlogf); }
 //#define LOG(str, ...) while (0) {}
 
 extern FILE *timef;

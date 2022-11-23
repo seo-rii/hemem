@@ -18,6 +18,8 @@ struct hemem_page {
   bool in_dram;
   enum pagetypes pt;
   volatile bool migrating;
+  bool in_migrate_up_queue;
+  bool in_migrate_down_queue;
   bool present;
   bool hot;
   uint64_t naccesses;
@@ -35,11 +37,13 @@ struct hemem_page {
 struct hemem_process {
   pid_t pid;
   long uffd;
+  bool exited;
 #ifdef HEMEM_QOS
-  uint64_t accessed_pages[NPBUFTYPES];
+  _Atomic uint64_t volatile accessed_pages[NPBUFTYPES];
   double target_miss_ratio;
-  double current_miss_ratio;
+  double volatile current_miss_ratio;
   bool victimized;
+  FILE* logfd;
 #endif
   volatile uint64_t current_dram;
   volatile uint64_t allowed_dram;

@@ -14,7 +14,7 @@
 #define PEBS_MIGRATE_DOWN_RATE    (1UL * 1024UL * 1024UL * 1024UL) // 1GB
 #define PEBS_MIGRATE_UP_RATE      (1UL * 1024UL * 1024UL * 1024UL) // 1GB
 #define PEBS_MIGRATE_MAX_UP_RATE      (10UL * 1024UL * 1024UL * 1024UL) // 10GB
-#define HOT_READ_THRESHOLD        (2)
+#define HOT_READ_THRESHOLD        (4)
 //#define HOT_WRITE_THRESHOLD       (4)
 #define PEBS_COOLING_THRESHOLD    (22)
 
@@ -29,6 +29,8 @@
 //#define SAMPLE_FREQ	100
 
 #define MISS_RATIO_TOLERANCE (0.1)
+
+#define EWMA_FRAC (0.5)
 
 struct perf_sample {
     struct perf_event_header header;
