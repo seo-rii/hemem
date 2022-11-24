@@ -250,6 +250,10 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   process->cur_cool_in_dram = NULL;
   process->cur_cool_in_nvm = NULL;
   process->pages = NULL;
+#ifdef MULTI_LIST
+  process->cur_cool_in_dram_list = 0;
+  process->cur_cool_in_nvm_list = 0;
+#endif
 
   process->need_cool = false;
 

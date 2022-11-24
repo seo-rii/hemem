@@ -316,7 +316,9 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
 {
   struct hemem_page *p, *current;
   uint64_t tmp_accesses[NPBUFTYPES];
-  int cool_list;
+  int cool_list, cur_list_index;
+  bool goto_next_list = false;
+  struct page_list* cur_bins;
   struct page_list* temp;
 
   // do we even need to be cooling right now? If not, just return
@@ -330,22 +332,26 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
 
   // we cool backwards through the page lists, the same order the 
   // were inserted. The idea is, in this way, we cool the oldest pages 
-  if (dram && (process->cur_cool_in_dram == NULL)) {
+  if (dram && (process->cur_cool_in_dram == NULL) && (process->cur_cool_in_dram_list == 0)) {
       for(int i = NUM_HOTNESS_LEVELS-1; i > 0 && process->cur_cool_in_dram == NULL; i--) {
         process->cur_cool_in_dram = process->dram_lists[i].last;
         process->cur_cool_in_dram_list = i;
       }
       // dram hot list might be empty, in which case we have nothing to cool
       if (process->cur_cool_in_dram == NULL) {
+        process->cur_cool_in_dram_list = 0;
+        process->need_cool = false;
         return NULL;
       }
-  } else if ((!dram) && (process->cur_cool_in_nvm == NULL)) {
+  } else if ((!dram) && (process->cur_cool_in_nvm == NULL) && (process->cur_cool_in_nvm_list == 0)) {
       for(int i = NUM_HOTNESS_LEVELS-1; i > 0 && process->cur_cool_in_nvm == NULL; i--) {
         process->cur_cool_in_nvm = process->nvm_lists[i].last;
         process->cur_cool_in_nvm_list = i;
       }
       // dram hot list might be empty, in which case we have nothing to cool
       if (process->cur_cool_in_nvm == NULL) {
+        process->cur_cool_in_nvm_list = 0;
+        process->need_cool = false;
         return NULL;
       }
   }
@@ -355,38 +361,42 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
   if (dram) {
     current = process->cur_cool_in_dram;
     cool_list = process->cur_cool_in_dram_list;
-    assert(process->cur_cool_in_dram->list == &(process->dram_lists[process->cur_cool_in_dram->hot]));
+    cur_bins = process->dram_lists;
+    if(current)
+      assert(current->list == &(cur_bins[current->hot]));
   } else {
     current = process->cur_cool_in_nvm;
-    cool_list = process->cur_cool_in_dram_list;
-    assert(process->cur_cool_in_nvm->list == &(process->nvm_lists[process->cur_cool_in_nvm->hot]));
+    cool_list = process->cur_cool_in_nvm_list;
+    cur_bins = process->nvm_lists;
+    if(current)
+      assert(current->list == &(cur_bins[current->hot]));
   }
   
   // start from the current cooled page. This is either where we left off
   // last time or the end of the page list if we've gone throug the whole list
   p = current;
+  cur_list_index = cool_list;
   for (int i = 0; i < COOLING_PAGES; i++) {
     if (p == NULL) {
         // not pointing to a page to cool from. check the lower lists. 
-        for(int i = cool_list; i > 0 && p == NULL; i--) {
-          if(dram) {
-            p = process->dram_lists[i].last;
-          }
-          else {
-            p = process->nvm_lists[i].last;
-          }
+        for(int j = cool_list; j > 0 && p == NULL; j--) {
+          p = cur_bins[j].last;
+          cool_list = j;
         }
-        break;
+        if(p == NULL) {
+          cool_list = 0;
+          break;
+        }
     }
 
     // sanity check we grabbed a page in the appropriate memory type and
     // from the appropriate list
     if (dram) {
         assert(p->in_dram);
-        assert(p->list != &(process->dram_lists[COLD]));
+        assert(p->list == &(process->dram_lists[p->hot]));
     } else {
         assert(!p->in_dram);
-        assert(p->list != &(process->nvm_lists[COLD]));
+        assert(p->list == &(process->nvm_lists[p->hot]));
     }
 
     // compute the access samples this page would have had if it were up to date
@@ -397,52 +407,55 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
 
     // is the page still hot if it was up to date with cooling?
     int new_hotness = access_to_index((tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]));
-    if (new_hotness < p->hot) {
+    if (new_hotness != p->hot) {
         // if the page is no longer hot, then we move it to the cold list
         p->hot = new_hotness;
         // first, we update our current pointer in prep for p being
         // moved to the cold list. This ensures our next call to
         // prev_page() stays in the appropriate list
         current = p->next;
+        if(current == NULL) {
+          goto_next_list = true;
+        }
         page_list_remove(p->list, p);
-        if(dram) {
-          enqueue_page(&(process->dram_lists[new_hotness]), p);
-        }
-        else {
-          enqueue_page(&(process->nvm_lists[new_hotness]), p);
-        }
+        enqueue_page(&(cur_bins[new_hotness]), p);
+    }
+    else {
+      current = p;
+      cur_list_index = cool_list;
     }
     
-    // have we gone through the entire hot list? If so, set the current cool
-    // page to NULL to signify that we do not have a current page to cool and
-    // set the needs cooling flag to false for the same reason
-    if (dram && (p == process->dram_lists[process->cur_cool_in_dram_list].first)) {
-      if(process->cur_cool_in_dram_list == 1) {
-        process->need_cool = false;
-        return NULL;
-      }
-      else {
-        process->cur_cool_in_dram_list--;
-      }
-    } else if (!dram && (p == process->nvm_lists[process->cur_cool_in_nvm_list].first)) {
-      if(process->cur_cool_in_nvm_list == 1) {
-        process->need_cool = false;
-        return NULL;
-      }
-      else {
-        process->cur_cool_in_nvm_list--;
-      }
+    // have we gone through the entire hot list? If so, call for the 
+    // loop iteration to goto the next list.
+    if (dram && (p == process->dram_lists[cool_list].first)) {
+      goto_next_list = true;
+    } else if (!dram && (p == process->nvm_lists[cool_list].first)) {
+      goto_next_list = true;
     } 
 
     // grab another page to cool
-    if(dram) {
-      p = prev_page(&(process->dram_lists[process->cur_cool_in_dram_list]), current);
+    // first if we need to goto next list then goto that list for the next.
+    if(goto_next_list) {
+      if(cool_list == 1) {
+        cur_list_index = 0;
+        current = NULL;
+        break;
+      }
+      goto_next_list = false;
+      cool_list--;
+      p = cur_bins[cool_list].last;
     }
     else {
-      p = prev_page(&(process->nvm_lists[process->cur_cool_in_nvm_list]), current);
+      p = prev_page(&(cur_bins[cool_list]), current);
     }
   }
 
+  if(dram) {
+    process->cur_cool_in_dram_list = cur_list_index;
+  }
+  else {
+    process->cur_cool_in_nvm_list = cur_list_index;
+  }
   return current;
 }
 
@@ -457,13 +470,16 @@ void update_current_cool_page(struct hemem_process *process, struct hemem_page *
     assert(page->in_dram);
     assert(page->list == &(process->dram_lists[page->hot]));
     // then just reset the bookmark pointer to the last page in list
-    process->cur_cool_in_dram = process->dram_lists[NUM_HOTNESS_LEVELS-1].last;
+    // just restart
+    process->cur_cool_in_dram = NULL;
+    process->cur_cool_in_dram_list = 0;
   } else if (page == process->cur_cool_in_nvm) {
     // first, a bunch of sanity checks
     assert(!(page->in_dram));
     assert(page->list == &(process->nvm_lists[page->hot]));
     // then just reset the bookmark pointer to the last page in list
-    process->cur_cool_in_nvm = process->nvm_lists[NUM_HOTNESS_LEVELS-1].last;
+    process->cur_cool_in_nvm = NULL;
+    process->cur_cool_in_nvm_list = 0;
   }
 }
 
@@ -612,7 +628,7 @@ void handle_ring_requests(struct hemem_process *process)
 
 struct hemem_page* find_cadidate_nvm_page(struct hemem_process *process) {
   struct hemem_page* p;
-  for(int i = NUM_HOTNESS_LEVELS-1; i >= 0; i--) {
+  for(int i = NUM_HOTNESS_LEVELS-1; i > 0; i--) {
     p = dequeue_page(&(process->nvm_lists[i]));
     if (p != NULL) {
       // found something hot. we should try to promote it.
@@ -1037,9 +1053,9 @@ void *pebs_policy_thread()
     }
 #endif
     gettimeofday(&end, NULL);
-    migrate_time = elapsed(&start, &end);
-    if (migrate_time < 1.0) {
-      sleep((uint64_t)(1.0 - migrate_time));
+    migrate_time = 1000000 * elapsed(&start, &end);
+    if (migrate_time < 1000000.0) {
+      usleep((uint64_t)(1000000.0 - migrate_time));
     }
   }
 
