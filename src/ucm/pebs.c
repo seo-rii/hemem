@@ -604,13 +604,15 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
     if (cp == NULL) {
       // no cold pages to move down
       // grab a hot page
-      //cp = dequeue_page(&(process->dram_hot_list));
-      //if (cp == NULL) {
-      //  // process doesn't have any dram to migrate down
-      //  break;
-      //}
-      //from_hot = true;
-      break;
+      cp = dequeue_page(&(process->dram_hot_list));
+      if (cp == NULL) {
+        // process doesn't have any dram to migrate down
+        break;
+      }
+      from_hot = true;
+      if (cp == process->cur_cool_in_dram) {
+        process->cur_cool_in_dram = process->dram_hot_list.last;
+      }
     }
 
     np = dequeue_page(&nvm_free_list);
@@ -640,10 +642,10 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
       // dram cold list and bail out
       gettimeofday(&now, NULL);
       LOG("%f\tpolicy thread found no NVM free pages\n", elapsed(&startup, &now));
-      if (!from_hot) {
-        enqueue_page(&(process->dram_cold_list), cp);
-      } else {
+      if (from_hot) {
         enqueue_page(&(process->dram_hot_list), cp);
+      } else {
+        enqueue_page(&(process->dram_cold_list), cp);
       }
       break;
     }
@@ -671,13 +673,12 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
     if (p == NULL) {
       // no hot pages to move up
       // try a cold page
-      //p = dequeue_page(&(process->nvm_cold_list));
-      //if (p == NULL) {
-      //  // process doesn't have any NVM to migrate up
-      //  break;
-      //}
-      //from_cold = true;
-      break;
+      p = dequeue_page(&(process->nvm_cold_list));
+      if (p == NULL) {
+        // process doesn't have any NVM to migrate up
+        break;
+      }
+      from_cold = true;
     }
 
     if (p == process->cur_cool_in_nvm) {
@@ -702,10 +703,10 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
       // no free dram pages, put back in nvm hot list for now
       gettimeofday(&now, NULL);
       LOG("%f\tpolicy thread found no DRAM free pages\n", elapsed(&startup, &now));
-      if (!from_cold) {
-        enqueue_page(&(process->nvm_hot_list), p);
-      } else {
+      if (from_cold) {
         enqueue_page(&(process->nvm_cold_list), p);
+      } else {
+        enqueue_page(&(process->nvm_hot_list), p);
       }
       break;
     }
@@ -722,10 +723,10 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
       np->tot_accesses[i] = 0;
     }
 
-    if (!from_cold) {
-      enqueue_page(&(process->dram_hot_list), p);
-    } else {
+    if (from_cold) {
       enqueue_page(&(process->dram_cold_list), p);
+    } else {
+      enqueue_page(&(process->dram_hot_list), p);
     }
     enqueue_page(&nvm_free_list, np);
     migrated_bytes += pt_to_pagesize(p->pt);
@@ -927,6 +928,16 @@ void *pebs_policy_thread()
     process = peek_process(&processes_list);
     while (process != NULL) {
       pthread_mutex_lock(&(process->process_lock));
+
+      if (process->current_miss_ratio == -1) {
+        // don't have enough information to migrate pages for this
+        // process, just leave it alone
+        tmp = process;
+        process = process->next;
+        pthread_mutex_unlock(&(tmp->process_lock));
+        continue;
+      }
+
       if (process->allowed_dram > process->current_dram) {
         // process can have more DRAM, so it can migrate things up if it can
         migrate_down_bytes = 0;
@@ -959,6 +970,16 @@ void *pebs_policy_thread()
     process = peek_process(&processes_list);
     while (process != NULL) {
       pthread_mutex_lock(&(process->process_lock));
+      
+      if (process->current_miss_ratio == -1) {
+        // don't have enough information to migrate pages for this
+        // process, just leave it alone
+        tmp = process;
+        process = process->next;
+        pthread_mutex_unlock(&(tmp->process_lock));
+        continue;
+      }
+      
       if (process->allowed_dram > process->current_dram) {
         // process can have more DRAM, so it can migrate things up if it can
         migrate_up_bytes = process->allowed_dram - process->current_dram;
