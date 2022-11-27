@@ -836,7 +836,7 @@ void *pebs_policy_thread()
         } else {
           // process is kind of close to its target miss ratio, so give it
           // a smaller chunk of DRAM
-          requested_dram = (PEBS_MIGRATE_UP_RATE * (1 - slack));
+          requested_dram = (PEBS_MIGRATE_UP_RATE * (slack - 1));
           requested_dram -= (requested_dram % PAGE_SIZE);
         }
         remaining_dram = requested_dram;
