@@ -12,10 +12,10 @@ enum pbuftype {
 
 struct hemem_page {
   uint64_t va;
-  uint64_t devdax_offset;
   pid_t pid;
-  long  uffd;
+  uint64_t devdax_offset;
   bool in_dram;
+  long  uffd;
   enum pagetypes pt;
   volatile bool migrating;
   bool in_migrate_up_queue;

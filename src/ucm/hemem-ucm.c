@@ -1018,8 +1018,8 @@ void handle_missing_fault(struct hemem_process *process,
   memsets++;
 
   // use mmap return addr to track new page's virtual address
-  page->pid = process->pid;
   page->uffd = process->uffd;
+  page->pid = process->pid;
   page->va = page_boundry;
   assert(page->va != 0);
   assert(page->va % HUGEPAGE_SIZE == 0);

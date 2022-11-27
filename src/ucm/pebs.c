@@ -754,6 +754,7 @@ void *pebs_policy_thread()
   struct timeval now;
 #ifdef HEMEM_QOS
   uint64_t requested_dram, remaining_dram, dram_taking;
+  double slack;
   struct hemem_process *tmp1;
 #endif
 
@@ -818,8 +819,26 @@ void *pebs_policy_thread()
         pthread_mutex_unlock(&(tmp->process_lock));
         continue;
       } else {
-        // process needs more DRAM, try to give it 1GB
-        requested_dram = PEBS_MIGRATE_UP_RATE;
+        if (process->nvm_hot_list.numentries <= process->dram_cold_list.numentries) {
+          // process is not meeting its miss ratio but has some hot data in nvm that
+          // it can migrate up, just let it do that for now and maybe that is enough
+          tmp = process;
+          process = process->next;
+          pthread_mutex_unlock(&(tmp->process_lock));
+          continue;
+        }
+        // process needs more DRAM
+        slack = process->current_miss_ratio / process->target_miss_ratio;
+        if (slack >= 2.0) {
+          // we are more than 100% off our target, give process a large chunk
+          // of DRAM (1 GB)
+          requested_dram = PEBS_MIGRATE_UP_RATE;
+        } else {
+          // process is kind of close to its target miss ratio, so give it
+          // a smaller chunk of DRAM
+          requested_dram = (PEBS_MIGRATE_UP_RATE * (1 - slack));
+          requested_dram -= (requested_dram % PAGE_SIZE);
+        }
         remaining_dram = requested_dram;
         
         // find a lower priority process to take DRAM from
