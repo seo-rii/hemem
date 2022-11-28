@@ -839,7 +839,7 @@ void *pebs_policy_thread()
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
-  CPU_SET(MIGRATION_THREAD_CPU, &cpuset);
+  CPU_SET(POLICY_THREAD_CPU, &cpuset);
   ret = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
   if (ret != 0) {
     perror("pthread_setaffinity_np");
@@ -858,6 +858,8 @@ void *pebs_policy_thread()
 
       if (process->accessed_pages[DRAMREAD] + process->accessed_pages[NVMREAD] != 0) {
         if (process->current_miss_ratio == -1) {
+          // first time we have actual data to compute, but don't want to include the -1.0 values in the EWMA, so
+          // just comute a raw miss ratio here
           process->current_miss_ratio = calc_miss_ratio(process);
         } else {
           process->current_miss_ratio = (EWMA_FRAC * calc_miss_ratio(process)) + ((1 - EWMA_FRAC) * process->current_miss_ratio);
@@ -1421,7 +1423,7 @@ void count_pages()
     for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
       LOG_STATS(", %lu", process->nvm_lists[i].numentries);
     }
-    LOG_STATS("]\ttarget_miss_ratio: %f\n", process->target_miss_ratio);
+    LOG_STATS("]\tcurrent_miss_ratio: %f\n", process->current_miss_ratio);
     //tmp = process;
     process = process->next;
     //pthread_mutex_unlock(&(tmp->process_lock));

@@ -47,8 +47,10 @@ pthread_t stats_thread;
 #ifdef USE_DMA
 int uffd = -1;
 #else
+#ifdef USE_PARALLEL_MEMCPY
 pthread_t copy_threads[MAX_COPY_THREADS];
-#endif
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
 
 struct hemem_process volatile *processes = NULL;
 pthread_mutex_t processes_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -72,6 +74,7 @@ void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
 
 #ifndef USE_DMA
+#ifdef USE_PARALLEL_MEMCPY
 struct pmemcpy {
   pthread_mutex_t lock;
   pthread_barrier_t barrier;
@@ -129,23 +132,6 @@ void *hemem_parallel_memcpy_thread(void *arg) {
   return NULL;
 }
 
-#if 0
-static void hemem_parallel_memset(void *addr, int c, size_t n) {
-  pthread_mutex_lock(&(pmemcpy.lock));
-  pmemcpy.dst = addr;
-  pmemcpy.length = n;
-  pmemcpy.write_zeros = true;
-
-  int r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-
-  r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-
-  pthread_mutex_unlock(&(pmemcpy.lock));
-}
-#endif
-
 static void hemem_parallel_memcpy(void *dst, void *src, size_t length) {
   pthread_mutex_lock(&(pmemcpy.lock));
   pmemcpy.dst = dst;
@@ -163,7 +149,8 @@ static void hemem_parallel_memcpy(void *dst, void *src, size_t length) {
   // LOG("parallel migration finished\n");
   pthread_mutex_unlock(&(pmemcpy.lock));
 }
-#endif
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
 
 int add_epoll_ctl(int epoll, int fd)
 {
@@ -626,6 +613,7 @@ void hemem_ucm_init() {
   }
 
 #ifndef USE_DMA
+#ifdef USE_PARALLEL_MEMCPY
   uint64_t i;
   ret = pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1);
   assert(ret == 0);
@@ -638,7 +626,8 @@ void hemem_ucm_init() {
                        (void *)i);
     assert(ret == 0);
   }
-#endif
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
 
 #ifdef STATS_THREAD
   ret = pthread_create(&stats_thread, NULL, hemem_stats_thread, NULL);
@@ -769,8 +758,12 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
     assert(false);
   }
 #else
+#ifdef USE_PARALLEL_MEMCPY
   hemem_parallel_memcpy(new_addr, old_addr, pagesize);
-#endif
+#else
+  memcpy(new_addr, old_addr, pagesize);
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
   gettimeofday(&end, NULL);
   LOG_TIME("memcpy_to_dram: %f s\n", elapsed(&start, &end));
 
@@ -844,8 +837,12 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
     assert(false);
   }
 #else
+#ifdef USE_PARALLEL_MEMCPY
   hemem_parallel_memcpy(new_addr, old_addr, pagesize);
-#endif
+#else
+  memcpy(new_addr, old_addr, pagesize);
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
   gettimeofday(&end, NULL);
   LOG_TIME("memcpy_to_nvm: %f s\n", elapsed(&start, &end));
 
