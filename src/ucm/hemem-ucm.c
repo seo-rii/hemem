@@ -226,10 +226,10 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   process->target_miss_ratio = request->target_miss_ratio;
 #endif
   process->valid_uffd = false;
-  pthread_mutex_init(&(process->dram_hot_list.list_lock), NULL);
-  pthread_mutex_init(&(process->dram_cold_list.list_lock), NULL);
-  pthread_mutex_init(&(process->nvm_hot_list.list_lock), NULL);
-  pthread_mutex_init(&(process->nvm_cold_list.list_lock), NULL);
+  for (int i = 0; i < NUM_HOTNESS_LEVELS; i++) {
+    pthread_mutex_init(&(process->dram_lists[i].list_lock), NULL);
+    pthread_mutex_init(&(process->nvm_lists[i].list_lock), NULL);
+  }
   pthread_mutex_init(&(process->pages_lock), NULL);
   pthread_mutex_init(&(process->process_lock), NULL);
 
@@ -243,12 +243,14 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   assert(buffer); 
   process->free_page_ring = ring_buf_init(buffer, CAPACITY);
   pthread_mutex_init(&(process->free_page_ring_lock), NULL);
-
-  process->cur_cool_in_dram = NULL;
-  process->cur_cool_in_nvm = NULL;
+  
   process->pages = NULL;
 
-  process->need_cool = false;
+  process->cur_cool_in_dram_list = 0;
+  process->cur_cool_in_nvm_list = 0;
+
+  process->need_cool_dram = false;
+  process->need_cool_nvm = false;
 
 #ifdef HEMEM_QOS  
   snprintf(&logpath[0], sizeof(logpath) - 1, "log-%d.txt", process->pid);

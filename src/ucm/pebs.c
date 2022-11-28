@@ -25,8 +25,6 @@
 static struct process_list processes_list;
 static struct page_list dram_free_list;
 static struct page_list nvm_free_list;
-static struct page_list migrate_up_list;
-static struct page_list migrate_down_list;
 uint64_t global_clock = 0;
 
 uint64_t hemem_pages_cnt = 0;
@@ -37,10 +35,6 @@ uint64_t zero_pages_cnt = 0;
 uint64_t throttle_cnt = 0;
 uint64_t unthrottle_cnt = 0;
 uint64_t cools = 0;
-uint64_t dram_hot_pages = 0;
-uint64_t dram_cold_pages = 0;
-uint64_t nvm_hot_pages = 0;
-uint64_t nvm_cold_pages = 0;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
@@ -106,25 +100,45 @@ void make_cold_request(struct hemem_process* process, struct hemem_page* page)
     ring_buf_put(process->cold_ring, (uint64_t*)page);
 }
 
+static inline int access_to_index(uint64_t num) {
+  if(num == 0) {
+    return 0;
+  }
+  int ret = 64 - __builtin_clzll(num);
+  if(ret > NUM_HOTNESS_LEVELS - 1) {
+    return NUM_HOTNESS_LEVELS - 1;
+  }
+  return ret;
+}
+
 void *pebs_scan_thread()
 {
+  struct perf_event_mmap_page *p;
+  char *pbuf;
+  struct perf_event_header *ph;
+  struct perf_sample* ps;
+  struct hemem_page* page;
+  struct hemem_process* process;
+  uint64_t total_accesses;
+  int new_hotness, i, j, s;
+
   cpu_set_t cpuset;
   pthread_t thread;
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
   CPU_SET(SCANNING_THREAD_CPU, &cpuset);
-  int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+  s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
   if (s != 0) {
     perror("pthread_setaffinity_np");
     assert(0);
   }
 
   for(;;) {
-    for (int i = LAST_HEMEM_THREAD + 1; i < PEBS_NPROCS - 1; i++) {
-      for(int j = 0; j < NPBUFTYPES; j++) {
-        struct perf_event_mmap_page *p = perf_page[i][j];
-        char *pbuf = (char *)p + p->data_offset;
+    for (i = LAST_HEMEM_THREAD + 1; i < PEBS_NPROCS - 1; i++) {
+      for(j = 0; j < NPBUFTYPES; j++) {
+        p = perf_page[i][j];
+        pbuf = (char *)p + p->data_offset;
 
         __sync_synchronize();
 
@@ -132,10 +146,7 @@ void *pebs_scan_thread()
           continue;
         }
 
-        struct perf_event_header *ph = (void *)(pbuf + (p->data_tail % p->data_size));
-        struct perf_sample* ps;
-        struct hemem_page* page;
-        struct hemem_process* process;
+        ph = (void *)(pbuf + (p->data_tail % p->data_size));
 
         switch(ph->type) {
         case PERF_RECORD_SAMPLE:
@@ -154,15 +165,15 @@ void *pebs_scan_thread()
 #endif
                     page->accesses[j]++;
                     page->tot_accesses[j]++;
-                    if ((page->accesses[DRAMREAD] + page->accesses[NVMREAD]) >= HOT_READ_THRESHOLD) {
-                      if (!page->hot && !page->ring_present) {
-                        make_hot_request(process, page);
-                      }
+                    
+                    total_accesses = page->accesses[DRAMREAD] + page->accesses[NVMREAD];
+                    new_hotness = access_to_index(total_accesses);
+                    // check for hotness change and add to ring
+                    if(new_hotness > page->hot) {
+                      make_hot_request(process, page);
                     }
-                    else if ((page->accesses[DRAMREAD] + page->accesses[NVMREAD]) < HOT_READ_THRESHOLD) {
-                      if (page->hot && !page->ring_present) {
-                        make_cold_request(process, page);
-                      }
+                    else if(new_hotness < page->hot) {
+                      make_cold_request(process, page);
                     }
 
                     page->accesses[DRAMREAD] >>= (global_clock - page->local_clock);
@@ -171,7 +182,8 @@ void *pebs_scan_thread()
                     if (page->accesses[j] > PEBS_COOLING_THRESHOLD) {
                       global_clock++;
                       cools++;
-                      process->need_cool = true;
+                      process->need_cool_dram = true;
+                      process->need_cool_nvm = true;
                     }
                   }
                   hemem_pages_cnt++;
@@ -242,75 +254,65 @@ static void pebs_migrate_up(struct hemem_process *process, struct hemem_page *pa
   LOG_TIME("migrate_up: %f s\n", elapsed(&start, &end));
 }
 
-void *pebs_migrate_thread()
-{
-  for (;;) {
-
-  }
-
-  return NULL;
-}
-
-
 // moves page to hot list -- called by migrate thread
-void make_hot(struct hemem_process* process, struct hemem_page* page)
+void make_hot(struct hemem_process* process, struct hemem_page* page, int new_hot)
 {
   assert(page != NULL);
   assert(page->va != 0);
 
-  if (page->hot) {
+  if (page->hot == new_hot) {
     if (page->in_dram) {
-      assert(page->list == &(process->dram_hot_list));
+      assert(page->list == &(process->dram_lists[new_hot]));
     }
     else {
-      assert(page->list == &(process->nvm_hot_list));
+      assert(page->list == &(process->nvm_lists[new_hot]));
     }
 
     return;
   }
 
   if (page->in_dram) {
-    assert(page->list == &(process->dram_cold_list));
-    page_list_remove(&(process->dram_cold_list), page);
-    page->hot = true;
-    enqueue_page(&(process->dram_hot_list), page);
+    assert(page->list == &(process->dram_lists[page->hot]));
+    page_list_remove(&(process->dram_lists[page->hot]), page);
+    page->hot = new_hot;
+    enqueue_page(&(process->dram_lists[page->hot]), page);
   }
   else {
-    assert(page->list == &(process->nvm_cold_list));
-    page_list_remove(&(process->nvm_cold_list), page);
-    page->hot = true;
-    enqueue_page(&(process->nvm_hot_list), page);
+    assert(page->list == &(process->nvm_lists[page->hot]));
+    page_list_remove(&(process->nvm_lists[page->hot]), page);
+    page->hot = new_hot;
+    enqueue_page(&(process->nvm_lists[page->hot]), page);
   }
 }
 
 // moves page to cold list -- called by migrate thread
-void make_cold(struct hemem_process* process, struct hemem_page* page)
+void make_cold(struct hemem_process* process, struct hemem_page* page, int new_hot)
 {
   assert(page != NULL);
   assert(page->va != 0);
 
-  if (!page->hot) {
+  if (page->hot == new_hot) {
     if (page->in_dram) {
-      assert(page->list == &(process->dram_cold_list));
+      assert(page->list == &(process->dram_lists[new_hot]));
     }
     else {
-      assert(page->list == &(process->nvm_cold_list));
+      assert(page->list == &(process->nvm_lists[new_hot]));
     }
 
     return;
   }
 
   if (page->in_dram) {
-    assert(page->list == &(process->dram_hot_list));
-    page_list_remove(&(process->dram_hot_list), page);
-    page->hot = false;
-    enqueue_page(&(process->dram_cold_list), page);
+    assert(page->list == &(process->dram_lists[page->hot]));
+    page_list_remove(&(process->dram_lists[page->hot]), page);
+    page->hot = new_hot;
+    enqueue_page(&(process->dram_lists[new_hot]), page);
   }
   else {
-    assert(page->list == &(process->nvm_hot_list));
-    page_list_remove(&(process->nvm_hot_list), page);
-    page->hot = false;
-    enqueue_page(&(process->nvm_cold_list), page);
+    assert(page->list == &(process->nvm_lists[page->hot]));
+    page_list_remove(&(process->nvm_lists[page->hot]), page);
+    page->hot = new_hot;
+    enqueue_page(&(process->nvm_lists[page->hot]), page);
   }
 }
 
@@ -318,66 +320,91 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
 {
   struct hemem_page *p, *current;
   uint64_t tmp_accesses[NPBUFTYPES];
-  struct page_list* hot;
-  struct page_list* cold;
+  int cool_list, cur_list_index;
+  bool goto_next_list = false;
+  struct page_list* cur_bins;
+  int i, j, new_hotness;
 
   // do we even need to be cooling right now? If not, just return
   // where we left off last time we needed to cool. Next time this function
   // is called when cooling is needed, we pick up from here
-  if (dram && !(process->need_cool)) {
+  if (dram && !(process->need_cool_dram)) {
     return process->cur_cool_in_dram;
-  } else if (!dram && !(process->need_cool)) {
+  } else if (!dram && !(process->need_cool_nvm)) {
     return process->cur_cool_in_nvm;
   }
 
   // we cool backwards through the page lists, the same order the pages
   // were inserted. The idea is, in this way, we cool the oldest pages first
-  if (dram && (process->cur_cool_in_dram == NULL)) {
-      process->cur_cool_in_dram = process->dram_hot_list.last;
-      // dram hot list might be empty, in which case we have nothing to cool
-      if (process->cur_cool_in_dram == NULL) {
-        return NULL;
-      }
-  } else if ((!dram) && (process->cur_cool_in_nvm == NULL)) {
-      process->cur_cool_in_nvm = process->nvm_hot_list.last;
-      // nvm hot list might be empty, in which case we have nothing to cool
-      if (process->cur_cool_in_nvm == NULL) {
-        return NULL;
-      }
+  if (dram && (process->cur_cool_in_dram == NULL) && (process->cur_cool_in_dram_list == 0)) {
+    for (i = NUM_HOTNESS_LEVELS-1; i > 0 && process->cur_cool_in_dram == NULL; i--) {
+      // find the current oldest hottest page in DRAM
+      process->cur_cool_in_dram = process->dram_lists[i].last;
+      process->cur_cool_in_dram_list = i;
+    }
+    // dram hot list might be empty, in which case we have nothing to cool
+    if (process->cur_cool_in_dram == NULL) {
+      process->cur_cool_in_dram_list = 0;
+      process->need_cool_dram = false;
+      return NULL;
+    }
+  } else if ((!dram) && (process->cur_cool_in_nvm == NULL) && (process->cur_cool_in_nvm_list == 0)) {
+    for (int i = NUM_HOTNESS_LEVELS-1; i > 0 && process->cur_cool_in_nvm == NULL; i--) {
+      // find the current oldest hottest page in NVM
+      process->cur_cool_in_nvm = process->nvm_lists[i].last;
+      process->cur_cool_in_nvm_list = i;
+    }
+    // nvm hot list might be empty, in which case we have nothing to cool
+    if (process->cur_cool_in_nvm == NULL) {
+      process->cur_cool_in_nvm_list = 0;
+      process->need_cool_nvm = false;
+      return NULL;
+    }
   }
 
   // set hot and cold list pointers as appropriate for memory type
   // set current to the current cooled page for the memory type here as well
   if (dram) {
-    hot = &(process->dram_hot_list);
-    cold = &(process->dram_cold_list);
     current = process->cur_cool_in_dram;
-    assert(process->cur_cool_in_dram->list == &(process->dram_hot_list));
+    cool_list = process->cur_cool_in_dram_list;
+    cur_bins = process->dram_lists;
+    if (current) {
+      assert(current->list == &(cur_bins[current->hot]));
+    }
   } else {
-    hot = &(process->nvm_hot_list);
-    cold = &(process->nvm_cold_list);
     current = process->cur_cool_in_nvm;
-    assert(process->cur_cool_in_nvm->list == &(process->nvm_hot_list));
+    cool_list = process->cur_cool_in_nvm_list;
+    cur_bins = process->nvm_lists;
+    if (current) {
+      assert(current->list == &(cur_bins[current->hot]));
+    }
   }
   
   // start from the current cooled page. This is either where we left off
   // last time or the end of the page list if we've gone throug the whole list
   p = current;
-  for (int i = 0; i < COOLING_PAGES; i++) {
+  cur_list_index = cool_list;
+  for (i = 0; i < COOLING_PAGES; i++) {
     if (p == NULL) {
-        // nothing to cool, just exit
-        // likely we've reached the front of the list
+      // not pointing to a page to cool from. check the lower lists. 
+      for (j = cool_list; j > 0 && p == NULL; j--) {
+        p = cur_bins[j].last;
+        cool_list = j;
+      }
+      if (p == NULL) {
+        cool_list = 0;
         break;
+      }
     }
 
     // sanity check we grabbed a page in the appropriate memory type and
     // from the appropriate list
     if (dram) {
         assert(p->in_dram);
-        assert(p->list == &(process->dram_hot_list));
+        assert(p->list == &(process->dram_lists[p->hot]));
     } else {
         assert(!p->in_dram);
-        assert(p->list == &(process->nvm_hot_list));
+        assert(p->list == &(process->nvm_lists[p->hot]));
     }
 
     // compute the access samples this page would have had if it were up to date
@@ -387,37 +414,60 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
     }
 
     // is the page still hot if it was up to date with cooling?
-    if ((tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]) < HOT_READ_THRESHOLD) {
-        p->hot = false;
+    new_hotness = access_to_index(tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]);
+    if (new_hotness != p->hot) {
+      // if the page is no longer hot, then we move it to the cold list
+      p->hot = new_hotness;
+      // first, we update our current pointer in prep for p being
+      // moved to the cold list. This ensures our next call to
+      // prev_page() stays in the appropriate list
+      current = p->next;
+      if(current == NULL) {
+        goto_next_list = true;
+      }
+      page_list_remove(p->list, p);
+      enqueue_page(&(cur_bins[new_hotness]), p);
+    } else {
+      current = p;
+      cur_list_index = cool_list;
     }
     
-    // if the page is no longer hot, then we move it to the cold list
-    if (!p->hot) {
-        // first, we update our current pointer in prep for p being
-        // moved to the cold list. This ensures our next call to
-        // prev_page() stays in the appropriate list
-        current = p->next;
-        page_list_remove(hot, p);
-        enqueue_page(cold, p);
-    }
-    else {
-        // if our page is still hot, then update our current pointer
-        current = p;
-    }
-    
-    // have we gone through the entire hot list? If so, set the current cool
-    // page to NULL to signify that we do not have a current page to cool and
-    // set the needs cooling flag to false for the same reason
-    if (dram && (p == process->dram_hot_list.first)) {
-        process->need_cool = false;
-        return NULL;
-    } else if (!dram && (p == process->nvm_hot_list.first)) {
-        process->need_cool = false;
-        return NULL;
+    // have we gone through the entire hot list? If so, call for the 
+    // loop iteration to goto the next list.
+    if (dram && (p == process->dram_lists[cool_list].first)) {
+      goto_next_list = true;
+    } else if (!dram && (p == process->nvm_lists[cool_list].first)) {
+      goto_next_list = true;
     } 
 
     // grab another page to cool
-    p = prev_page(hot, current);
+    // first if we need to goto next list then goto that list for the next.
+    if(goto_next_list) {
+      if(cool_list == 1) {
+        // we've cooled everything thre is to cool
+        cur_list_index = 0;
+        current = NULL;
+        if (dram) {
+          process->need_cool_dram = false;
+        } else {
+          process->need_cool_nvm = false;
+        }
+        break;
+      }
+      goto_next_list = false;
+      cool_list--;
+      p = cur_bins[cool_list].last;
+    }
+    else {
+      p = prev_page(&(cur_bins[cool_list]), current);
+    }
+  }
+
+  if (dram) {
+    process->cur_cool_in_dram_list = cur_list_index;
+  }
+  else {
+    process->cur_cool_in_nvm_list = cur_list_index;
   }
 
   return current;
@@ -425,22 +475,25 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
 
 // convenience function for catching pages where we migrate or otherwise move a page
 // from one list to another. If the page in question was our "bookmark" pointer for
-// cooling, the nwe need to update that bookmark. Here, for simplicity, we just
+// cooling, then we need to update that bookmark. Here, for simplicity, we just
 // reset our bookmark to the end of the hot list
 void update_current_cool_page(struct hemem_process *process, struct hemem_page *page)
 {
   if (page == process->cur_cool_in_dram) {
     // first a set of sanity checks
     assert(page->in_dram);
-    assert(page->list == &(process->dram_hot_list));
+    assert(page->list == &(process->dram_lists[page->hot]));
     // then just reset the bookmark pointer to the last page in list
-    process->cur_cool_in_dram = process->dram_hot_list.last;
+    // just restart
+    process->cur_cool_in_dram = NULL;
+    process->cur_cool_in_dram_list = 0;
   } else if (page == process->cur_cool_in_nvm) {
     // first, a bunch of sanity checks
     assert(!(page->in_dram));
-    assert(page->list == &(process->nvm_hot_list));
+    assert(page->list == &(process->nvm_lists[page->hot]));
     // then just reset the bookmark pointer to the last page in list
-    process->cur_cool_in_nvm = process->nvm_hot_list.last;
+    process->cur_cool_in_nvm = NULL;
+    process->cur_cool_in_nvm_list = 0;
   }
 }
 
@@ -455,6 +508,7 @@ void handle_ring_requests(struct hemem_process *process)
   int num_ring_reqs;
   struct hemem_page* page = NULL;
   uint64_t tmp_accesses[NPBUFTYPES];
+  int new_hotness;
 
   // free pages using free page ring buffer
   // we take all pages from the free ring rather than until
@@ -474,14 +528,13 @@ void handle_ring_requests(struct hemem_process *process)
     assert(list != NULL);
 
     // list sanity checks
+    // either in the correct list or in a ring. 
     if (page->in_dram) {
-      if (page->hot) assert(page->list == &(process->dram_hot_list));
-      else assert(page->list == &(process->dram_cold_list));
+      assert(page->list == &(process->dram_lists[page->hot]) || page->ring_present);
     } else {
-      if (page->hot) assert(page->list == &(process->nvm_hot_list));
-      else assert(page->list == &(process->nvm_cold_list));
-    }
-    
+      assert(page->list == &(process->nvm_lists[page->hot]) || page->ring_present);
+    } 
+
     // check whether the page being freed is our bookmark cool page
     update_current_cool_page(process, page);
     
@@ -524,15 +577,16 @@ void handle_ring_requests(struct hemem_process *process)
     for (int j = 0; j < NPBUFTYPES; j++) {
         tmp_accesses[j] = page->accesses[j] >> (global_clock - page->local_clock);
     }
+    new_hotness = access_to_index(tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]);
    
     // is page even still hot?
-    if ((tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]) < HOT_READ_THRESHOLD) {
+    if (new_hotness < page->hot) {
       // page has been cooled and is no longer hot, just move to cold list
       // first, check to see if we need to update our cooling bookmark
       update_current_cool_page(process, page);
       page->ring_present = false;
       num_ring_reqs++;
-      make_cold(process, page);
+      make_cold(process, page, new_hotness);
       continue;
     }
 
@@ -541,7 +595,7 @@ void handle_ring_requests(struct hemem_process *process)
     update_current_cool_page(process, page);
     page->ring_present = false;
     num_ring_reqs++;
-    make_hot(process, page);
+    make_hot(process, page, new_hotness);
     //printf("hot ring, hot pages:%llu\n", num_ring_reqs);
   }
 
@@ -565,14 +619,15 @@ void handle_ring_requests(struct hemem_process *process)
     for (int j = 0; j < NPBUFTYPES; j++) {
         tmp_accesses[j] = page->accesses[j] >> (global_clock - page->local_clock);
     }
+    new_hotness = access_to_index(tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]);
 
-    if ((tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]) >= HOT_READ_THRESHOLD) {
+    if (new_hotness >= page->hot) {
       // page is now hot and should actually move to the hot list
       // if not already there
       update_current_cool_page(process, page);
       page->ring_present = false;
       num_ring_reqs++;
-      make_hot(process, page);
+      make_hot(process, page, new_hotness);
       continue;
     }
 
@@ -581,38 +636,62 @@ void handle_ring_requests(struct hemem_process *process)
     update_current_cool_page(process, page);
     page->ring_present = false;
     num_ring_reqs++;
-    make_cold(process, page);
+    make_cold(process, page, new_hotness);
     //printf("cold ring, cold pages:%llu\n", num_ring_reqs);
   }
 }
 
+struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
+  struct hemem_page* p;
+  for(int i = NUM_HOTNESS_LEVELS-1; i > 0; i--) {
+    p = dequeue_page(&(process->nvm_lists[i]));
+    if (p != NULL) {
+      // found something hot. we should try to promote it.
+      return p;
+    }
+  }
+  return NULL;
+}
+
+struct hemem_page* find_dram_victim(struct hemem_process *process, int64_t max_hotness) {
+  struct hemem_page* p;
+  for(int i = max_hotness-1; i >= 0; i--) {
+    p = dequeue_page(&(process->dram_lists[i]));
+    if (p != NULL) {
+      // found something cold. we should try to evict it.
+      return p;
+    }
+  }
+  return NULL;
+}
 
 void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_bytes)
 {
   uint64_t migrated_bytes;
   uint64_t old_offset;
   struct hemem_page *cp, *np;
-  bool from_hot;
   struct timeval now;
 
   for (migrated_bytes = 0; migrated_bytes < migrate_down_bytes;) {
-    if (migrated_bytes >= PEBS_MIGRATE_DOWN_RATE) {
+    if (migrated_bytes >= PEBS_MIGRATE_RATE) {
       break;
     }
-    cp = dequeue_page(&(process->dram_cold_list));
-    from_hot = false;
-    if (cp == NULL) {
-      // no cold pages to move down
-      // grab a hot page
-      cp = dequeue_page(&(process->dram_hot_list));
-      if (cp == NULL) {
-        // process doesn't have any dram to migrate down
+
+    // get the coldest possible dram page
+    for(int i = 0; i < NUM_HOTNESS_LEVELS; i++) {
+      cp = dequeue_page(&(process->dram_lists[i]));
+      if(cp != NULL) {
         break;
       }
-      from_hot = true;
-      if (cp == process->cur_cool_in_dram) {
-        process->cur_cool_in_dram = process->dram_hot_list.last;
-      }
+    }
+
+    if (cp == NULL) {
+      // no dram pages to move down
+      break;
+    }
+
+    if (cp == process->cur_cool_in_dram) {
+      process->cur_cool_in_dram = process->dram_lists[NUM_HOTNESS_LEVELS-1].last;
     }
 
     np = dequeue_page(&nvm_free_list);
@@ -630,11 +709,8 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
         np->tot_accesses[i] = 0;
       }
 
-      if (!from_hot) {
-        enqueue_page(&(process->nvm_cold_list), cp);
-      } else {
-        enqueue_page(&(process->nvm_hot_list), cp);
-      }        
+      enqueue_page(&(process->nvm_lists[cp->hot]), cp);
+      
       enqueue_page(&dram_free_list, np);
       migrated_bytes += pt_to_pagesize(cp->pt);
     } else {
@@ -642,11 +718,7 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
       // dram cold list and bail out
       gettimeofday(&now, NULL);
       LOG("%f\tpolicy thread found no NVM free pages\n", elapsed(&startup, &now));
-      if (from_hot) {
-        enqueue_page(&(process->dram_hot_list), cp);
-      } else {
-        enqueue_page(&(process->dram_cold_list), cp);
-      }
+      enqueue_page(&(process->dram_lists[cp->hot]), cp);
       break;
     }
     //assert(np != NULL);
@@ -661,28 +733,21 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
   uint64_t old_offset;
   uint64_t tmp_accesses[NPBUFTYPES];
   struct hemem_page *p, *np;
-  bool from_cold;
   struct timeval now;
+  int new_hotness;
 
   for (migrated_bytes = 0; migrated_bytes < migrate_up_bytes;) {
-    if (migrated_bytes >= PEBS_MIGRATE_UP_RATE) {
+    if (migrated_bytes >= PEBS_MIGRATE_RATE) {
       break;
     }
-    p = dequeue_page(&(process->nvm_hot_list));
-    from_cold = false;
+    p = find_candidate_nvm_page(process);
     if (p == NULL) {
-      // no hot pages to move up
-      // try a cold page
-      p = dequeue_page(&(process->nvm_cold_list));
-      if (p == NULL) {
-        // process doesn't have any NVM to migrate up
-        break;
-      }
-      from_cold = true;
+      // truly nothing in any list
+      break;
     }
 
     if (p == process->cur_cool_in_nvm) {
-      process->cur_cool_in_nvm = process->nvm_hot_list.last;
+      process->cur_cool_in_nvm = process->nvm_lists[NUM_HOTNESS_LEVELS - 1].last;
     }
 
     // compute the access samples this page would have had if it were up to date
@@ -691,24 +756,27 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
       tmp_accesses[j] = p->accesses[j] >> (global_clock - p->local_clock);
     }
 
-    if ((tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]) < HOT_READ_THRESHOLD) {
-      // page has been cooled and is no longer hot, just move to cold list
-      p->hot = false;
-      enqueue_page(&(process->nvm_cold_list), p);
+    new_hotness = access_to_index(tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]);
+    if (new_hotness == COLD) {
+      p->hot = new_hotness;
+      enqueue_page(&(process->nvm_lists[p->hot]), p);
       continue;
     }
-
+    
+    // TODO
+    // try to find a page for it. in the free list.
     np = dequeue_page(&dram_free_list);
     if (np == NULL) {
-      // no free dram pages, put back in nvm hot list for now
       gettimeofday(&now, NULL);
       LOG("%f\tpolicy thread found no DRAM free pages\n", elapsed(&startup, &now));
-      if (from_cold) {
-        enqueue_page(&(process->nvm_cold_list), p);
-      } else {
-        enqueue_page(&(process->nvm_hot_list), p);
-      }
+      //// no free dram pages. look for victim
+      //np = find_dram_victim(process, new_hotness);
+      //if (np == NULL) {
+      //  // no victim. put page back were it belongs.
+      p->hot = new_hotness;
+      enqueue_page(&(process->nvm_lists[p->hot]), p);
       break;
+      //}
     }
     assert(!np->present);
 
@@ -717,17 +785,15 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
     np->devdax_offset = old_offset;
     np->in_dram = false;
     np->present = false;
-    np->hot = false;
+    np->hot = COLD;
     for (int i = 0; i < NPBUFTYPES; i++) {
       np->accesses[i] = 0;
       np->tot_accesses[i] = 0;
     }
 
-    if (from_cold) {
-      enqueue_page(&(process->dram_cold_list), p);
-    } else {
-      enqueue_page(&(process->dram_hot_list), p);
-    }
+    p->hot = new_hotness;
+    enqueue_page(&(process->dram_lists[p->hot]), p);
+
     enqueue_page(&nvm_free_list, np);
     migrated_bytes += pt_to_pagesize(p->pt);
   }
@@ -742,12 +808,22 @@ static inline double calc_miss_ratio(struct hemem_process *process)
 }
 #endif
 
+static inline int64_t max(int64_t a, int64_t b)
+{
+  return a > b ? a : b;
+}
+
+static inline int64_t min(int64_t a, int64_t b)
+{
+  return a < b ? a : b;
+}
+
 void *pebs_policy_thread()
 {
   cpu_set_t cpuset;
   pthread_t thread;
   int ret;
-  uint64_t migrate_up_bytes, migrate_down_bytes;
+  uint64_t migrate_down_bytes;
   struct timeval start, end;
   double migrate_time;
   struct hemem_process *process, *tmp;
@@ -756,6 +832,9 @@ void *pebs_policy_thread()
   uint64_t requested_dram, remaining_dram, dram_taking;
   double slack;
   struct hemem_process *tmp1;
+  int64_t tmp_dram[NUM_HOTNESS_LEVELS];
+  int i, j;
+  int nvm_hot_pages_left_to_migrate, pages_from_cur_dram;
 #endif
 
   thread = pthread_self();
@@ -819,26 +898,27 @@ void *pebs_policy_thread()
         pthread_mutex_unlock(&(tmp->process_lock));
         continue;
       } else {
-        if (process->nvm_hot_list.numentries <= process->dram_cold_list.numentries) {
-          // process is not meeting its miss ratio but has some hot data in nvm that
-          // it can migrate up, just let it do that for now and maybe that is enough
-          tmp = process;
-          process = process->next;
-          pthread_mutex_unlock(&(tmp->process_lock));
-          continue;
-        }
+        //if (process->nvm_hot_list.numentries <= process->dram_cold_list.numentries) {
+        //  // process is not meeting its miss ratio but has some hot data in nvm that
+        //  // it can migrate up, just let it do that for now and maybe that is enough
+        //  tmp = process;
+        //  process = process->next;
+        //  pthread_mutex_unlock(&(tmp->process_lock));
+        // continue;
+        //}
         // process needs more DRAM
         slack = process->current_miss_ratio / process->target_miss_ratio;
         if (slack >= 2.0) {
           // we are more than 100% off our target, give process a large chunk
           // of DRAM (1 GB)
-          requested_dram = PEBS_MIGRATE_UP_RATE;
+          requested_dram = PEBS_MIGRATE_RATE;
         } else {
           // process is kind of close to its target miss ratio, so give it
           // a smaller chunk of DRAM
-          requested_dram = (PEBS_MIGRATE_UP_RATE * (slack - 1));
+          requested_dram = (PEBS_MIGRATE_RATE * (slack - 1));
           requested_dram -= (requested_dram % PAGE_SIZE);
         }
+        assert(requested_dram % PAGE_SIZE == 0);
         remaining_dram = requested_dram;
         
         // find a lower priority process to take DRAM from
@@ -959,26 +1039,62 @@ void *pebs_policy_thread()
 
       if (process->allowed_dram > process->current_dram) {
         // process can have more DRAM, so it can migrate things up if it can
-        migrate_down_bytes = 0;
+        process->migrate_down_bytes = 0;
       } else if (process->allowed_dram < process->current_dram) {
         // process has too much dram, so it needs to migrate things down
-        migrate_down_bytes = process->current_dram - process->allowed_dram;
-        if (migrate_down_bytes > PEBS_MIGRATE_DOWN_RATE) {
-          migrate_down_bytes = PEBS_MIGRATE_DOWN_RATE;
+        process->migrate_down_bytes = process->current_dram - process->allowed_dram;
+        if (process->migrate_down_bytes > PEBS_MIGRATE_RATE) {
+          process->migrate_down_bytes = PEBS_MIGRATE_RATE;
         }
       } else {
-        // process has correct amount of DRAM, migrate up and down
-        // an equal number of pages to the process's NVM hot list
-        migrate_down_bytes = process->nvm_hot_list.numentries * PAGE_SIZE;
-        if (migrate_down_bytes > PEBS_MIGRATE_DOWN_RATE) {
-          migrate_down_bytes = PEBS_MIGRATE_DOWN_RATE;
+        // process has correct amount of DRAM, need to migrate down enough pages
+        // to free dram for the hot NVM pages. 
+
+        // get number of pages that are in a hotter nvm list than a dram list 
+        // do we need a better way to do this with the hot lists? 
+        
+        // for each hotness in NVM we ask: how many pages of DRAM are we allowed to replace?
+        for (i = 0; i < NUM_HOTNESS_LEVELS; i++) {
+          tmp_dram[i] = process->dram_lists[i].numentries;
+        }
+        migrate_down_bytes = 0;
+        for (i = 0; i < NUM_HOTNESS_LEVELS - 1; i++) {
+          // algo:
+          // -for each NVM hotness we want to get how many pages we can fit into
+          //  DRAM if we swap colder pages
+          // -tmp_dram is to prevent double counting.
+          // 1) how many pages are at this NVM hotness.
+          // 2) count how many DRAM pages are lower than this hotness
+          // 3) repeat for each DRAM hotness
+          nvm_hot_pages_left_to_migrate = process->nvm_lists[i].numentries;
+          for (j = i-1; j >= 0; j--) {
+            // if we got all the hot pages up then we stop checking
+            if(nvm_hot_pages_left_to_migrate <= 0) {
+              break;
+            }
+
+            // if this level of DRAM has no pages left bail.
+            if(tmp_dram[j] == 0) {
+              continue;
+            }
+
+            // pages we want from this DRAM level is min(pages at this DRAM level, pages we want to move up)
+            pages_from_cur_dram = min(tmp_dram[j], nvm_hot_pages_left_to_migrate);
+            tmp_dram[j] -= pages_from_cur_dram;
+            assert(tmp_dram[j] >= 0);
+            migrate_down_bytes += pages_from_cur_dram * PAGE_SIZE;
+          }
+        }
+        process->migrate_down_bytes = migrate_down_bytes;
+        if (process->migrate_down_bytes > PEBS_MIGRATE_RATE) {
+          process->migrate_down_bytes = PEBS_MIGRATE_RATE;
         }
       }
 
       // migrate down first to free up DRAM space
       gettimeofday(&now, NULL);
-      LOG("%f\tprocess %d is migrating %ld bytes down\n", elapsed(&startup, &now), process->pid, migrate_down_bytes);
-      process_migrate_down(process, migrate_down_bytes);
+      LOG("%f\tprocess %d is migrating %ld bytes down\n", elapsed(&startup, &now), process->pid, process->migrate_down_bytes);
+      process_migrate_down(process, process->migrate_down_bytes);
 
       tmp = process;
       process = process->next;
@@ -1001,26 +1117,26 @@ void *pebs_policy_thread()
       
       if (process->allowed_dram > process->current_dram) {
         // process can have more DRAM, so it can migrate things up if it can
-        migrate_up_bytes = process->allowed_dram - process->current_dram;
-        if (migrate_up_bytes > PEBS_MIGRATE_UP_RATE) {
-          migrate_up_bytes = PEBS_MIGRATE_UP_RATE;
+        process->migrate_up_bytes = process->allowed_dram - process->current_dram;
+        if (process->migrate_up_bytes > PEBS_MIGRATE_RATE) {
+          process->migrate_up_bytes = PEBS_MIGRATE_RATE;
         }
       } else if (process->allowed_dram < process->current_dram) {
         // process has too much dram, so it needs to migrate things down
-        migrate_up_bytes = 0;
+        process->migrate_up_bytes = 0;
       } else {
-        // process has correct amount of DRAM, migrate up and down
-        // an equal number of pages to the process's NVM hot list
-        migrate_up_bytes = process->nvm_hot_list.numentries * PAGE_SIZE;
-        if (migrate_up_bytes > PEBS_MIGRATE_UP_RATE) {
-          migrate_up_bytes = PEBS_MIGRATE_UP_RATE;
+        // process has correct amount of DRAM, migrate up an equal
+        // number of pages as we migrated down
+        process->migrate_up_bytes = process->migrate_down_bytes;
+        if (process->migrate_up_bytes > PEBS_MIGRATE_RATE) {
+          process->migrate_up_bytes = PEBS_MIGRATE_RATE;
         }
       }
 
       // now migrate up to newly freed DRAM space
       gettimeofday(&now, NULL);
-      LOG("%f\tprocess %d is migrating %ld bytes up\n", elapsed(&startup, &now), process->pid, migrate_up_bytes);
-      process_migrate_up(process, migrate_up_bytes);
+      LOG("%f\tprocess %d is migrating %ld bytes up\n", elapsed(&startup, &now), process->pid, process->migrate_up_bytes);
+      process_migrate_up(process, process->migrate_up_bytes);
       
       process->cur_cool_in_dram = partial_cool(process, true);
       process->cur_cool_in_nvm = partial_cool(process, false);
@@ -1081,18 +1197,20 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
   struct hemem_page *page;
 
   gettimeofday(&start, NULL);
-  page = dequeue_page(&dram_free_list);
-  if (page != NULL) {
-    assert(page->in_dram);
-    assert(!page->present);
+  if (process->current_dram < process->allowed_dram) {
+    page = dequeue_page(&dram_free_list);
+    if (page != NULL) {
+      assert(page->in_dram);
+      assert(!page->present);
 
-    page->present = true;
-    enqueue_page(&(process->dram_cold_list), page);
+      page->present = true;
+      enqueue_page(&(process->dram_lists[COLD]), page);
 
-    gettimeofday(&end, NULL);
-    LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
+      gettimeofday(&end, NULL);
+      LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
 
-    return page;
+      return page;
+    }
   }
     
   // DRAM is full, fall back to NVM
@@ -1102,7 +1220,7 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
     assert(!page->present);
 
     page->present = true;
-    enqueue_page(&(process->nvm_cold_list), page);
+    enqueue_page(&(process->nvm_lists[COLD]), page);
 
     gettimeofday(&end, NULL);
     LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
@@ -1153,8 +1271,8 @@ void pebs_add_process(struct hemem_process *process)
   tmp = process->next;
   while (tmp != NULL) {
     pthread_mutex_lock(&(tmp->process_lock));
-    process->allowed_dram += tmp->dram_cold_list.numentries * PAGE_SIZE;
-    tmp->allowed_dram -= tmp->dram_cold_list.numentries * PAGE_SIZE;
+    process->allowed_dram += tmp->dram_lists[COLD].numentries * PAGE_SIZE;
+    tmp->allowed_dram -= tmp->dram_lists[COLD].numentries * PAGE_SIZE;
     gettimeofday(&now, NULL);
     LOG("%f\tNew process being added, process %d of lower priority now has %ld allowed DRAM\n", elapsed(&startup, &now), tmp->pid, tmp->allowed_dram);
     tmp1 = tmp;
@@ -1216,7 +1334,6 @@ void pebs_init(void)
 {
   pthread_t kswapd_thread;
   pthread_t scan_thread;
-  pthread_t migrate_thread;
   int ret;
 
   LOG("pebs_init: started\n");
@@ -1257,9 +1374,6 @@ void pebs_init(void)
   ret = pthread_create(&kswapd_thread, NULL, pebs_policy_thread, NULL);
   assert(ret == 0);
 
-  ret = pthread_create(&migrate_thread, NULL, pebs_migrate_thread, NULL);
-  assert(ret == 0);
-  
   LOG("Memory management policy is PEBS\n");
 
   LOG("pebs_init: finished\n");
@@ -1280,18 +1394,34 @@ void count_pages()
 {
   struct hemem_process *process;//, *tmp;
   struct timeval now;
+  int i;
   gettimeofday(&now, NULL);
   process = peek_process(&processes_list);
   while (process != NULL) {
     //pthread_mutex_lock(&(process->process_lock));
-    dram_hot_pages += process->dram_hot_list.numentries;
-    dram_cold_pages += process->dram_cold_list.numentries;
-    nvm_hot_pages += process->nvm_hot_list.numentries;
-    nvm_cold_pages += process->nvm_cold_list.numentries;
 #ifdef HEMEM_QOS
-    fprintf(process->logfd, "%f\t%f\t%lu\t%lu\t%lu\t%lu\t%lu\t%lu\n", elapsed(&startup, &now), process->current_miss_ratio, process->current_dram, process->allowed_dram, process->dram_hot_list.numentries, process->dram_cold_list.numentries, process->nvm_hot_list.numentries, process->nvm_cold_list.numentries);
+    fprintf(process->logfd, "%f\t%f\t%lu\t%lu", elapsed(&startup, &now), process->current_miss_ratio, process->current_dram, process->allowed_dram);
+    fprintf(process->logfd, "\tdram_lists: [%lu", process->dram_lists[COLD].numentries);
+    for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
+      fprintf(process->logfd, ", %lu", process->dram_lists[i].numentries);
+    }
+    fprintf(process->logfd, "]");
+    fprintf(process->logfd, "\tnvm_lists: [%lu", process->nvm_lists[COLD].numentries);
+    for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
+      fprintf(process->logfd, ", %lu", process->nvm_lists[i].numentries);
+    }
+    fprintf(process->logfd, "]\n");
     fflush(process->logfd);
 #endif
+    LOG_STATS("\tprocess [%d]\tdram_lists: [%lu", process->pid, process->dram_lists[COLD].numentries);
+    for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
+      LOG_STATS(", %lu", process->dram_lists[i].numentries);
+    }
+    LOG_STATS("]\tnvm_lists: [%lu", process->nvm_lists[COLD].numentries);
+    for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
+      LOG_STATS(", %lu", process->nvm_lists[i].numentries);
+    }
+    LOG_STATS("]\ttarget_miss_ratio: %f\n", process->target_miss_ratio);
     //tmp = process;
     process = process->next;
     //pthread_mutex_unlock(&(tmp->process_lock));
@@ -1317,13 +1447,8 @@ void pebs_stats()
 
   count_pages();
 
-  LOG_STATS("\tnum_processes: [%u]\tlc_processes: [%ld]\tdram_hot: [%lu]\tdram_cold: [%lu]\tnvm_hot: [%lu]\tnvm_cold: [%lu]\tdram_free: [%lu]\tnvm_free: [%lu]\n",
-        HASH_CNT(phh, processes),
+  LOG_STATS("\tnum_processes: [%lu]\tdram_free: [%lu]\tnvm_free: [%lu]\n",
         processes_list.numentries,
-        dram_hot_pages,
-        dram_cold_pages,
-        nvm_hot_pages,
-        nvm_cold_pages,
         dram_free_list.numentries,
         nvm_free_list.numentries);
   LOG_STATS("\themem_pages: [%lu]\tother_pages: [%lu]\tzero_pages: [%ld]\tother_processes: [%ld]\tthrottle/unthrottle: [%ld/%ld]\tcools: [%ld]\n",
@@ -1335,6 +1460,5 @@ void pebs_stats()
         unthrottle_cnt,
         cools);
   hemem_pages_cnt = total_pages_cnt = other_processes_cnt = throttle_cnt = unthrottle_cnt = 0;
-  dram_hot_pages = dram_cold_pages = nvm_hot_pages = nvm_cold_pages = 0;
 }
 

@@ -10,6 +10,17 @@ enum pbuftype {
     NPBUFTYPES
 };
 
+enum HOTNESS {
+  COLD,
+  HOT1,
+  HOT2,
+  HOT3,
+  HOT4,
+  HOT5,
+  HOT6,
+  NUM_HOTNESS_LEVELS
+};
+
 struct hemem_page {
   uint64_t va;
   pid_t pid;
@@ -21,7 +32,7 @@ struct hemem_page {
   bool in_migrate_up_queue;
   bool in_migrate_down_queue;
   bool present;
-  bool hot;
+  uint64_t hot;
   uint64_t naccesses;
   uint64_t migrations_up, migrations_down;
   uint64_t local_clock;
@@ -38,31 +49,37 @@ struct hemem_process {
   pid_t pid;
   long uffd;
   bool exited;
+  bool valid_uffd;
+  int remap_fd;
 #ifdef HEMEM_QOS
   _Atomic uint64_t volatile accessed_pages[NPBUFTYPES];
   double target_miss_ratio;
   double volatile current_miss_ratio;
   bool victimized;
   FILE* logfd;
+  uint64_t migrate_up_bytes, migrate_down_bytes;
 #endif
   volatile uint64_t current_dram;
   volatile uint64_t allowed_dram;
-  bool valid_uffd;
-  int remap_fd;
-  struct page_list dram_hot_list;
-  struct page_list dram_cold_list;
-  struct page_list nvm_hot_list;
-  struct page_list nvm_cold_list;
-  struct hemem_page* cur_cool_in_dram;
-  struct hemem_page* cur_cool_in_nvm;
-  volatile bool need_cool;
+
+  struct page_list dram_lists[NUM_HOTNESS_LEVELS + 1];
+  struct page_list nvm_lists[NUM_HOTNESS_LEVELS + 1];
+  int cur_cool_in_dram_list;
+  int cur_cool_in_nvm_list;
+  struct hemem_page *cur_cool_in_dram;
+  struct hemem_page *cur_cool_in_nvm;
+  volatile bool need_cool_dram;
+  volatile bool need_cool_nvm;
+
   volatile ring_handle_t hot_ring;
   volatile ring_handle_t cold_ring;
   volatile ring_handle_t free_page_ring;
   pthread_mutex_t free_page_ring_lock;
+
   struct hemem_page* pages;
   pthread_mutex_t pages_lock;
   UT_hash_handle phh;
+
   struct hemem_process *next, *prev;
   struct process_list *list;
 
