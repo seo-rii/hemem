@@ -36,6 +36,15 @@ uint64_t throttle_cnt = 0;
 uint64_t unthrottle_cnt = 0;
 uint64_t cools = 0;
 
+_Atomic volatile uint64_t free_ring_requests = 0;
+_Atomic volatile uint64_t hot_ring_requests = 0;
+_Atomic volatile uint64_t cold_ring_requests = 0;
+
+_Atomic volatile uint64_t free_ring_requests_handled = 0;
+_Atomic volatile uint64_t hot_ring_requests_handled = 0;
+_Atomic volatile uint64_t cold_ring_requests_handled = 0;
+
+
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
 
@@ -92,12 +101,14 @@ void make_hot_request(struct hemem_process* process, struct hemem_page* page)
 {
    page->ring_present = true;
    ring_buf_put(process->hot_ring, (uint64_t*)page);
+   hot_ring_requests++;
 }
 
 void make_cold_request(struct hemem_process* process, struct hemem_page* page)
 {
     page->ring_present = true;
     ring_buf_put(process->cold_ring, (uint64_t*)page);
+    cold_ring_requests++;
 }
 
 static inline int access_to_index(uint64_t num) {
@@ -555,6 +566,7 @@ void handle_ring_requests(struct hemem_process *process)
     else {
       enqueue_page(&nvm_free_list, page);
     }
+    free_ring_requests_handled++;
   }
 
   page = NULL;
@@ -569,6 +581,12 @@ void handle_ring_requests(struct hemem_process *process)
 
     if (!page->present) {
       // page has been freed
+      if (page->in_dram) {
+        assert(page->list == &dram_free_list);
+      } else {
+        assert(page->list == &nvm_free_list);
+      }
+      hot_ring_requests_handled++;
       continue;
     }
     
@@ -587,6 +605,7 @@ void handle_ring_requests(struct hemem_process *process)
       page->ring_present = false;
       num_ring_reqs++;
       make_cold(process, page, new_hotness);
+      hot_ring_requests_handled++;
       continue;
     }
 
@@ -597,6 +616,8 @@ void handle_ring_requests(struct hemem_process *process)
     num_ring_reqs++;
     make_hot(process, page, new_hotness);
     //printf("hot ring, hot pages:%llu\n", num_ring_reqs);
+    
+    hot_ring_requests_handled++;
   }
 
   page = NULL;
@@ -611,6 +632,12 @@ void handle_ring_requests(struct hemem_process *process)
 
     if (!page->present) {
       // page has been freed
+      if (page->in_dram) {
+        assert(page->list == &dram_free_list);
+      } else {
+        assert(page->list == &nvm_free_list);
+      }
+      cold_ring_requests_handled++;
       continue;
     }
     
@@ -628,6 +655,7 @@ void handle_ring_requests(struct hemem_process *process)
       page->ring_present = false;
       num_ring_reqs++;
       make_hot(process, page, new_hotness);
+      cold_ring_requests_handled++;
       continue;
     }
 
@@ -638,6 +666,7 @@ void handle_ring_requests(struct hemem_process *process)
     num_ring_reqs++;
     make_cold(process, page, new_hotness);
     //printf("cold ring, cold pages:%llu\n", num_ring_reqs);
+    cold_ring_requests_handled++;
   }
 }
 
@@ -1253,6 +1282,7 @@ void pebs_remove_page(struct hemem_process *process, struct hemem_page *page)
   while (ring_buf_full(process->free_page_ring));
   pthread_mutex_lock(&(process->free_page_ring_lock));
   ring_buf_put(process->free_page_ring, (uint64_t*)page); 
+  free_ring_requests++;
   pthread_mutex_unlock(&(process->free_page_ring_lock));
 
 }
@@ -1270,11 +1300,18 @@ void pebs_add_process(struct hemem_process *process)
   process->current_miss_ratio = -1;
   process->current_dram = 0;
   process->allowed_dram = dram_free_list.numentries * PAGE_SIZE;
-  tmp = process->next;
+  tmp = peek_process(&processes_list);
   while (tmp != NULL) {
+    if (tmp == process) {
+      tmp = tmp->next;
+      continue;
+    }
     pthread_mutex_lock(&(tmp->process_lock));
-    process->allowed_dram += tmp->dram_lists[COLD].numentries * PAGE_SIZE;
-    tmp->allowed_dram -= tmp->dram_lists[COLD].numentries * PAGE_SIZE;
+
+    // give unused DRAM allocation to new process
+    process->allowed_dram += (tmp->allowed_dram - tmp->current_dram);
+    tmp->allowed_dram -= (tmp->allowed_dram - tmp->current_dram);
+    
     gettimeofday(&now, NULL);
     LOG("%f\tNew process being added, process %d of lower priority now has %ld allowed DRAM\n", elapsed(&startup, &now), tmp->pid, tmp->allowed_dram);
     tmp1 = tmp;
@@ -1311,6 +1348,10 @@ void pebs_add_process(struct hemem_process *process)
 void pebs_remove_process(struct hemem_process *process)
 {
   uint64_t freed_dram;
+
+  // wait for all of its memory to be freed by policy thread
+  // before exiting
+  while (!ring_buf_empty(process->free_page_ring));
 
   process_list_remove(&processes_list, process);
   pthread_mutex_lock(&(process->process_lock));
@@ -1449,10 +1490,16 @@ void pebs_stats()
 
   count_pages();
 
-  LOG_STATS("\tnum_processes: [%lu]\tdram_free: [%lu]\tnvm_free: [%lu]\n",
+  LOG_STATS("\tnum_processes: [%lu]\tdram_free: [%lu]\tnvm_free: [%lu]\thot_ring: [%lu]\thot_handled: [%ld]\tcold_ring: [%ld]\tcold_handled: [%ld]\tfree_ring: [%ld]\tfree_handled: [%ld]\n",
         processes_list.numentries,
         dram_free_list.numentries,
-        nvm_free_list.numentries);
+        nvm_free_list.numentries,
+        hot_ring_requests,
+        hot_ring_requests_handled,
+        cold_ring_requests,
+        cold_ring_requests_handled,
+        free_ring_requests,
+        free_ring_requests_handled);
   LOG_STATS("\themem_pages: [%lu]\tother_pages: [%lu]\tzero_pages: [%ld]\tother_processes: [%ld]\tthrottle/unthrottle: [%ld/%ld]\tcools: [%ld]\n",
         hemem_pages_cnt,
         total_pages_cnt - hemem_pages_cnt,

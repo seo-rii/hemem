@@ -887,7 +887,7 @@ void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
   ret = ioctl(page->uffd, UFFDIO_WRITEPROTECT, &wp);
 
   if (ret < 0) {
-    if (errno == EBADF) {
+    if (errno == EBADF || errno == ENOENT) {
       if (!(uffds[page->uffd]->exited)) {
         perror("uffdio writeprotect");
         assert(0);
