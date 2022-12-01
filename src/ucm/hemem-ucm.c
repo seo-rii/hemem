@@ -714,6 +714,7 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
   void *old_addr;
   void *new_addr;
   struct timeval migrate_start, migrate_end;
+  struct timeval remap_start, remap_end;
   struct timeval start, end;
   uint64_t old_addr_offset, new_addr_offset;
   uint64_t pagesize;
@@ -783,7 +784,10 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
   page_app.in_dram = page->in_dram;
   page_app.pt = page->pt;
   page_app.migrated = true;
+  gettimeofday(&remap_start, NULL);
   remap_pages(process->pid, process->remap_fd, &page_app, 1);
+  gettimeofday(&remap_end, NULL);
+  LOG_TIME("hemem_remap_page_up: %f s\n", elapsed(&remap_start, &remap_end));
   gettimeofday(&migrate_end, NULL);
   LOG_TIME("hemem_migrate_up: %f s\n", elapsed(&migrate_start, &migrate_end));
 }
@@ -792,6 +796,7 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
   void *old_addr;
   void *new_addr;
   struct timeval migrate_start, migrate_end;
+  struct timeval remap_start, remap_end;
   struct timeval start, end;
   uint64_t old_addr_offset, new_addr_offset;
   uint64_t pagesize;
@@ -862,7 +867,10 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
   page_app.in_dram = page->in_dram;
   page_app.pt = page->pt;
   page_app.migrated = true;
+  gettimeofday(&remap_start, NULL);
   remap_pages(process->pid, process->remap_fd, &page_app, 1);
+  gettimeofday(&remap_end, NULL);
+  LOG_TIME("hemem_remap_page_down: %f s\n", elapsed(&remap_start, &remap_end));
 
   gettimeofday(&migrate_end, NULL);
   LOG_TIME("hemem_migrate_down: %f s\n", elapsed(&migrate_start, &migrate_end));

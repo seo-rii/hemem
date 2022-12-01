@@ -689,7 +689,7 @@ struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
   struct hemem_page *starting_page;
   int tot_accesses;
 
-  for(int i = NUM_HOTNESS_LEVELS-1; i > 0; i--) {
+  for(int i = NUM_HOTNESS_LEVELS-1; i > 2; i--) {
     p = dequeue_page(&(process->nvm_lists[i]));
 
     if (p == NULL) {
@@ -712,18 +712,6 @@ struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
     }
     if (p != NULL) {
       // found something hot. we should try to promote it.
-      return p;
-    }
-  }
-  return NULL;
-}
-
-struct hemem_page* find_dram_victim(struct hemem_process *process, int64_t max_hotness) {
-  struct hemem_page* p;
-  for(int i = 0; i < max_hotness; i++) {
-    p = dequeue_page(&(process->dram_lists[i]));
-    if (p != NULL) {
-      // found something cold. we should try to evict it.
       return p;
     }
   }
