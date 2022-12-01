@@ -1125,7 +1125,7 @@ void *pebs_policy_thread()
           tmp_dram[i] = process->dram_lists[i].numentries;
         }
         migrate_down_bytes = 0;
-        for (i = 0; i < NUM_HOTNESS_LEVELS - 1; i++) {
+        for (i = NUM_HOTNESS_LEVELS - 1; i > 0; i--) {
           // algo:
           // -for each NVM hotness we want to get how many pages we can fit into
           //  DRAM if we swap colder pages

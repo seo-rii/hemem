@@ -233,9 +233,10 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   
   process->pages = NULL;
 
+  process->cur_cool_in_dram = NULL;
+  process->cur_cool_in_nvm = NULL;
   process->cur_cool_in_dram_list = 0;
   process->cur_cool_in_nvm_list = 0;
-
   process->need_cool_dram = false;
   process->need_cool_nvm = false;
 
@@ -1131,7 +1132,7 @@ void *handle_fault() {
           ret = ioctl(process->uffd, UFFDIO_WAKE, &range);
 
           if (ret < 0) {
-            if (errno == EBADF) {
+            if (errno == EBADF || errno == ENOENT) {
               if (!process->exited) {
                 perror("uffdio wake");
                 assert(0);
