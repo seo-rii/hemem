@@ -19,6 +19,9 @@ gups-small: gups-small.o
 gups: gups.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups gups.o zipf.o ../src/timer.o $(LIBS)
 
+gups-warmset: gups-warmset.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-warmset gups-warmset.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem
+
 gups-pebs: gups.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups-pebs gups.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem
 
@@ -42,6 +45,9 @@ gups.o: gups.c zipf.c  gups.h
 
 gups-hotset-move.o: gups-hotset-move.c zipf.c gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c gups-hotset-move.c zipf.c
+
+gups-warmset.o: gups-warmset.c zipf.c gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c gups-warmset.c zipf.c
 
 clean:
 	$(RM) *.o gups gups-hotset-move gups-lru-swap gups-lru gups-simple gups-random gups-pebs

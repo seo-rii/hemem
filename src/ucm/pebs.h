@@ -9,16 +9,13 @@
 
 #include "hemem-types.h"
 
-#define PEBS_KSWAPD_INTERVAL      (10000) // in us (10ms)
-#define PEBS_KSWAPD_MIGRATE_RATE  (10UL * 1024UL * 1024UL * 1024UL) // 10GB
+#define PEBS_POLICY_INTERVAL      (1000000) // in us (1 s)
 #define PEBS_MIGRATE_RATE      (1UL * 1024UL * 1024UL * 1024UL) // 1GB
-#define PEBS_MIGRATE_MAX_UP_RATE      (10UL * 1024UL * 1024UL * 1024UL) // 10GB
-#define HOT_READ_THRESHOLD        (4)
 //#define HOT_WRITE_THRESHOLD       (4)
-#define PEBS_COOLING_THRESHOLD    (64)
+#define PEBS_COOLING_THRESHOLD    (22)
 
 #define HOT_RING_REQS_THRESHOLD   (1024*1024)
-#define COLD_RING_REQS_THRESHOLD  (1024*1024)
+#define COLD_RING_REQS_THRESHOLD  (128)
 #define COOLING_PAGES             (8192)
 
 #define PEBS_NPROCS 24
@@ -27,9 +24,7 @@
 #define SAMPLE_PERIOD 101
 //#define SAMPLE_FREQ	100
 
-#define MISS_RATIO_TOLERANCE (0.1)
-
-#define EWMA_FRAC (0.5)
+#define EWMA_FRAC (1.0)
 
 struct perf_sample {
     struct perf_event_header header;

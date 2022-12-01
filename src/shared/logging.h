@@ -24,8 +24,8 @@ static inline void log_time(const char* fmt, ...)
 }
 
 //#define LOG_TIME(str, ...) log_time(str, __VA_ARGS__)
-//#define LOG_TIME(str, ...) fprintf(timef, str, __VA_ARGS__)
-#define LOG_TIME(str, ...) while (0) {}
+#define LOG_TIME(str, ...) fprintf(timef, str, __VA_ARGS__)
+//#define LOG_TIME(str, ...) while (0) {}
 
 #define STATS_THREAD
 

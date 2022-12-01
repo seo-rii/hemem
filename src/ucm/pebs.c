@@ -34,7 +34,9 @@ uint64_t total_pages_cnt = 0;
 uint64_t zero_pages_cnt = 0;
 uint64_t throttle_cnt = 0;
 uint64_t unthrottle_cnt = 0;
-uint64_t cools = 0;
+uint64_t dram_cools = 0, nvm_cools = 0;
+uint64_t dram_cools_finished = 0, nvm_cools_finished = 0;
+uint64_t stale_candidate_count = 0;
 
 _Atomic volatile uint64_t free_ring_requests = 0;
 _Atomic volatile uint64_t hot_ring_requests = 0;
@@ -112,7 +114,7 @@ void make_cold_request(struct hemem_process* process, struct hemem_page* page)
 }
 
 static inline int access_to_index(uint64_t num) {
-  if(num == 0) {
+  if(num <= 0) {
     return 0;
   }
   int ret = 64 - __builtin_clzll(num);
@@ -192,7 +194,8 @@ void *pebs_scan_thread()
                     page->local_clock = global_clock;
                     if (page->accesses[j] > PEBS_COOLING_THRESHOLD) {
                       global_clock++;
-                      cools++;
+                      dram_cools++;
+                      nvm_cools++;
                       process->need_cool_dram = true;
                       process->need_cool_nvm = true;
                     }
@@ -336,6 +339,8 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
   struct page_list* cur_bins;
   int i, j, new_hotness;
 
+  struct timeval start, end;
+
   // do we even need to be cooling right now? If not, just return
   // where we left off last time we needed to cool. Next time this function
   // is called when cooling is needed, we pick up from here
@@ -357,6 +362,7 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
     if (process->cur_cool_in_dram == NULL) {
       process->cur_cool_in_dram_list = 0;
       process->need_cool_dram = false;
+      dram_cools_finished++;
       return NULL;
     }
   } else if ((!dram) && (process->cur_cool_in_nvm == NULL) && (process->cur_cool_in_nvm_list == 0)) {
@@ -369,9 +375,12 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
     if (process->cur_cool_in_nvm == NULL) {
       process->cur_cool_in_nvm_list = 0;
       process->need_cool_nvm = false;
+      nvm_cools_finished++;
       return NULL;
     }
   }
+
+  gettimeofday(&start, NULL);
 
   // set hot and cold list pointers as appropriate for memory type
   // set current to the current cooled page for the memory type here as well
@@ -460,8 +469,10 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
         current = NULL;
         if (dram) {
           process->need_cool_dram = false;
+          dram_cools_finished++;
         } else {
           process->need_cool_nvm = false;
+          nvm_cools_finished++;
         }
         break;
       }
@@ -480,6 +491,9 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
   else {
     process->cur_cool_in_nvm_list = cur_list_index;
   }
+
+  gettimeofday(&end, NULL);
+  LOG_TIME("partial_cool: %f s\n", elapsed(&start, &end));
 
   return current;
 }
@@ -672,8 +686,30 @@ void handle_ring_requests(struct hemem_process *process)
 
 struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
   struct hemem_page* p;
+  struct hemem_page *starting_page;
+  int tot_accesses;
+
   for(int i = NUM_HOTNESS_LEVELS-1; i > 0; i--) {
     p = dequeue_page(&(process->nvm_lists[i]));
+
+    if (p == NULL) {
+      // got null. list empy. move on.
+      continue;
+    }
+
+    // check if the page is stale in the list. if it is then oops. move on.
+    tot_accesses = (p->accesses[DRAMREAD] + p->accesses[NVMREAD]) >> (global_clock - p->local_clock);
+    starting_page = p;
+    while (access_to_index(tot_accesses) < p->hot) {
+      if (access_to_index(tot_accesses) < p->hot) {
+        stale_candidate_count++;
+      }
+      enqueue_page(&(process->nvm_lists[i]), p);
+      p = dequeue_page(&(process->nvm_lists[i]));
+      if (p == starting_page) {
+        break;
+      }
+    }
     if (p != NULL) {
       // found something hot. we should try to promote it.
       return p;
@@ -684,7 +720,7 @@ struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
 
 struct hemem_page* find_dram_victim(struct hemem_process *process, int64_t max_hotness) {
   struct hemem_page* p;
-  for(int i = max_hotness-1; i >= 0; i--) {
+  for(int i = 0; i < max_hotness; i++) {
     p = dequeue_page(&(process->dram_lists[i]));
     if (p != NULL) {
       // found something cold. we should try to evict it.
@@ -1098,7 +1134,7 @@ void *pebs_policy_thread()
           // 2) count how many DRAM pages are lower than this hotness
           // 3) repeat for each DRAM hotness
           nvm_hot_pages_left_to_migrate = process->nvm_lists[i].numentries;
-          for (j = i-1; j >= 0; j--) {
+          for (j = 0; j < i; j++) {
             // if we got all the hot pages up then we stop checking
             if(nvm_hot_pages_left_to_migrate <= 0) {
               break;
@@ -1213,9 +1249,9 @@ void *pebs_policy_thread()
     }
 #endif
     gettimeofday(&end, NULL);
-    migrate_time = 1000000 * elapsed(&start, &end);
-    if (migrate_time < 1000000.0) {
-      usleep((uint64_t)(1000000.0 - migrate_time));
+    migrate_time = PEBS_POLICY_INTERVAL * elapsed(&start, &end);
+    if (migrate_time < (1.0 * PEBS_POLICY_INTERVAL)) {
+      usleep((uint64_t)((1.0 * PEBS_POLICY_INTERVAL) - migrate_time));
     }
   }
 
@@ -1490,7 +1526,7 @@ void pebs_stats()
 
   count_pages();
 
-  LOG_STATS("\tnum_processes: [%lu]\tdram_free: [%lu]\tnvm_free: [%lu]\thot_ring: [%lu]\thot_handled: [%ld]\tcold_ring: [%ld]\tcold_handled: [%ld]\tfree_ring: [%ld]\tfree_handled: [%ld]\n",
+  LOG_STATS("\tnum_processes: [%lu]\tdram_free: [%lu]\tnvm_free: [%lu]\thot_ring: [%lu]\thot_handled: [%ld]\tcold_ring: [%ld]\tcold_handled: [%ld]\tfree_ring: [%ld]\tfree_handled: [%ld]\tstale_candidates: [%ld]\n",
         processes_list.numentries,
         dram_free_list.numentries,
         nvm_free_list.numentries,
@@ -1499,15 +1535,19 @@ void pebs_stats()
         cold_ring_requests,
         cold_ring_requests_handled,
         free_ring_requests,
-        free_ring_requests_handled);
-  LOG_STATS("\themem_pages: [%lu]\tother_pages: [%lu]\tzero_pages: [%ld]\tother_processes: [%ld]\tthrottle/unthrottle: [%ld/%ld]\tcools: [%ld]\n",
+        free_ring_requests_handled,
+        stale_candidate_count);
+  LOG_STATS("\themem_pages: [%lu]\tother_pages: [%lu]\tzero_pages: [%ld]\tother_processes: [%ld]\tthrottle/unthrottle: [%ld/%ld]\tcools: [%ld/%ld]\tcools_finished: [%ld/%ld]\n",
         hemem_pages_cnt,
         total_pages_cnt - hemem_pages_cnt,
         zero_pages_cnt,
         other_processes_cnt,
         throttle_cnt,
         unthrottle_cnt,
-        cools);
+        dram_cools,
+        nvm_cools,
+        dram_cools_finished,
+        nvm_cools_finished);
   hemem_pages_cnt = total_pages_cnt = other_processes_cnt = throttle_cnt = unthrottle_cnt = 0;
 }
 

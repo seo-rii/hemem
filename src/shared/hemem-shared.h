@@ -44,7 +44,7 @@
 
 #define MAX_FAULT_PAGES 16
 
-#define STATS_THREAD_CPU  (23)
+#define STATS_THREAD_CPU  (0)
 
 enum memtypes {
   FASTMEM = 0,
