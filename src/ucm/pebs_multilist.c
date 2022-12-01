@@ -38,6 +38,7 @@ uint64_t cools = 0;
 uint64_t dram_hot_pages = 0;
 uint64_t dram_pages_count[NUM_HOTNESS_LEVELS] = {0};
 uint64_t nvm_pages_count[NUM_HOTNESS_LEVELS] = {0};
+uint64_t stale_candidate_count = 0;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
@@ -104,7 +105,7 @@ void make_cold_request(struct hemem_process* process, struct hemem_page* page)
 }
 
 int access_to_index(uint64_t num) {
-  if(num == 0) {
+  if(num <= 0) {
     return 0;
   }
   int ret = 64-__builtin_clzll(num);
@@ -628,8 +629,30 @@ void handle_ring_requests(struct hemem_process *process)
 
 struct hemem_page* find_cadidate_nvm_page(struct hemem_process *process) {
   struct hemem_page* p;
+  struct hemem_page* starting_page;
   for(int i = NUM_HOTNESS_LEVELS-1; i > 0; i--) {
     p = dequeue_page(&(process->nvm_lists[i]));
+
+    if(p == NULL) {
+      // got null. list empty. move on.
+      continue;
+    }
+    
+    // check if the page is stale in the list. if it is then oops. move on. 
+    int tot_accesses = (p->accesses[DRAMREAD] + p->accesses[NVMREAD]) >> (global_clock - p->local_clock);
+    starting_page = p;
+    while(access_to_index(tot_accesses) < p->hot) {
+      if(access_to_index(tot_accesses) < p->hot) {
+        stale_candidate_count++;
+      }
+      enqueue_page(&(process->nvm_lists[i]), p);
+      p = dequeue_page(&(process->nvm_lists[i]));
+      if(p == starting_page) {
+        break;
+      }
+
+    }
+
     if (p != NULL) {
       // found something hot. we should try to promote it.
       return p;
@@ -640,7 +663,7 @@ struct hemem_page* find_cadidate_nvm_page(struct hemem_process *process) {
 
 struct hemem_page* find_dram_victim(struct hemem_process *process, int64_t max_hotness) {
   struct hemem_page* p;
-  for(int i = max_hotness-1; i >= 0; i--) {
+  for(int i = 0; i < max_hotness; i++) {
     p = dequeue_page(&(process->dram_lists[i]));
     if (p != NULL) {
       // found something cold. we should try to evict it.
@@ -741,13 +764,7 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
     np = dequeue_page(&dram_free_list);
     if (np == NULL) {
       // no free dram pages. look for victim
-      np = find_dram_victim(process, new_hotness);
-      if(np == NULL) {
-        // no victim. put page back where it belongs.
-        p->hot = new_hotness;
-        enqueue_page(&(process->nvm_lists[new_hotness]), p);
-        break;
-      }
+      break;
     }
     assert(!np->present);
 
@@ -1291,10 +1308,10 @@ void pebs_stats()
 
   count_pages();
 
-  LOG_STATS("\tnum_processes: [%u]\tlc_processes: [%ld]\tdram_hot: [%lu]\tdram_cold: [%lu]\tnvm_hot: [%lu]\tnvm_cold: [%lu]\tdram_free: [%lu]\tnvm_free: [%lu]\n",
+  LOG_STATS("\tnum_processes: [%u]\tlc_processes: [%ld]\tstale_candidate_count: [%lu]\tdram_cold: [%lu]\tnvm_hot: [%lu]\tnvm_cold: [%lu]\tdram_free: [%lu]\tnvm_free: [%lu]\n",
         HASH_CNT(phh, processes),
         processes_list.numentries,
-        0,
+        stale_candidate_count,
         0,
         0,
         0,
