@@ -314,6 +314,7 @@ int main(int argc, char **argv)
     // run through gups once to touch all memory
     // spawn gups worker threads
     for (i = 0; i < threads; i++) {
+      ga[i]->iters = updates * 2;
       int r = pthread_create(&t[i], NULL, do_gups, (void*)ga[i]);
       assert(r == 0);
     }
@@ -359,6 +360,7 @@ int main(int argc, char **argv)
 
   // wait for worker threads
   for (i = 0; i < threads; i++) {
+    ga[i]->iters = updates;
     int r = pthread_join(t[i], NULL);
     assert(r == 0);
   }

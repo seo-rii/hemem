@@ -351,16 +351,11 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
 
     add_page(process, page);
 
-    if (in_dram) {
-      process->current_dram += pagesize;
-    }
-
     page_app = &(response->pages[response->num_pages]);
     page_app->va = page_boundry;
     page_app->devdax_offset = offset;
     page_app->in_dram = in_dram;
     page_app->pt = page->pt;
-    page_app->migrated = false;
     response->num_pages++;
     page_boundry += pagesize;
 
@@ -777,13 +772,10 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
 
   bytes_migrated += pagesize;
 
-  process->current_dram += pagesize;
-
   page_app.va = page->va;
   page_app.devdax_offset = page->devdax_offset;
   page_app.in_dram = page->in_dram;
   page_app.pt = page->pt;
-  page_app.migrated = true;
   gettimeofday(&remap_start, NULL);
   remap_pages(process->pid, process->remap_fd, &page_app, 1);
   gettimeofday(&remap_end, NULL);
@@ -860,13 +852,10 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
 
   bytes_migrated += pagesize;
 
-  process->current_dram -= pagesize;
-
   page_app.va = page->va;
   page_app.devdax_offset = page->devdax_offset;
   page_app.in_dram = page->in_dram;
   page_app.pt = page->pt;
-  page_app.migrated = true;
   gettimeofday(&remap_start, NULL);
   remap_pages(process->pid, process->remap_fd, &page_app, 1);
   gettimeofday(&remap_end, NULL);
@@ -1038,10 +1027,6 @@ void handle_missing_fault(struct hemem_process *process,
   // place in hemem's page tracking list
   add_page(process, page);
 
-  if (in_dram) {
-    process->current_dram += pagesize;
-  }
-
   missing_faults_handled++;
   pages_allocated++;
   gettimeofday(&missing_end, NULL);
@@ -1052,7 +1037,6 @@ void handle_missing_fault(struct hemem_process *process,
   page_app.devdax_offset = page->devdax_offset;
   page_app.in_dram = page->in_dram;
   page_app.pt = page->pt;
-  page_app.migrated = false;
 
   remap_pages(process->pid, process->remap_fd, &page_app, 1);  
 }

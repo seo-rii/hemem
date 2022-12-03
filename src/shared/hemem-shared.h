@@ -80,7 +80,6 @@ struct hemem_page_app {
   uint64_t ucm_va;
   uint64_t devdax_offset;
   bool in_dram;
-  bool migrated;
   enum pagetypes pt;
 };
 

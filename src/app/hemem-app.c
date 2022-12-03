@@ -45,41 +45,7 @@ int remap_fd;
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
 
-uint64_t dram_allocated = 0;
-uint64_t nvm_allocated = 0;
-
 double target_miss_ratio =  0.1;
-
-#ifdef STATS_THREAD
-pthread_t stats_thread;
-
-void app_print_stats()
-{
-//  LOG_STATS("dram_allocated: [%lu]\tnvm_allocated: [%lu]\n", dram_allocated, nvm_allocated);
-}
-
-static void *app_stats_thread()
-{
-  cpu_set_t cpuset;
-  pthread_t thread;
-
-  thread = pthread_self();
-  CPU_ZERO(&cpuset);
-  CPU_SET(STATS_THREAD_CPU, &cpuset);
-  int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-  if (s != 0) {
-    perror("thread setaffinity");
-    assert(0);
-  }
-
-  for (;;) {
-    sleep(1);
-    app_print_stats();
-  }
-
-  return NULL;
-}
-#endif
 
 void* process_request(int fd, void* request)
 {
@@ -265,17 +231,9 @@ void remap_page(struct hemem_page_app* page)
 
   if (in_dram) {
     fd = dramfd;
-    dram_allocated += pagesize;
-    if (page->migrated) {
-      nvm_allocated -= pagesize;
-    }
   }
   else {
     fd = nvmfd;
-    nvm_allocated += pagesize;
-    if (page->migrated) {
-      dram_allocated -= pagesize;
-    }
   }
 
   newptr = libc_mmap((void*)page->va, pagesize, 
@@ -477,13 +435,6 @@ void hemem_app_init()
 
   LOG("hemem_app_init: finished\n");
 
-#ifdef STATS_THREAD
-  if (pthread_create(&stats_thread, NULL, app_stats_thread, 0)) {
-    perror("pthread create");
-    assert(0);
-  }
-#endif
-
   internal_call = false;
 }
 
@@ -546,12 +497,6 @@ static void hemem_mmap_populate(void* addr, size_t length)
           assert(0);
         }
 
-        if (in_dram) {
-          dram_allocated += pagesize;
-        } else {
-          nvm_allocated += pagesize;
-        }
-      
         if (newptr != (void*)page_boundry) {
           fprintf(stderr, "hemem: mmap populate: warning, newptr != page boundry\n");
         }

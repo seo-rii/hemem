@@ -247,6 +247,7 @@ static void pebs_migrate_down(struct hemem_process *process, struct hemem_page *
   page->migrating = true;
   hemem_ucm_wp_page(page, true);
   hemem_ucm_migrate_down(process, page, offset);
+  process->current_dram -= pt_to_pagesize(page->pt);
   page->migrating = false; 
 
   gettimeofday(&end, NULL);
@@ -262,6 +263,7 @@ static void pebs_migrate_up(struct hemem_process *process, struct hemem_page *pa
   page->migrating = true;
   hemem_ucm_wp_page(page, true);
   hemem_ucm_migrate_up(process, page, offset);
+  process->current_dram += pt_to_pagesize(page->pt);
   page->migrating = false;
 
   gettimeofday(&end, NULL);
@@ -1094,9 +1096,14 @@ void *pebs_policy_thread()
 
       if (process->allowed_dram > process->current_dram) {
         // process can have more DRAM, so it can migrate things up if it can
+        process->migrate_up_bytes = process->allowed_dram - process->current_dram;
+        if (process->migrate_up_bytes > PEBS_MIGRATE_RATE) {
+          process->migrate_up_bytes = PEBS_MIGRATE_RATE;
+        }
         process->migrate_down_bytes = 0;
       } else if (process->allowed_dram < process->current_dram) {
         // process has too much dram, so it needs to migrate things down
+        process->migrate_up_bytes = 0;
         process->migrate_down_bytes = process->current_dram - process->allowed_dram;
         if (process->migrate_down_bytes > PEBS_MIGRATE_RATE) {
           process->migrate_down_bytes = PEBS_MIGRATE_RATE;
@@ -1144,6 +1151,10 @@ void *pebs_policy_thread()
         if (process->migrate_down_bytes > PEBS_MIGRATE_RATE) {
           process->migrate_down_bytes = PEBS_MIGRATE_RATE;
         }
+        process->migrate_up_bytes = process->migrate_down_bytes;
+        if (process->migrate_up_bytes > PEBS_MIGRATE_RATE) {
+          process->migrate_up_bytes = PEBS_MIGRATE_RATE;
+        }
       }
 
       // migrate down first to free up DRAM space
@@ -1170,24 +1181,6 @@ void *pebs_policy_thread()
         continue;
       }
       
-      if (process->allowed_dram > process->current_dram) {
-        // process can have more DRAM, so it can migrate things up if it can
-        process->migrate_up_bytes = process->allowed_dram - process->current_dram;
-        if (process->migrate_up_bytes > PEBS_MIGRATE_RATE) {
-          process->migrate_up_bytes = PEBS_MIGRATE_RATE;
-        }
-      } else if (process->allowed_dram < process->current_dram) {
-        // process has too much dram, so it needs to migrate things down
-        process->migrate_up_bytes = 0;
-      } else {
-        // process has correct amount of DRAM, migrate up an equal
-        // number of pages as we migrated down
-        process->migrate_up_bytes = process->migrate_down_bytes;
-        if (process->migrate_up_bytes > PEBS_MIGRATE_RATE) {
-          process->migrate_up_bytes = PEBS_MIGRATE_RATE;
-        }
-      }
-
       // now migrate up to newly freed DRAM space
       gettimeofday(&now, NULL);
       LOG("%f\tprocess %d is migrating %ld bytes up\n", elapsed(&startup, &now), process->pid, process->migrate_up_bytes);
@@ -1252,20 +1245,21 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
   struct hemem_page *page;
 
   gettimeofday(&start, NULL);
-  if (process->current_dram < process->allowed_dram) {
-    page = dequeue_page(&dram_free_list);
-    if (page != NULL) {
-      assert(page->in_dram);
-      assert(!page->present);
+  page = dequeue_page(&dram_free_list);
+  if (page != NULL) {
+    assert(page->in_dram);
+    assert(!page->present);
 
-      page->present = true;
-      enqueue_page(&(process->dram_lists[COLD]), page);
+    page->present = true;
+    enqueue_page(&(process->dram_lists[COLD]), page);
 
-      gettimeofday(&end, NULL);
-      LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
+    gettimeofday(&end, NULL);
+    LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
 
-      return page;
-    }
+    process->allowed_dram += pt_to_pagesize(page->pt);
+    process->current_dram += pt_to_pagesize(page->pt);
+
+    return page;
   }
     
   // DRAM is full, fall back to NVM
@@ -1317,35 +1311,12 @@ void pebs_add_process(struct hemem_process *process)
   // new process gets to start with the amount of allowed dram
   // equal to the amount of cold dram the processes of lower
   // priority are using
-  struct hemem_process *tmp, *tmp1;
-  struct timeval now;
   enqueue_process(&processes_list, process);
   pthread_mutex_lock(&(process->process_lock));
   process->current_miss_ratio = -1;
   process->current_dram = 0;
-  process->allowed_dram = dram_free_list.numentries * PAGE_SIZE;
-  tmp = peek_process(&processes_list);
-  while (tmp != NULL) {
-    if (tmp == process) {
-      tmp = tmp->next;
-      continue;
-    }
-    pthread_mutex_lock(&(tmp->process_lock));
-
-    // give unused DRAM allocation to new process
-    process->allowed_dram += (tmp->allowed_dram - tmp->current_dram);
-    tmp->allowed_dram -= (tmp->allowed_dram - tmp->current_dram);
-    
-    gettimeofday(&now, NULL);
-    LOG("%f\tNew process being added, process %d of lower priority now has %ld allowed DRAM\n", elapsed(&startup, &now), tmp->pid, tmp->allowed_dram);
-    tmp1 = tmp;
-    tmp = tmp->next;
-    pthread_mutex_unlock(&(tmp1->process_lock));
-  }
+  process->allowed_dram = 0;
   pthread_mutex_unlock(&(process->process_lock));
-
-  gettimeofday(&now, NULL);
-  LOG("%f\tAdded process %d with allowed DRAM %ld\n", elapsed(&startup, &now), process->pid, process->allowed_dram);
 #else
   // reallocate DRAM among all current processes
   // policy thread will handle migrating up and down
@@ -1488,7 +1459,7 @@ void count_pages()
     for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
       LOG_STATS(", %lu", process->nvm_lists[i].numentries);
     }
-    LOG_STATS("]\tcurrent_miss_ratio: %f\n", process->current_miss_ratio);
+    LOG_STATS("]\tcurrent_miss_ratio: %f\ttarget_miss_ratio: %f\tallowed_dram: [%ld]\tcurrent_dram: [%ld]\n", process->current_miss_ratio, process->target_miss_ratio, process->allowed_dram, process->current_dram);
     //tmp = process;
     process = process->next;
     //pthread_mutex_unlock(&(tmp->process_lock));
