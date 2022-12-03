@@ -691,7 +691,7 @@ struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
   struct hemem_page *starting_page;
   int tot_accesses;
 
-  for(int i = NUM_HOTNESS_LEVELS-1; i > 2; i--) {
+  for(int i = NUM_HOTNESS_LEVELS-1; i >= 0; i--) {
     p = dequeue_page(&(process->nvm_lists[i]));
 
     if (p == NULL) {
@@ -824,10 +824,6 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
     if (np == NULL) {
       gettimeofday(&now, NULL);
       LOG("%f\tpolicy thread found no DRAM free pages\n", elapsed(&startup, &now));
-      //// no free dram pages. look for victim
-      //np = find_dram_victim(process, new_hotness);
-      //if (np == NULL) {
-      //  // no victim. put page back were it belongs.
       p->hot = new_hotness;
       enqueue_page(&(process->nvm_lists[p->hot]), p);
       break;
@@ -1120,7 +1116,7 @@ void *pebs_policy_thread()
           tmp_dram[i] = process->dram_lists[i].numentries;
         }
         migrate_down_bytes = 0;
-        for (i = NUM_HOTNESS_LEVELS - 1; i > 0; i--) {
+        for (i = NUM_HOTNESS_LEVELS - 1; i > 1; i--) {
           // algo:
           // -for each NVM hotness we want to get how many pages we can fit into
           //  DRAM if we swap colder pages

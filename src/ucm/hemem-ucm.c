@@ -885,7 +885,7 @@ void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
   ret = ioctl(page->uffd, UFFDIO_WRITEPROTECT, &wp);
 
   if (ret < 0) {
-    if (errno == EBADF || errno == ENOENT) {
+    if (ret == -EBADF || ret == -ENOENT) {
       if (!(uffds[page->uffd]->exited)) {
         perror("uffdio writeprotect");
         assert(0);
@@ -1124,7 +1124,7 @@ void *handle_fault() {
           ret = ioctl(process->uffd, UFFDIO_WAKE, &range);
 
           if (ret < 0) {
-            if (errno == EBADF || errno == ENOENT) {
+            if (ret == -EBADF || ret == -ENOENT) {
               if (!process->exited) {
                 perror("uffdio wake");
                 assert(0);
