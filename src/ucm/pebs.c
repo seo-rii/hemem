@@ -857,6 +857,128 @@ static inline double calc_miss_ratio(struct hemem_process *process)
 {
   return ((1.0 * process->accessed_pages[NVMREAD]) / (process->accessed_pages[DRAMREAD] + process->accessed_pages[NVMREAD]));
 }
+
+struct victim_processes {
+  struct hemem_process *victim;
+  struct victim_processes *next;
+};
+
+
+// find list of candidate victim processes with higher target miss ratio than process; returns
+// the number of candidate victims found
+// a victim process is a process who has a valid current miss ratio (i.e., != -1), has a better
+// current miss ratio than its target, and hasn't had dram taken from it before for this round
+// victim_list is assumed NULL when passed and will be filled with victim processes when returned
+// (if any; stays NULL otherwise);
+static int find_victim_processes_higher(struct hemem_process *process, struct victim_processes *victim_list)
+{
+  struct hemem_process *current, *tmp;
+  struct victim_processes *victim_process;
+  int num_victims;
+
+  assert(victim_list == NULL);
+
+  current = process->next;
+  while (current != NULL) {
+    pthread_mutex_lock(&(current->process_lock));
+
+    if ((current->current_miss_ratio >= 0.0) && (current->target_miss_ratio >= current->current_miss_ratio) && !current->victimized) {
+      if (current->allowed_dram > 0) {
+        // found a victim process that has DRAM we can take
+        victim_process = (struct victim_processes*)calloc(1, sizeof(struct victim_processes));
+        victim_process->victim = current;
+        victim_process->victim->victimized = true;
+        victim_process->next = victim_list;
+        victim_list = victim_process;
+        num_victims++;
+      }
+    }
+
+    tmp = current;
+    current = current->next;
+    pthread_mutex_unlock(&(tmp->process_lock));
+  }
+
+  return num_victims;
+}
+
+
+// find list of candidate victim processes with lower target miss ratio than process; returns
+// the number of candidate victims found
+// a victim process is a process who has a valid current miss ratio (i.e., != -1), has a better
+// current miss ratio than its target, and hasn't had dram taken from it before for this round
+// victim_list is assumed NULL when passed and will be filled with victim processes when returned
+// (if any; stays NULL otherwise);
+static int find_victim_processes_lower(struct hemem_process *process, struct victim_processes *victim_list)
+{
+  struct hemem_process *current, *tmp;
+  struct victim_processes *victim_process;
+  int num_victims;
+
+  assert(victim_list == NULL);
+
+  current = peek_process(&processes_list);
+  while (current != NULL) {
+    if (current == process) {
+      break;
+    }
+    pthread_mutex_lock(&(current->process_lock));
+
+    if ((current->current_miss_ratio >= 0.0) && (current->target_miss_ratio >= current->current_miss_ratio) && !current->victimized) {
+      if (current->allowed_dram > 0) {
+        // found a victim process that has DRAM we can take
+        victim_process = (struct victim_processes*)calloc(1, sizeof(struct victim_processes));
+        victim_process->victim = current;
+        victim_process->next = victim_list;
+        victim_list = victim_process;
+        num_victims++;
+      }
+    }
+
+    tmp = current;
+    current = current->next;
+    pthread_mutex_unlock(&(tmp->process_lock));
+  }
+
+  return num_victims;
+}
+
+
+// finds a list of victim processes with higher target miss ratio than the process to forcibly
+// take DRAM frm; returns the number of victims;
+// a victim process is a process with a higher target miss ratio; it will give up DRAM regardless
+// of whether it is meeting its own target miss ratio or not.
+// victim_list is assumed NULL when passed and will be filled with victim processes when returned,
+// if any, NULL otherwise
+static int find_victim_processes_forced(struct hemem_process *process, struct victim_processes *victim_list)
+{
+  struct hemem_process *current, *tmp;
+  struct victim_processes *victim_process;
+  int num_victims;
+
+  assert(victim_list == NULL);
+
+  current = process->next;
+  while (current != NULL) {
+    pthread_mutex_lock(&(current->process_lock));
+
+    if (current->allowed_dram > 0 && !current->victimized) {
+      // found a victim process that has DRAM we can take
+      victim_process = (struct victim_processes*)calloc(1, sizeof(struct victim_processes));
+      victim_process->victim = current;
+      victim_process->victim->victimized = false;
+      victim_process->next = victim_list;
+      victim_list = victim_process;
+      num_victims++;
+    }
+
+    tmp = current;
+    current = current->next;
+    pthread_mutex_unlock(&(tmp->process_lock));
+  }
+
+  return num_victims;
+}
 #endif
 
 static inline int64_t max(int64_t a, int64_t b)
@@ -880,12 +1002,13 @@ void *pebs_policy_thread()
   struct hemem_process *process, *tmp;
   struct timeval now;
 #ifdef HEMEM_QOS
-  uint64_t requested_dram, remaining_dram, dram_taking;
+  uint64_t requested_dram, remaining_dram, dram_taking, dram_portion;
   double slack;
-  struct hemem_process *tmp1;
   int64_t tmp_dram[NUM_HOTNESS_LEVELS];
   int i, j;
   int nvm_hot_pages_left_to_migrate, pages_from_cur_dram;
+  struct victim_processes *victims = NULL, *cur_victim, *tmp_victim;
+  int num_victims;
 #endif
 
   thread = pthread_self();
@@ -951,14 +1074,6 @@ void *pebs_policy_thread()
         pthread_mutex_unlock(&(tmp->process_lock));
         continue;
       } else {
-        //if (process->nvm_hot_list.numentries <= process->dram_cold_list.numentries) {
-        //  // process is not meeting its miss ratio but has some hot data in nvm that
-        //  // it can migrate up, just let it do that for now and maybe that is enough
-        //  tmp = process;
-        //  process = process->next;
-        //  pthread_mutex_unlock(&(tmp->process_lock));
-        // continue;
-        //}
         // process needs more DRAM
         slack = process->current_miss_ratio / process->target_miss_ratio;
         if (slack >= 2.0) {
@@ -975,98 +1090,79 @@ void *pebs_policy_thread()
         remaining_dram = requested_dram;
         
         // find a lower priority process to take DRAM from
-        tmp = process->next;
-        while (tmp != NULL) {
+        victims = NULL;
+        num_victims = find_victim_processes_higher(process, victims);
+        dram_portion = remaining_dram / num_victims;
+        dram_portion -= (dram_portion % PAGE_SIZE);
+        
+        cur_victim = victims;
+        while (cur_victim != NULL) {
+          tmp = cur_victim->victim;
           pthread_mutex_lock(&(tmp->process_lock));
-          if ((tmp->current_miss_ratio >= 0.0) && (tmp->target_miss_ratio >= tmp->current_miss_ratio) && !tmp->victimized) {
-            // lower priority process has some DRAM it can afford to give up (and we haven't taken from it yet)
-            dram_taking = (remaining_dram <= tmp->allowed_dram) ? 
-                                  remaining_dram : 
-                                  tmp->allowed_dram;
-            tmp->allowed_dram -= dram_taking;
-            tmp->victimized = true;
-            remaining_dram -= dram_taking;
-            gettimeofday(&now, NULL);
-            LOG("%f\tpolicy thread found lower priority process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
-          }
+          dram_taking = (dram_portion <= tmp->allowed_dram) ? 
+                                dram_portion : 
+                                tmp->allowed_dram;
+          tmp->allowed_dram -= dram_taking;
+          remaining_dram -= dram_taking;
+          gettimeofday(&now, NULL);
+          LOG("%f\tpolicy thread found lower priority process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
 
-          if (remaining_dram == 0) {
-            // we found all the dram we needed from the lower priority processes, quit out
-            pthread_mutex_unlock(&(tmp->process_lock));
-            break;
-          }
-
-          tmp1 = tmp;
-          tmp = tmp->next;
-          pthread_mutex_unlock(&(tmp1->process_lock));
+          pthread_mutex_unlock(&(tmp->process_lock));
+          tmp_victim = cur_victim;
+          cur_victim = cur_victim->next;
+          free(tmp_victim);
         }
 
         // if we still need dram, try to find higher priority process to take form
         if (remaining_dram > 0) {
-          // we need to take some dram from some higher priority processes
-          tmp = peek_process(&(processes_list));
-          while (tmp != NULL) {
-            if (tmp == process) {
-              break;
-            }
+          victims = NULL;
+          num_victims = find_victim_processes_lower(process, victims);
+          dram_portion = remaining_dram / num_victims;
+          dram_portion -= (dram_portion % PAGE_SIZE);
 
+          cur_victim = victims;
+          while (cur_victim != NULL) {
+            tmp = cur_victim->victim;
             pthread_mutex_lock(&(tmp->process_lock));
-            if (tmp->target_miss_ratio > process->target_miss_ratio) {
-              // lower priority process found, already searched these above, bail out
-              pthread_mutex_unlock(&(tmp->process_lock));
-              break;
-            }
-            
-            if ((tmp->current_miss_ratio >= 0.0) && (tmp->target_miss_ratio >= tmp->current_miss_ratio) && !tmp->victimized) {
-              // lower priority process has some DRAM it can afford to give up (and we haven't taken from it yet)
-              dram_taking = (remaining_dram <= tmp->allowed_dram) ? 
-                                    remaining_dram : 
-                                    tmp->allowed_dram;
-              tmp->allowed_dram -= dram_taking;
-              tmp->victimized = true;
-              remaining_dram -= dram_taking;
-              gettimeofday(&now, NULL);
-              LOG("%f\tpolicy thread found higher priority process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
-            }
+            dram_taking = (dram_portion <= tmp->allowed_dram) ?
+                                  dram_portion :
+                                  tmp->allowed_dram;
+            tmp->allowed_dram -= dram_taking;
+            remaining_dram -= dram_taking;
+            gettimeofday(&now, NULL);
+            LOG("%f\tpolicy thread found higher priority process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
 
-            if (remaining_dram == 0) {
-              // we found all the dram we needed from the lower priority processes, quit out
-              pthread_mutex_unlock(&(tmp->process_lock));
-              break;
-            } 
-        
-            tmp1 = tmp;
-            tmp = tmp->next;
-            pthread_mutex_unlock(&(tmp1->process_lock));
+            pthread_mutex_unlock(&(tmp->process_lock));
+            tmp_victim = cur_victim;
+            cur_victim = cur_victim->next;
+            free(tmp_victim);
           }
         }
 
         // we still need DRAM, forcibly take from a lower priority process
         if (remaining_dram > 0) {
-          tmp = process->next;
-          while (tmp != NULL) {
+          victims = NULL;
+          num_victims = find_victim_processes_forced(process, victims);
+          dram_portion = remaining_dram / num_victims;
+          dram_portion -= (dram_portion & PAGE_SIZE);
+
+          cur_victim = victims;
+          while (cur_victim != NULL) {
+            tmp = cur_victim->victim;
             pthread_mutex_lock(&(tmp->process_lock));
-            
-            dram_taking = (remaining_dram <= tmp->allowed_dram) ? 
-                                  remaining_dram : 
+            dram_taking = (dram_portion <= tmp->allowed_dram) ?
+                                  dram_portion :
                                   tmp->allowed_dram;
             tmp->allowed_dram -= dram_taking;
-            
             remaining_dram -= dram_taking;
-
             gettimeofday(&now, NULL);
-            LOG("%f\tpolicy thread forcibly taking lower priority process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
+            LOG("%f\tpolicy thread found higher priority process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
 
-
-            if (remaining_dram == 0) {
-              pthread_mutex_unlock(&(tmp->process_lock));
-              break;
-            }
-
-            tmp1 = tmp;
-            tmp = tmp->next;
-            pthread_mutex_unlock(&(tmp1->process_lock));
-          }
+            pthread_mutex_unlock(&(tmp->process_lock));
+            tmp_victim = cur_victim;
+            cur_victim = cur_victim->next;
+            free(tmp_victim);
+          }      
         }
 
         process->allowed_dram += (requested_dram - remaining_dram);
