@@ -15,7 +15,7 @@ FILE* statsf;
 void log_init(const char* logname)
 {
   char logbuffer[64];
-  snprintf(logbuffer, 64, "log_%s.txt", logname);
+  snprintf(logbuffer, 64, "/tmp/log_%s.txt", logname);
   hememlogf = fopen(logbuffer, "w+");
   if (hememlogf == NULL) {
     perror("log file open");
@@ -23,7 +23,7 @@ void log_init(const char* logname)
   }
 
   char timebuffer[64];
-  snprintf(timebuffer, 64, "times_%s.txt", logname);
+  snprintf(timebuffer, 64, "/tmp/times_%s.txt", logname);
   timef = fopen(timebuffer, "w+");
   if (timef == NULL) {
     perror("time file open");
@@ -31,7 +31,7 @@ void log_init(const char* logname)
   }
 
   char statsbuffer[64];
-  snprintf(statsbuffer, 64, "stats_%s.txt", logname);
+  snprintf(statsbuffer, 64, "/tmp/sats_%s.txt", logname);
   statsf = fopen(statsbuffer, "w+");
   if (statsf == NULL) {
     perror("stats file open");

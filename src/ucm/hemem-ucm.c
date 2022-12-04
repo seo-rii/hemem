@@ -198,7 +198,7 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   uint64_t** buffer;
   int ret;
 #ifdef HEMEM_QOS
-  char logpath[20];
+  char logpath[32];
 #endif
 
   process = (struct hemem_process*)calloc(1, sizeof(struct hemem_process));
@@ -241,7 +241,7 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   process->need_cool_nvm = false;
 
 #ifdef HEMEM_QOS  
-  snprintf(&logpath[0], sizeof(logpath) - 1, "log-%d.txt", process->pid);
+  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/log-%d.txt", process->pid);
   process->logfd = fopen(logpath, "w");
   if (process->logfd == NULL) {
     perror("process log fopen");
