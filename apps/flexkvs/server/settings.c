@@ -33,19 +33,32 @@ int settings_init(int argc, char *argv[])
 {
     settings.udpport = 11211;
     settings.verbose = 1;
-    //settings.segsize = 256 * 1024;
+    settings.segsize = 256 * 1024;
     //settings.segsize = 128 * 65536;
-    settings.segsize = 1024 * 1024 * 1024;
+    //settings.segsize = 1024 * 1024 * 1024;
     //settings.segmaxnum = 4096;
     //settings.segmaxnum = 64 * 4096;
-    settings.segmaxnum = 700;
     //settings.segcqsize = 32 * 1024;
+    if(argc >= 4) {
+        size_t total_size = atoll(argv[3]);
+        // Ratio: 1:3 hashtable:segments
+        settings.hasht_size = total_size / 4;
+        settings.segmaxnum = total_size * 3 / (4 * settings.segsize);
+    }
+    else {
+        settings.hasht_size = (1ull << 31);
+        settings.segmaxnum = 700;
+    }
+    double hash_size = (double)(settings.hasht_size / (1024 * 1024 * 1024));
+    double alloc_size = (double)(settings.segmaxnum * settings.segsize / (1024 * 1024 * 1024));
+    printf("Total memory size: %.2f GB (hashtable: %.2f GB, allocator %.2f GB)\n",
+        hash_size + alloc_size, hash_size, alloc_size);
     settings.segcqsize = 1500;
     settings.clean_ratio = 0.8;
     //settings.clean_ratio = 1.1;
 
-    if (argc != 3) {
-        fprintf(stderr, "Usage: flexkvs CONFIG THREADS\n");
+    if (argc < 3) {
+        fprintf(stderr, "Usage: flexkvs CONFIG THREADS [DATA_SIZE]\n");
         return -1;
     }
 

@@ -453,7 +453,7 @@ static void *thread_run(void *arg)
 
     /* wait until we start running */
     while (phase != BENCHMARK_RUNNING) {
-        pthread_yield();
+        sched_yield();
     }
     printf("[%d] Start running...\n", cn);
 
@@ -674,7 +674,7 @@ int main(int argc, char *argv[])
     }
 
     while (init_count < num_threads) {
-        pthread_yield();
+        sched_yield();
     }
     printf("Preloading completed\n");
     phase = BENCHMARK_RUNNING;

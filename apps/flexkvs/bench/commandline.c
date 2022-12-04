@@ -52,6 +52,7 @@ void print_usage(void)
         "  -s, --key-seed=SEED   Seed for key PRG.\n"
         "  -o, --op-seed=SEED    Seed for operation PRG.\n"
         "  -r, --trace=FILE      Write operation trace to file.\n"
+        "  -S, --target-size     Target key memory usage. Causes key-num to be ignored [default 0]\n"
         "  -K, --keysteer        Key-based steering.\n");
 }
 
@@ -63,7 +64,7 @@ void init_settings(struct settings *s)
     s->keysize = 32;
     s->keynum = 1000;
     s->keydist = DIST_UNIFORM;
-    s->valuesize = 1024;
+    s->valuesize = 4096;
     s->get_prob = 0.9;
     s->warmup_time = 5;
     s->cooldown_time = 5;
@@ -71,6 +72,7 @@ void init_settings(struct settings *s)
     s->request_gap = 100 * 1000;
     s->key_seed = 0x123457890123ULL;
     s->op_seed =  0x987654321098ULL;
+    s->target_size = 0;
     s->keybased = false;
     s->batchsize = 32;
 }
@@ -93,9 +95,10 @@ int parse_settings(int argc, char *argv[], struct settings *s)
             {"delay",       required_argument, NULL, 'd'},
             {"key-seed",    required_argument, NULL, 's'},
             {"op-seed",     required_argument, NULL, 'o'},
+            {"target-size", required_argument, NULL, 'S'},
             {"keysteer",    no_argument,       NULL, 'K'},
         };
-    static const char *short_opts = "t:C:p:k:n:uz:v:g:T:w:c:d:s:o:r:K";
+    static const char *short_opts = "t:C:p:k:n:uz:v:g:T:w:c:d:s:o:r:S:K";
     int c, opt_idx, done = 0;
     char *end;
 
@@ -136,7 +139,7 @@ int parse_settings(int argc, char *argv[], struct settings *s)
                 }
                 break;
             case 'n':
-                s->keynum = strtoul(optarg, &end, 10);
+                s->keynum = strtoull(optarg, &end, 10);
                 if (!*optarg || *end || s->keynum < 1) {
                     fprintf(stderr, "Key count needs to be a positive "
                             "integer\n");
@@ -218,6 +221,13 @@ int parse_settings(int argc, char *argv[], struct settings *s)
                     return -1;
                 }
                 break;
+            case 'S':
+                settings.target_size = strtoull(optarg, &end, 0);
+                if (!*optarg || *end) {
+                    fprintf(stderr, "Key seed needs to be an integer.\n");
+                    return -1;
+                }
+                break;
             case 'K':
                 settings.keybased = true;
                 break;
@@ -251,6 +261,11 @@ int parse_settings(int argc, char *argv[], struct settings *s)
 
     /* parse port */
     s->dstport = strtoul(end, NULL, 10);
+
+    if(s->target_size != 0)
+        s->keynum = s->target_size / (s->keysize + s->valuesize);
+    fprintf(stderr, "Number of keys = %u (size %.2f GB)\n", 
+        s->keynum, ((double)s->keynum * (double)(s->keysize + s->valuesize)) / ((double)(1024 * 1024 * 1024)));
 
     // TODO: ensure key size / key num combination is valid
 

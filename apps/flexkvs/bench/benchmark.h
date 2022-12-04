@@ -59,6 +59,7 @@ struct settings {
 
     uint8_t batchsize;
 
+    uint64_t target_size;
     bool keybased;
 };
 
