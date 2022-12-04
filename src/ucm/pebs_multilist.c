@@ -104,6 +104,13 @@ void make_cold_request(struct hemem_process* process, struct hemem_page* page)
     ring_buf_put(process->cold_ring, (uint64_t*)page);
 }
 
+// int access_to_index(uint64_t num) {
+//   if(num == 0) {
+//     return 0;
+//   }
+//   return (num/3) + 1;
+// }
+
 int access_to_index(uint64_t num) {
   if(num <= 0) {
     return 0;
@@ -763,6 +770,8 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
     // try to find a page for it. in the free list. 
     np = dequeue_page(&dram_free_list);
     if (np == NULL) {
+      p->hot = new_hotness;
+      enqueue_page(&(process->nvm_lists[p->hot]), p);
       // no free dram pages. look for victim
       break;
     }

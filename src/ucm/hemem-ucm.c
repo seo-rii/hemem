@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <signal.h>
 
 #include "hemem-ucm.h"
 #include "channel-ucm.h"
@@ -203,6 +204,25 @@ int delete_epoll_ctl(int epoll, int fd)
   return 0;
 }
 
+void ucm_update_miss_ratio(int signum) {
+  const char* new_miss_fname = "/tmp/miss_ratio_update";
+  struct hemem_process *p;
+
+  FILE *new_miss_file = fopen(new_miss_fname, "r");
+  int pid = -1;
+  float new_miss = -1.0;
+  fscanf(new_miss_file,"%d:%f", &pid, &new_miss);
+
+  pthread_mutex_lock(&processes_lock);
+  HASH_FIND(phh, processes, &(pid), sizeof(pid_t), p);
+  if(p == NULL) {
+    LOG("No process with PID %d currently managed", pid);
+    pthread_mutex_unlock(&processes_lock);
+  }
+  LOG("updated miss ratio of proc: %d to %f\n", pid, new_miss);
+  p->target_miss_ratio = new_miss;
+  pthread_mutex_unlock(&processes_lock);
+}
 
 struct hemem_process* ucm_add_process(int fd, struct add_process_request* request, struct add_process_response* response)
 {
@@ -547,6 +567,10 @@ void hemem_ucm_init() {
     perror("nvm open");
   }
   assert(nvmfd >= 0);
+
+  if (signal(SIGUSR2, ucm_update_miss_ratio) == SIG_ERR){
+    assert(0 && "Failed to map SIGUSR2 to the missratio update.");
+  }
 
 #ifdef USE_DMA  
   uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
