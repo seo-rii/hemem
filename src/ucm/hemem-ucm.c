@@ -884,7 +884,7 @@ void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
   wp.mode = (protect ? UFFDIO_WRITEPROTECT_MODE_WP : 0);
   ret = ioctl(page->uffd, UFFDIO_WRITEPROTECT, &wp);
 
-  if (ret < 0) {
+  if (ret < 0 && !page->in_free_ring) {
     if (ret == -EBADF || ret == -ENOENT) {
       if (!(uffds[page->uffd]->exited)) {
         perror("uffdio writeprotect");

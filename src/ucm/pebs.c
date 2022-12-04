@@ -550,7 +550,7 @@ void handle_ring_requests(struct hemem_process *process)
       // ring buffer was empty
       break;
     }
-        
+
     list = page->list;
     assert(list != NULL);
 
@@ -582,6 +582,8 @@ void handle_ring_requests(struct hemem_process *process)
     else {
       enqueue_page(&nvm_free_list, page);
     }
+    page->in_free_ring = false;
+
     free_ring_requests_handled++;
   }
 
@@ -688,12 +690,12 @@ void handle_ring_requests(struct hemem_process *process)
 
 struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
   struct hemem_page* p;
-  struct hemem_page *starting_page;
-  int tot_accesses;
+//  struct hemem_page *starting_page;
+//  int tot_accesses;
 
   for(int i = NUM_HOTNESS_LEVELS-1; i >= 0; i--) {
     p = dequeue_page(&(process->nvm_lists[i]));
-
+/*  
     if (p == NULL) {
       // got null. list empy. move on.
       continue;
@@ -712,6 +714,7 @@ struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
         break;
       }
     }
+*/
     if (p != NULL) {
       // found something hot. we should try to promote it.
       return p;
@@ -1423,6 +1426,8 @@ void pebs_remove_page(struct hemem_process *process, struct hemem_page *page)
 
   //LOG("pebs: remove page, put this page into free_page_ring: va: 0x%lx\n", page->va);
 
+  page->in_free_ring = true;
+
   while (ring_buf_full(process->free_page_ring));
   pthread_mutex_lock(&(process->free_page_ring_lock));
   ring_buf_put(process->free_page_ring, (uint64_t*)page); 
@@ -1470,10 +1475,6 @@ void pebs_remove_process(struct hemem_process *process)
 {
   uint64_t freed_dram;
 
-  // wait for all of its memory to be freed by policy thread
-  // before exiting
-  while (!ring_buf_empty(process->free_page_ring));
-
   process_list_remove(&processes_list, process);
   pthread_mutex_lock(&(process->process_lock));
   freed_dram = process->current_dram;
@@ -1515,6 +1516,7 @@ void pebs_init(void)
     p->present = false;
     p->in_dram = true;
     p->ring_present = false;
+    p->in_free_ring = false;
     p->pt = pagesize_to_pt(PAGE_SIZE);
 
     enqueue_page(&dram_free_list, p);
@@ -1527,6 +1529,7 @@ void pebs_init(void)
     p->present = false;
     p->in_dram = false;
     p->ring_present = false;
+    p->in_free_ring = false;
     p->pt = pagesize_to_pt(PAGE_SIZE);
 
     enqueue_page(&nvm_free_list, p);
