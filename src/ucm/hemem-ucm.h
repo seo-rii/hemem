@@ -82,7 +82,7 @@ void remove_process(struct hemem_process *process);
 struct hemem_process *find_process(pid_t pid);
 void add_page(struct hemem_page *page);
 void remove_page(struct hemem_page *page);
-struct hemem_page *find_page(struct hemem_process* process, uint64_t app_va);
+struct hemem_page *find_page(uint64_t app_va, pid_t pid);
 
 // from the ucm to the app
 int remap_pages(pid_t pid, int remap_fd, struct hemem_page_app* fault_pages, int num_fault_pages);

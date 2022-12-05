@@ -369,7 +369,7 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
   assert(length != 0);
 
   for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length; page_boundry += pagesize) {
-    page = find_page(process, page_boundry);
+    page = find_page(page_boundry, process->pid);
     assert(page != NULL);
 
     pagesize = pt_to_pagesize(page->pt);
@@ -483,11 +483,14 @@ void remove_page(struct hemem_page *page) {
   pthread_mutex_unlock(&pages_lock);
 }
 
-struct hemem_page *find_page(struct hemem_process *process, uint64_t va) {
+struct hemem_page *find_page(uint64_t va, pid_t pid) {
   struct hemem_page *page;
+  struct hemem_page_key key;
+  key.va = va;
+  key.pid = pid;
   unsigned key_len = hemem_page_key_len();
   pthread_mutex_lock(&pages_lock);
-  HASH_FIND(hh, pages, &(page->va), key_len, page);
+  HASH_FIND(hh, pages, &(key.va), key_len, page);
   pthread_mutex_unlock(&pages_lock);
   return page;
 }
@@ -922,11 +925,11 @@ void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
   LOG_TIME("uffdio_writeprotect: %f s\n", elapsed(&start, &end));
 }
 
-void handle_wp_fault(struct hemem_process *process, uint64_t page_boundry) {
+void handle_wp_fault(struct hemem_process* process, uint64_t page_boundry) {
   struct hemem_page *page;
   //struct hemem_page_app page_app;
 
-  page = find_page(process, page_boundry);
+  page = find_page(page_boundry, process->pid);
   assert(page != NULL);
 
   migration_waits++;
@@ -1349,7 +1352,7 @@ void hemem_clear_stats() {
 }
 
 struct hemem_page *get_hemem_page(struct hemem_process* process, uint64_t va) {
-  return find_page(process, va);
+  return find_page(va, process->pid);
 }
 
 void hemem_start_timing(void) { timing = true; }

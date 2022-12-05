@@ -144,7 +144,6 @@ void *pebs_scan_thread()
   struct perf_event_header *ph;
   struct perf_sample* ps;
   struct hemem_page* page;
-  struct hemem_process* process;
   uint64_t total_accesses;
   int new_hotness, i, j, s;
 
@@ -180,46 +179,40 @@ void *pebs_scan_thread()
             assert(ps != NULL);
             if(ps->addr != 0) {
               __u64 pfn = ps->addr & HUGE_PFN_MASK;
-              process = find_process(ps->pid);
+              page = find_page(pfn, ps->pid);
 
-              if (process != NULL) {
-                page = find_page(process, pfn);
-                if (page != NULL) {
-                  if (page->va != 0) {
-                    page->accesses[j]++;
-                    page->tot_accesses[j]++;
+              if (page != NULL) {
+                if (page->va != 0) {
+                  page->accesses[j]++;
+                  page->tot_accesses[j]++;
                     
-                    total_accesses = page->accesses[DRAMREAD] + page->accesses[NVMREAD];
-                    new_hotness = access_to_index(total_accesses);
-                    // check for hotness change and add to ring
-                    if(new_hotness > page->hot) {
-                      make_hot_request(page);
-                    }
-                    else if(new_hotness < page->hot) {
-                      make_cold_request(page);
-                    }
-
-                    page->accesses[DRAMREAD] >>= (global_clock - page->local_clock);
-                    page->accesses[NVMREAD] >>= (global_clock - page->local_clock);
-                    page->local_clock = global_clock;
-                    if (page->accesses[j] > PEBS_COOLING_THRESHOLD) {
-                      global_clock++;
-                      dram_cools++;
-                      nvm_cools++;
-                      need_cool_dram = true;
-                      need_cool_nvm = true;
-                    }
+                  total_accesses = page->accesses[DRAMREAD] + page->accesses[NVMREAD];
+                  new_hotness = access_to_index(total_accesses);
+                  // check for hotness change and add to ring
+                  if(new_hotness > page->hot) {
+                    make_hot_request(page);
                   }
-                  hemem_pages_cnt++;
+                  else if(new_hotness < page->hot) {
+                    make_cold_request(page);
+                  }
+
+                  page->accesses[DRAMREAD] >>= (global_clock - page->local_clock);
+                  page->accesses[NVMREAD] >>= (global_clock - page->local_clock);
+                  page->local_clock = global_clock;
+                  if (page->accesses[j] > PEBS_COOLING_THRESHOLD) {
+                    global_clock++;
+                    dram_cools++;
+                    nvm_cools++;
+                    need_cool_dram = true;
+                    need_cool_nvm = true;
+                  }
                 }
-                else {
-                  other_pages_cnt++;
-                }
-                total_pages_cnt++;
+                hemem_pages_cnt++;
               }
               else {
-                other_processes_cnt++;
+                other_pages_cnt++;
               }
+              total_pages_cnt++;
             }
             else {
               zero_pages_cnt++;

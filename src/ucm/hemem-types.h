@@ -21,6 +21,11 @@ enum HOTNESS {
   NUM_HOTNESS_LEVELS
 };
 
+struct hemem_page_key {
+  uint64_t va;
+  pid_t pid;
+};
+
 struct hemem_page {
   uint64_t va;
   pid_t pid;
