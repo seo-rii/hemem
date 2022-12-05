@@ -33,7 +33,7 @@ struct perf_sample {
     __u64 addr;        /* if PERF_SAMPLE_ADDR */
 };
 
-void pebs_remove_page(struct hemem_process *process, struct hemem_page *page);
+void pebs_remove_page(struct hemem_page *page);
 struct hemem_page* pebs_pagefault(struct hemem_process *process);
 void pebs_init(void);
 void pebs_stats();

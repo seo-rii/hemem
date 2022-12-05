@@ -1,7 +1,7 @@
 #ifndef HEMEM_TYPES_H
 #define HEMEM_TYPES_H
 
-#define HEMEM_QOS
+#define HEMEM_GLOBAL
 
 enum pbuftype {
     DRAMREAD = 0,
@@ -27,6 +27,7 @@ struct hemem_page {
   uint64_t devdax_offset;
   bool in_dram;
   long  uffd;
+  int remap_fd;
   enum pagetypes pt;
   volatile bool migrating;
   bool in_migrate_up_queue;
@@ -51,31 +52,9 @@ struct hemem_process {
   bool exited;
   bool valid_uffd;
   int remap_fd;
-#ifdef HEMEM_QOS
-  _Atomic uint64_t volatile accessed_pages[NPBUFTYPES];
-  double target_miss_ratio;
-  double volatile current_miss_ratio;
-  bool victimized;
-  FILE* logfd;
-  uint64_t migrate_up_bytes, migrate_down_bytes;
+#ifdef HEMEM_GLOBAL
+   FILE* logfd;
 #endif
-  volatile uint64_t current_dram;
-  volatile uint64_t allowed_dram;
-
-  struct page_list dram_lists[NUM_HOTNESS_LEVELS + 1];
-  struct page_list nvm_lists[NUM_HOTNESS_LEVELS + 1];
-  int cur_cool_in_dram_list;
-  int cur_cool_in_nvm_list;
-  struct hemem_page *cur_cool_in_dram;
-  struct hemem_page *cur_cool_in_nvm;
-  volatile bool need_cool_dram;
-  volatile bool need_cool_nvm;
-
-  volatile ring_handle_t hot_ring;
-  volatile ring_handle_t cold_ring;
-  volatile ring_handle_t free_page_ring;
-  pthread_mutex_t free_page_ring_lock;
-
   struct hemem_page* pages;
   pthread_mutex_t pages_lock;
   UT_hash_handle phh;

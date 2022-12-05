@@ -54,21 +54,34 @@ extern int dramfd;
 extern int nvmfd;
 extern struct timeval startup;
 
+extern struct page_list dram_lists[NUM_HOTNESS_LEVELS + 1];
+extern struct page_list nvm_lists[NUM_HOTNESS_LEVELS + 1];
+extern int cur_cool_in_dram_list;
+extern int cur_cool_in_nvm_list;
+extern struct hemem_page *cur_cool_in_dram;
+extern struct hemem_page *cur_cool_in_nvm;
+extern volatile bool need_cool_dram;
+extern volatile bool need_cool_nvm;
+extern volatile ring_handle_t hot_ring;
+extern volatile ring_handle_t cold_ring;
+extern volatile ring_handle_t free_page_ring;
+extern pthread_mutex_t free_page_ring_lock;
+
 void hemem_ucm_init();
 void hemem_ucm_stop();
 void *handle_fault();
 void *handle_request();
 void *accept_new_app();
-void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page, uint64_t dram_offset);
-void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *page, uint64_t nvm_offset);
+void hemem_ucm_migrate_up(struct hemem_page *page, uint64_t dram_offset);
+void hemem_ucm_migrate_down(struct hemem_page *page, uint64_t nvm_offset);
 void hemem_ucm_wp_page(struct hemem_page *page, bool protect);
 //void hemem_ucm_promote_pages(uint64_t addr);
 //void hemem_ucm_demote_pages(uint64_t addr);
 void add_process(struct hemem_process *process);
 void remove_process(struct hemem_process *process);
 struct hemem_process *find_process(pid_t pid);
-void add_page(struct hemem_process* process, struct hemem_page *page);
-void remove_page(struct hemem_process* process, struct hemem_page *page);
+void add_page(struct hemem_page *page);
+void remove_page(struct hemem_page *page);
 struct hemem_page *find_page(struct hemem_process* process, uint64_t app_va);
 
 // from the ucm to the app

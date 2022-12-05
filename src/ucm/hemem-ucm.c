@@ -23,6 +23,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/time.h>
+#include <stddef.h>
 
 #include "hemem-ucm.h"
 #include "channel-ucm.h"
@@ -54,6 +55,8 @@ pthread_t copy_threads[MAX_COPY_THREADS];
 
 struct hemem_process volatile *processes = NULL;
 pthread_mutex_t processes_lock = PTHREAD_MUTEX_INITIALIZER;
+struct hemem_page volatile *pages = NULL;
+pthread_mutex_t pages_lock = PTHREAD_MUTEX_INITIALIZER;
 
 uint64_t mem_mmaped = 0;
 uint64_t mem_allocated = 0;
@@ -72,6 +75,10 @@ uint64_t migration_waits = 0;
 
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
+
+unsigned inline hemem_page_key_len() {
+    return offsetof(struct hemem_page, pid) + sizeof(pid_t) -  offsetof(struct hemem_page, va);
+}
 
 #ifndef USE_DMA
 #ifdef USE_PARALLEL_MEMCPY
@@ -195,9 +202,8 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
 {
   pid_t pid = request->header.pid;
   struct hemem_process* process;
-  uint64_t** buffer;
   int ret;
-#ifdef HEMEM_QOS
+#ifdef HEMEM_GLOBAL
   char logpath[20];
 #endif
 
@@ -209,38 +215,11 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
 
   process->pid = request->header.pid;
   process->exited = false;
-#ifdef HEMEM_QOS
-  process->target_miss_ratio = request->target_miss_ratio;
-#endif
+
   process->valid_uffd = false;
-  for (int i = 0; i < NUM_HOTNESS_LEVELS; i++) {
-    pthread_mutex_init(&(process->dram_lists[i].list_lock), NULL);
-    pthread_mutex_init(&(process->nvm_lists[i].list_lock), NULL);
-  }
-  pthread_mutex_init(&(process->pages_lock), NULL);
   pthread_mutex_init(&(process->process_lock), NULL);
 
-  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
-  assert(buffer); 
-  process->hot_ring = ring_buf_init(buffer, CAPACITY);
-  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
-  assert(buffer); 
-  process->cold_ring = ring_buf_init(buffer, CAPACITY);
-  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
-  assert(buffer); 
-  process->free_page_ring = ring_buf_init(buffer, CAPACITY);
-  pthread_mutex_init(&(process->free_page_ring_lock), NULL);
-  
-  process->pages = NULL;
-
-  process->cur_cool_in_dram = NULL;
-  process->cur_cool_in_nvm = NULL;
-  process->cur_cool_in_dram_list = 0;
-  process->cur_cool_in_nvm_list = 0;
-  process->need_cool_dram = false;
-  process->need_cool_nvm = false;
-
-#ifdef HEMEM_QOS  
+#ifdef HEMEM_GLOBAL
   snprintf(&logpath[0], sizeof(logpath) - 1, "log-%d.txt", process->pid);
   process->logfd = fopen(logpath, "w");
   if (process->logfd == NULL) {
@@ -250,8 +229,6 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
 #endif
 
   add_process(process);
-
-  pebs_add_process(process);
 
   response->header.status = SUCCESS;
   response->header.pid = pid;
@@ -276,11 +253,7 @@ int ucm_remove_process(struct remove_process_request* request, struct remove_pro
   if (process != NULL) {
     process->exited = true;
     remove_process(process);
-    pebs_remove_process(process);
 
-    //todo:free memory, pages, linked list, hash table...
-    ring_buf_free(process->hot_ring);
-    ring_buf_free(process->cold_ring);
     //free(process);
   }
 
@@ -341,6 +314,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
 
     page->va = page_boundry;
     page->pid = process->pid;
+    page->remap_fd = process->remap_fd;
     page->uffd = process->uffd;
     assert(page->va != 0);
     assert(page->va % HUGEPAGE_SIZE == 0);
@@ -349,11 +323,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     page->in_migrate_down_queue = false;
     page->migrations_up = page->migrations_down = 0;
 
-    add_page(process, page);
-
-    if (in_dram) {
-      process->current_dram += pagesize;
-    }
+    add_page(page);
 
     page_app = &(response->pages[response->num_pages]);
     page_app->va = page_boundry;
@@ -404,8 +374,8 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
 
     pagesize = pt_to_pagesize(page->pt);
 
-    remove_page(process, page);
-    pebs_remove_page(process, page);
+    remove_page(page);
+    pebs_remove_page(page);
     mem_allocated -= pagesize;
     pages_freed += 1;
   } 
@@ -497,27 +467,69 @@ struct hemem_process *find_process(pid_t pid) {
   return process;
 }
 
-void add_page(struct hemem_process* process, struct hemem_page *page) {
+void add_page(struct hemem_page *page) {
   struct hemem_page *p;
-  pthread_mutex_lock(&(process->pages_lock));
-  HASH_FIND(hh, process->pages, &(page->va), sizeof(uint64_t), p);
+  unsigned key_len = hemem_page_key_len();
+  pthread_mutex_lock(&pages_lock);
+  HASH_FIND(hh, pages, &(page->va), key_len, p);
   assert(p == NULL);
-  HASH_ADD(hh, process->pages, va, sizeof(uint64_t), page);
-  pthread_mutex_unlock(&(process->pages_lock));
+  HASH_ADD(hh, pages, va, key_len, page);
+  pthread_mutex_unlock(&pages_lock);
 }
 
-void remove_page(struct hemem_process* process, struct hemem_page *page) {
-  pthread_mutex_lock(&(process->pages_lock));
-  HASH_DELETE(hh, process->pages, page);
-  pthread_mutex_unlock(&(process->pages_lock));
+void remove_page(struct hemem_page *page) {
+  pthread_mutex_lock(&pages_lock);
+  HASH_DELETE(hh, pages, page);
+  pthread_mutex_unlock(&pages_lock);
 }
 
 struct hemem_page *find_page(struct hemem_process *process, uint64_t va) {
   struct hemem_page *page;
-  pthread_mutex_lock(&(process->pages_lock));
-  HASH_FIND(hh, process->pages, &va, sizeof(uint64_t), page);
-  pthread_mutex_unlock(&(process->pages_lock));
+  unsigned key_len = hemem_page_key_len();
+  pthread_mutex_lock(&pages_lock);
+  HASH_FIND(hh, pages, &(page->va), key_len, page);
+  pthread_mutex_unlock(&pages_lock);
   return page;
+}
+
+
+void hemem_ucm_create()
+{
+
+  uint64_t** buffer;
+
+  for (int i = 0; i < NUM_HOTNESS_LEVELS; i++) {
+    pthread_mutex_init(&(dram_lists[i].list_lock), NULL);
+    pthread_mutex_init(&(nvm_lists[i].list_lock), NULL);
+  }
+
+  pthread_mutex_init(&(pages_lock), NULL);
+
+  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
+  assert(buffer);
+  hot_ring = ring_buf_init(buffer, CAPACITY);
+  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
+  assert(buffer);
+  cold_ring = ring_buf_init(buffer, CAPACITY);
+  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
+  assert(buffer);
+  free_page_ring = ring_buf_init(buffer, CAPACITY);
+  pthread_mutex_init(&(free_page_ring_lock), NULL);
+
+  pages = NULL;
+
+  cur_cool_in_dram = NULL;
+  cur_cool_in_nvm = NULL;
+
+  cur_cool_in_dram_list = 0;
+  cur_cool_in_nvm_list = 0;
+  need_cool_dram = false;
+  need_cool_nvm = false;
+}
+
+void hemem_ucm_destroy()
+{
+//todo: free resources
 }
 
 void hemem_ucm_init() {
@@ -648,6 +660,8 @@ void hemem_ucm_init() {
   }
 #endif
 
+  hemem_ucm_create();
+
   gettimeofday(&startup, NULL);
 
   LOG("hemem_init: finished\n");
@@ -664,6 +678,7 @@ void hemem_ucm_stop() {
   }
 #endif
 
+  hemem_ucm_destroy();
   pebs_shutdown();
 }
 
@@ -710,7 +725,7 @@ int hemem_ucm_munmap(struct hemem_page *page) {
 }
 
 
-void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page, uint64_t dram_offset) {
+void hemem_ucm_migrate_up(struct hemem_page *page, uint64_t dram_offset) {
   void *old_addr;
   void *new_addr;
   struct timeval migrate_start, migrate_end;
@@ -777,22 +792,20 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
 
   bytes_migrated += pagesize;
 
-  process->current_dram += pagesize;
-
   page_app.va = page->va;
   page_app.devdax_offset = page->devdax_offset;
   page_app.in_dram = page->in_dram;
   page_app.pt = page->pt;
   page_app.migrated = true;
   gettimeofday(&remap_start, NULL);
-  remap_pages(process->pid, process->remap_fd, &page_app, 1);
+  remap_pages(page->pid, page->remap_fd, &page_app, 1);
   gettimeofday(&remap_end, NULL);
   LOG_TIME("hemem_remap_page_up: %f s\n", elapsed(&remap_start, &remap_end));
   gettimeofday(&migrate_end, NULL);
   LOG_TIME("hemem_migrate_up: %f s\n", elapsed(&migrate_start, &migrate_end));
 }
 
-void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *page, uint64_t nvm_offset) {
+void hemem_ucm_migrate_down(struct hemem_page *page, uint64_t nvm_offset) {
   void *old_addr;
   void *new_addr;
   struct timeval migrate_start, migrate_end;
@@ -860,15 +873,13 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
 
   bytes_migrated += pagesize;
 
-  process->current_dram -= pagesize;
-
   page_app.va = page->va;
   page_app.devdax_offset = page->devdax_offset;
   page_app.in_dram = page->in_dram;
   page_app.pt = page->pt;
   page_app.migrated = true;
   gettimeofday(&remap_start, NULL);
-  remap_pages(process->pid, process->remap_fd, &page_app, 1);
+  remap_pages(page->pid, page->remap_fd, &page_app, 1);
   gettimeofday(&remap_end, NULL);
   LOG_TIME("hemem_remap_page_down: %f s\n", elapsed(&remap_start, &remap_end));
 
@@ -1027,8 +1038,9 @@ void handle_missing_fault(struct hemem_process *process,
 
   // use mmap return addr to track new page's virtual address
   page->uffd = process->uffd;
-  page->pid = process->pid;
   page->va = page_boundry;
+  page->pid = process->pid;
+  page->remap_fd = process->remap_fd;
   assert(page->va != 0);
   assert(page->va % HUGEPAGE_SIZE == 0);
   page->migrations_up = page->migrations_down = 0;
@@ -1036,11 +1048,7 @@ void handle_missing_fault(struct hemem_process *process,
   mem_allocated += pagesize;
 
   // place in hemem's page tracking list
-  add_page(process, page);
-
-  if (in_dram) {
-    process->current_dram += pagesize;
-  }
+  add_page(page);
 
   missing_faults_handled++;
   pages_allocated++;
