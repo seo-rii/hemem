@@ -1214,15 +1214,6 @@ void *pebs_policy_thread()
     while (process != NULL) {
       pthread_mutex_lock(&(process->process_lock));
 
-      if (process->current_miss_ratio == -1) {
-        // don't have enough information to migrate pages for this
-        // process, just leave it alone
-        tmp = process;
-        process = process->next;
-        pthread_mutex_unlock(&(tmp->process_lock));
-        continue;
-      }
-
       if (process->allowed_dram > process->current_dram) {
         // process can have more DRAM, so it can migrate things up if it can
         process->migrate_up_bytes = process->allowed_dram - process->current_dram;
@@ -1300,15 +1291,6 @@ void *pebs_policy_thread()
     process = peek_process(&processes_list);
     while (process != NULL) {
       pthread_mutex_lock(&(process->process_lock));
-      
-      if (process->current_miss_ratio == -1) {
-        // don't have enough information to migrate pages for this
-        // process, just leave it alone
-        tmp = process;
-        process = process->next;
-        pthread_mutex_unlock(&(tmp->process_lock));
-        continue;
-      }
       
       // now migrate up to newly freed DRAM space
       gettimeofday(&now, NULL);
