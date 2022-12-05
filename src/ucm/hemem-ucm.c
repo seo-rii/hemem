@@ -205,6 +205,9 @@ int delete_epoll_ctl(int epoll, int fd)
 }
 
 void ucm_update_miss_ratio(int signum) {
+  if(signum != SIGUSR2) {
+    return;
+  }
   const char* new_miss_fname = "/tmp/miss_ratio_update";
   struct hemem_process *p;
 
@@ -213,15 +216,13 @@ void ucm_update_miss_ratio(int signum) {
   float new_miss = -1.0;
   fscanf(new_miss_file,"%d:%f", &pid, &new_miss);
 
-  pthread_mutex_lock(&processes_lock);
-  HASH_FIND(phh, processes, &(pid), sizeof(pid_t), p);
+  p = find_process(pid);
+
   if(p == NULL) {
     LOG("No process with PID %d currently managed", pid);
-    pthread_mutex_unlock(&processes_lock);
   }
   LOG("updated miss ratio of proc: %d to %f\n", pid, new_miss);
   p->target_miss_ratio = new_miss;
-  pthread_mutex_unlock(&processes_lock);
 }
 
 struct hemem_process* ucm_add_process(int fd, struct add_process_request* request, struct add_process_response* response)

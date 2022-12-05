@@ -104,23 +104,23 @@ void make_cold_request(struct hemem_process* process, struct hemem_page* page)
     ring_buf_put(process->cold_ring, (uint64_t*)page);
 }
 
-// int access_to_index(uint64_t num) {
-//   if(num == 0) {
-//     return 0;
-//   }
-//   return (num/3) + 1;
-// }
-
 int access_to_index(uint64_t num) {
-  if(num <= 0) {
+  if(num == 0) {
     return 0;
   }
-  int ret = 64-__builtin_clzll(num);
-  if(ret > NUM_HOTNESS_LEVELS-1) {
-    return NUM_HOTNESS_LEVELS-1;
-  }
-  return ret;
+  return (num/3) + 1;
 }
+
+// int access_to_index(uint64_t num) {
+//   if(num <= 0) {
+//     return 0;
+//   }
+//   int ret = 64-__builtin_clzll(num);
+//   if(ret > NUM_HOTNESS_LEVELS-1) {
+//     return NUM_HOTNESS_LEVELS-1;
+//   }
+//   return ret;
+// }
 
 void *pebs_scan_thread()
 {

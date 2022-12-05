@@ -71,15 +71,6 @@ struct gups_args {
   uint64_t hotsize;        // size of hot set
 };
 
-
-static inline uint64_t rdtscp(void)
-{
-    uint32_t eax, edx;
-    // why is "ecx" in clobber list here, anyway? -SG&MH,2017-10-05
-    __asm volatile ("rdtscp" : "=a" (eax), "=d" (edx) :: "ecx", "memory");
-    return ((uint64_t)edx << 32) | eax;
-}
-
 uint64_t thread_gups[MAX_THREADS];
 
 static unsigned long updates, nelems;
@@ -145,7 +136,7 @@ static void *prefill_hotset(void* arguments)
   
 }
 
-bool done_gups = false;
+volatile bool done_gups = false;
 unsigned completed_gups[MAX_THREADS] = {0};
 
 static void *do_gups(void *arguments)
@@ -323,6 +314,7 @@ int main(int argc, char **argv)
     // run through gups once to touch all memory
     // spawn gups worker threads
     for (i = 0; i < threads; i++) {
+      ga[i]->iters = updates * 2;
       int r = pthread_create(&t[i], NULL, do_gups, (void*)ga[i]);
       assert(r == 0);
     }
@@ -368,6 +360,7 @@ int main(int argc, char **argv)
 
   // wait for worker threads
   for (i = 0; i < threads; i++) {
+    ga[i]->iters = updates;
     int r = pthread_join(t[i], NULL);
     assert(r == 0);
   }
