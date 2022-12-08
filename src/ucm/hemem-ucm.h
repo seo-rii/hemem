@@ -15,11 +15,11 @@
 
 #define MAX_UFFD_MSGS	    (3)
 
-//#define USE_DMA
-#define USE_PARALLEL_MEMCPY
+#define USE_DMA
+//#define USE_PARALLEL_MEMCPY
 
 #ifdef USE_DMA
-  #define NUM_CHANNS 1
+  #define NUM_CHANNS 2
   #define SIZE_PER_DMA_REQUEST (1024*1024)
 #else
   #ifdef USE_PARALLEL_MEMCPY

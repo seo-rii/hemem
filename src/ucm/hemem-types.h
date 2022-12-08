@@ -54,14 +54,17 @@ struct hemem_process {
   int remap_fd;
 #ifdef HEMEM_QOS
   _Atomic uint64_t volatile accessed_pages[NPBUFTYPES];
+  _Atomic uint64_t volatile wrong_memtype;
+  _Atomic uint64_t volatile samples[24];
   double target_miss_ratio;
   double volatile current_miss_ratio;
-  bool victimized;
   FILE* logfd;
   uint64_t migrate_up_bytes, migrate_down_bytes;
+  uint64_t migrations_up, migrations_down;
 #endif
   volatile uint64_t current_dram;
   volatile uint64_t allowed_dram;
+  uint64_t max_dram;
 
   struct page_list dram_lists[NUM_HOTNESS_LEVELS + 1];
   struct page_list nvm_lists[NUM_HOTNESS_LEVELS + 1];

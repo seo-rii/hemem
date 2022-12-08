@@ -115,6 +115,7 @@ struct free_response {
 struct add_process_request {
   struct msg_header header; 
   double target_miss_ratio;
+  uint64_t req_dram;
 };
 
 struct add_process_response {

@@ -239,6 +239,9 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   process->cur_cool_in_nvm_list = 0;
   process->need_cool_dram = false;
   process->need_cool_nvm = false;
+  process->migrations_up = process->migrations_down = 0;
+
+  process->max_dram = request->req_dram;
 
 #ifdef HEMEM_QOS  
   snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/log-%d.txt", process->pid);
@@ -335,7 +338,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
 //  #ifndef USE_DMA
 //    hemem_parallel_memset(ucm_addr, 0, pagesize);
 //  #else
-    memset(ucm_addr, 0, pagesize);
+//    memset(ucm_addr, 0, pagesize);
 //  #endif
     memsets++;
 
@@ -764,17 +767,17 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
   gettimeofday(&end, NULL);
   LOG_TIME("memcpy_to_dram: %f s\n", elapsed(&start, &end));
 
+  process->migrations_up++;
   page->migrations_up++;
   migrations_up++;
 
   page->devdax_offset = dram_offset;
-  page->in_dram = true;
 
   bytes_migrated += pagesize;
 
   page_app.va = page->va;
   page_app.devdax_offset = page->devdax_offset;
-  page_app.in_dram = page->in_dram;
+  page_app.in_dram = true;
   page_app.pt = page->pt;
   gettimeofday(&remap_start, NULL);
   remap_pages(process->pid, process->remap_fd, &page_app, 1);
@@ -782,6 +785,8 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
   LOG_TIME("hemem_remap_page_up: %f s\n", elapsed(&remap_start, &remap_end));
   gettimeofday(&migrate_end, NULL);
   LOG_TIME("hemem_migrate_up: %f s\n", elapsed(&migrate_start, &migrate_end));
+
+  page->in_dram = true;
 }
 
 void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *page, uint64_t nvm_offset) {
@@ -844,17 +849,17 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
   gettimeofday(&end, NULL);
   LOG_TIME("memcpy_to_nvm: %f s\n", elapsed(&start, &end));
 
+  process->migrations_down++;
   page->migrations_down++;
   migrations_down++;
 
   page->devdax_offset = nvm_offset;
-  page->in_dram = false;
 
   bytes_migrated += pagesize;
 
   page_app.va = page->va;
   page_app.devdax_offset = page->devdax_offset;
-  page_app.in_dram = page->in_dram;
+  page_app.in_dram = false;
   page_app.pt = page->pt;
   gettimeofday(&remap_start, NULL);
   remap_pages(process->pid, process->remap_fd, &page_app, 1);
@@ -863,6 +868,8 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
 
   gettimeofday(&migrate_end, NULL);
   LOG_TIME("hemem_migrate_down: %f s\n", elapsed(&migrate_start, &migrate_end));
+
+  page->in_dram = false;
 }
 
 void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
@@ -1008,7 +1015,7 @@ void handle_missing_fault(struct hemem_process *process,
   addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
 
 //#ifdef USE_DMA
-  memset(addr, 0, pagesize);
+//  memset(addr, 0, pagesize);
 //#else
 //  hemem_parallel_memset(addr, 0, pagesize);
 //#endif

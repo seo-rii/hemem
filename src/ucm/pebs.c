@@ -148,8 +148,17 @@ void *pebs_scan_thread()
   }
 
   for(;;) {
-    for (i = LAST_HEMEM_THREAD + 1; i < PEBS_NPROCS - 1; i++) {
+    for (i = LAST_HEMEM_THREAD + 1; i < PEBS_NPROCS; i++) {
       for(j = 0; j < NPBUFTYPES; j++) {
+
+	static struct perf_event_mmap_page *perf_page_shadow[PEBS_NPROCS][NPBUFTYPES];
+
+	if(perf_page_shadow[i][j] == NULL) {
+	  perf_page_shadow[i][j] = perf_page[i][j];
+	} else {
+	  assert(perf_page_shadow[i][j] == perf_page[i][j]);
+	}
+
         p = perf_page[i][j];
         pbuf = (char *)p + p->data_offset;
 
@@ -159,10 +168,17 @@ void *pebs_scan_thread()
           continue;
         }
 
+	assert(p->data_head > p->data_tail);
+
         ph = (void *)(pbuf + (p->data_tail % p->data_size));
 
         switch(ph->type) {
         case PERF_RECORD_SAMPLE:
+	  if((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) != PERF_RECORD_MISC_USER) {
+	    fprintf(stderr, "Unknown PEBS sample misc: %x, type: %x\n", ph->misc, ph->type);
+	  }
+	  /* assert((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) == PERF_RECORD_MISC_USER); */
+
             ps = (struct perf_sample*)ph;
             assert(ps != NULL);
             if(ps->addr != 0) {
@@ -170,9 +186,22 @@ void *pebs_scan_thread()
               process = find_process(ps->pid);
 
               if (process != NULL) {
+		process->samples[i]++;
                 page = find_page(process, pfn);
                 if (page != NULL) {
                   if (page->va != 0) {
+		    assert(j == DRAMREAD || j == NVMREAD);
+		    if(j == DRAMREAD) {
+		      if(!page->in_dram) {
+			process->wrong_memtype++;
+		      }
+		      /* assert(page->in_dram); */
+		    } else {
+		      if(page->in_dram) {
+			process->wrong_memtype++;
+		      }
+		      /* assert(!page->in_dram); */
+		    }
 #ifdef HEMEM_QOS
                     process->accessed_pages[j]++;
 #endif
@@ -203,6 +232,7 @@ void *pebs_scan_thread()
                   hemem_pages_cnt++;
                 }
                 else {
+		  /* assert(0); */
                   other_pages_cnt++;
                 }
                 total_pages_cnt++;
@@ -214,6 +244,8 @@ void *pebs_scan_thread()
             else {
               zero_pages_cnt++;
             }
+
+	    /* ps->addr = 0; */
   	      break;
         case PERF_RECORD_THROTTLE:
         case PERF_RECORD_UNTHROTTLE:
@@ -861,40 +893,28 @@ static inline double calc_miss_ratio(struct hemem_process *process)
   return ((1.0 * process->accessed_pages[NVMREAD]) / (process->accessed_pages[DRAMREAD] + process->accessed_pages[NVMREAD]));
 }
 
-struct victim_processes {
-  struct hemem_process *victim;
-  struct victim_processes *next;
-};
 
+struct hemem_process *victim_list[MAX_PROCESSES];
 
 // find list of candidate victim processes with higher target miss ratio than process; returns
 // the number of candidate victims found
 // a victim process is a process who has a valid current miss ratio (i.e., != -1), has a better
 // current miss ratio than its target, and hasn't had dram taken from it before for this round
-// victim_list is assumed NULL when passed and will be filled with victim processes when returned
-// (if any; stays NULL otherwise);
-static int find_victim_processes_higher(struct hemem_process *process, struct victim_processes **victim_list)
+static int find_victim_processes_higher(struct hemem_process *process)
 {
   struct hemem_process *current, *tmp;
-  struct victim_processes *victim_process;
   int num_victims = 0;
   struct timeval now;
-
-  assert(*victim_list == NULL);
 
   current = process->next;
   while (current != NULL) {
     pthread_mutex_lock(&(current->process_lock));
 
-    if ((current->current_miss_ratio >= 0.0) && (current->target_miss_ratio >= current->current_miss_ratio) && !current->victimized) {
+    if ((current->current_miss_ratio != -1.0) && (current->target_miss_ratio >= current->current_miss_ratio)) {
       if (current->allowed_dram > 0) {
         // found a victim process that has DRAM we can take
 
-        victim_process = (struct victim_processes*)calloc(1, sizeof(struct victim_processes));
-        victim_process->victim = current;
-        victim_process->victim->victimized = true;
-        victim_process->next = *victim_list;
-        *victim_list = victim_process;
+        victim_list[num_victims] = current;
         num_victims++;
         gettimeofday(&now, NULL);
         LOG("%f\tpolicy thread found higher miss ratio process %d as a victim process\n", elapsed(&startup, &now), current->pid);
@@ -914,16 +934,11 @@ static int find_victim_processes_higher(struct hemem_process *process, struct vi
 // the number of candidate victims found
 // a victim process is a process who has a valid current miss ratio (i.e., != -1), has a better
 // current miss ratio than its target, and hasn't had dram taken from it before for this round
-// victim_list is assumed NULL when passed and will be filled with victim processes when returned
-// (if any; stays NULL otherwise);
-static int find_victim_processes_lower(struct hemem_process *process, struct victim_processes **victim_list)
+static int find_victim_processes_lower(struct hemem_process *process)
 {
   struct hemem_process *current, *tmp;
-  struct victim_processes *victim_process;
   int num_victims = 0;
   struct timeval now;
-
-  assert(*victim_list == NULL);
 
   current = peek_process(&processes_list);
   while (current != NULL) {
@@ -932,13 +947,10 @@ static int find_victim_processes_lower(struct hemem_process *process, struct vic
     }
     pthread_mutex_lock(&(current->process_lock));
 
-    if ((current->current_miss_ratio >= 0.0) && (current->target_miss_ratio >= current->current_miss_ratio) && !current->victimized) {
+    if ((current->current_miss_ratio != -1.0) && (current->target_miss_ratio >= current->current_miss_ratio)) {
       if (current->allowed_dram > 0) {
         // found a victim process that has DRAM we can take
-        victim_process = (struct victim_processes*)calloc(1, sizeof(struct victim_processes));
-        victim_process->victim = current;
-        victim_process->next = *victim_list;
-        *victim_list = victim_process;
+        victim_list[num_victims] = current;
         num_victims++;
         gettimeofday(&now, NULL);
         LOG("%f\tpolicy thread found lower miss ratio process %d as a victim process\n", elapsed(&startup, &now), current->pid);
@@ -958,28 +970,19 @@ static int find_victim_processes_lower(struct hemem_process *process, struct vic
 // take DRAM frm; returns the number of victims;
 // a victim process is a process with a higher target miss ratio; it will give up DRAM regardless
 // of whether it is meeting its own target miss ratio or not.
-// victim_list is assumed NULL when passed and will be filled with victim processes when returned,
-// if any, NULL otherwise
-static int find_victim_processes_forced(struct hemem_process *process, struct victim_processes **victim_list)
+static int find_victim_processes_forced(struct hemem_process *process)
 {
   struct hemem_process *current, *tmp;
-  struct victim_processes *victim_process;
   int num_victims = 0;
   struct timeval now;
-
-  assert(*victim_list == NULL);
 
   current = process->next;
   while (current != NULL) {
     pthread_mutex_lock(&(current->process_lock));
 
-    if (current->allowed_dram > 0 && !current->victimized) {
+    if (current->allowed_dram > 0) {
       // found a victim process that has DRAM we can take
-      victim_process = (struct victim_processes*)calloc(1, sizeof(struct victim_processes));
-      victim_process->victim = current;
-      victim_process->victim->victimized = false;
-      victim_process->next = *victim_list;
-      *victim_list = victim_process;
+      victim_list[num_victims] = current;
       num_victims++;
       gettimeofday(&now, NULL);
       LOG("%f\tpolicy thread found lower priority process %d as a forced victim process\n", elapsed(&startup, &now), current->pid);
@@ -1020,7 +1023,6 @@ void *pebs_policy_thread()
   int64_t tmp_dram[NUM_HOTNESS_LEVELS];
   int i, j;
   int nvm_hot_pages_left_to_migrate, pages_from_cur_dram;
-  struct victim_processes *victims = NULL, *cur_victim, *tmp_victim;
   int num_victims;
 #endif
 
@@ -1041,7 +1043,6 @@ void *pebs_policy_thread()
     while (process != NULL) {
       pthread_mutex_lock(&(process->process_lock));
       handle_ring_requests(process);
-      process->victimized = false;
 
       if (process->accessed_pages[DRAMREAD] + process->accessed_pages[NVMREAD] != 0) {
         if (process->current_miss_ratio == -1) {
@@ -1051,7 +1052,7 @@ void *pebs_policy_thread()
         } else {
           process->current_miss_ratio = (EWMA_FRAC * calc_miss_ratio(process)) + ((1 - EWMA_FRAC) * process->current_miss_ratio);
         }
-        process->accessed_pages[DRAMREAD] = process->accessed_pages[NVMREAD] = 0;
+        process->accessed_pages[DRAMREAD] = 0; process->accessed_pages[NVMREAD] = 0;
       } else {
         // we use a negative current miss ratio to signal that we don't have
         // any access information for this process yet, so rest of policy thread
@@ -1109,21 +1110,19 @@ void *pebs_policy_thread()
                                 dram_free_list.numentries * PAGE_SIZE;
           remaining_dram -= dram_taking;
         }
-        
+
         // find a lower priority process to take DRAM from
         if (remaining_dram > 0)
-        victims = NULL;
-        num_victims = find_victim_processes_higher(process, &victims);
+        num_victims = find_victim_processes_higher(process);
         if (num_victims != 0) {
           dram_portion = remaining_dram / num_victims;
           dram_portion -= (dram_portion % PAGE_SIZE);
-        
+
           gettimeofday(&now, NULL);
           LOG("%f\tpolicy thread found %d higher miss ratio process to take %ld DRAM each\n", elapsed(&startup, &now), num_victims, dram_portion);
-        
-          cur_victim = victims;
-          while (cur_victim != NULL) {
-            tmp = cur_victim->victim;
+
+          for (i = 0; i < num_victims; i++) {
+            tmp = victim_list[i];
             pthread_mutex_lock(&(tmp->process_lock));
             dram_taking = (dram_portion <= tmp->allowed_dram) ? 
                                   dram_portion : 
@@ -1134,26 +1133,21 @@ void *pebs_policy_thread()
             LOG("%f\tpolicy thread found higher miss ratio process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
 
             pthread_mutex_unlock(&(tmp->process_lock));
-            tmp_victim = cur_victim;
-            cur_victim = cur_victim->next;
-            free(tmp_victim);
           }
         }
 
         // if we still need dram, try to find higher priority process to take form
         if (remaining_dram > 0) {
-          victims = NULL;
-          num_victims = find_victim_processes_lower(process, &victims);
+          num_victims = find_victim_processes_lower(process);
           if (num_victims != 0) {
             dram_portion = remaining_dram / num_victims;
             dram_portion -= (dram_portion % PAGE_SIZE);
 
             gettimeofday(&now, NULL);
             LOG("%f\tpolicy thread found %d lower miss ratio process to take %ld DRAM each\n", elapsed(&startup, &now), num_victims, dram_portion);
-          
-            cur_victim = victims;
-            while (cur_victim != NULL) {
-              tmp = cur_victim->victim;
+
+            for (i = 0; i < num_victims; i++) {
+              tmp = victim_list[i];
               pthread_mutex_lock(&(tmp->process_lock));
               dram_taking = (dram_portion <= tmp->allowed_dram) ?
                                     dram_portion :
@@ -1164,27 +1158,22 @@ void *pebs_policy_thread()
               LOG("%f\tpolicy thread found lower miss ratio process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
 
               pthread_mutex_unlock(&(tmp->process_lock));
-              tmp_victim = cur_victim;
-              cur_victim = cur_victim->next;
-              free(tmp_victim);
             }
           }
         }
 
         // we still need DRAM, forcibly take from a lower priority process
         if (remaining_dram > 0) {
-          victims = NULL;
-          num_victims = find_victim_processes_forced(process, &victims);
+          num_victims = find_victim_processes_forced(process);
           if (num_victims != 0) {
             dram_portion = remaining_dram / num_victims;
             dram_portion -= (dram_portion & PAGE_SIZE);
 
             gettimeofday(&now, NULL);
             LOG("%f\tpolicy thread found %d higher miss ratio process to forcibly take %ld DRAM each\n", elapsed(&startup, &now), num_victims, dram_portion);
-          
-            cur_victim = victims;
-            while (cur_victim != NULL) {
-              tmp = cur_victim->victim;
+
+            for (i = 0; i < num_victims; i++) {
+              tmp = victim_list[i];
               pthread_mutex_lock(&(tmp->process_lock));
               dram_taking = (dram_portion <= tmp->allowed_dram) ?
                                     dram_portion :
@@ -1195,9 +1184,6 @@ void *pebs_policy_thread()
               LOG("%f\tpolicy thread found higher miss ratio process process %d to forcibly take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
 
               pthread_mutex_unlock(&(tmp->process_lock));
-              tmp_victim = cur_victim;
-              cur_victim = cur_victim->next;
-              free(tmp_victim);
             }
           }
         }
@@ -1240,7 +1226,7 @@ void *pebs_policy_thread()
           tmp_dram[i] = process->dram_lists[i].numentries;
         }
         migrate_down_bytes = 0;
-        for (i = NUM_HOTNESS_LEVELS - 1; i > 1; i--) {
+        for (i = NUM_HOTNESS_LEVELS - 1; i > 2; i--) {
           // algo:
           // -for each NVM hotness we want to get how many pages we can fit into
           //  DRAM if we swap colder pages
@@ -1356,6 +1342,8 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
   struct hemem_page *page;
 
   gettimeofday(&start, NULL);
+
+  if (process->current_dram < process->max_dram) {
   page = dequeue_page(&dram_free_list);
   if (page != NULL) {
     assert(page->in_dram);
@@ -1372,7 +1360,8 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
 
     return page;
   }
-    
+  }
+
   // DRAM is full, fall back to NVM
   page = dequeue_page(&nvm_free_list);
   if (page != NULL) {
@@ -1485,7 +1474,7 @@ void pebs_init(void)
 
   LOG("pebs_init: started\n");
 
-  for (int i = LAST_HEMEM_THREAD + 1; i < PEBS_NPROCS - 1; i++) {
+  for (int i = LAST_HEMEM_THREAD + 1; i < PEBS_NPROCS; i++) {
     perf_page[i][DRAMREAD] = perf_setup(0x1d3, 0, i, DRAMREAD);      // MEM_LOAD_L3_MISS_RETIRED.LOCAL_DRAM
     perf_page[i][NVMREAD] = perf_setup(0x80d1, 0, i, NVMREAD);     // MEM_LOAD_RETIRED.LOCAL_PMM
     //perf_page[i][WRITE] = perf_setup(0x82d0, 0, i, WRITE);    // MEM_INST_RETIRED.ALL_STORES
@@ -1531,6 +1520,8 @@ void pebs_init(void)
 
 void pebs_shutdown()
 {
+  assert(0);
+
   for (int i = 0; i < PEBS_NPROCS; i++) {
     for (int j = 0; j < NPBUFTYPES; j++) {
       ioctl(pfd[i][j], PERF_EVENT_IOC_DISABLE, 0);
@@ -1549,7 +1540,7 @@ void count_pages()
   while (process != NULL) {
     //pthread_mutex_lock(&(process->process_lock));
 #ifdef HEMEM_QOS
-    fprintf(process->logfd, "%f\t%f\t%lu\t%lu", elapsed(&startup, &now), process->current_miss_ratio, process->current_dram, process->allowed_dram);
+    fprintf(process->logfd, "%ld\t%f\t%lu\t%lu", rdtscp(), process->current_miss_ratio, process->current_dram, process->allowed_dram);
     fprintf(process->logfd, "\tdram_lists: [%lu", process->dram_lists[COLD].numentries);
     for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
       fprintf(process->logfd, ", %lu", process->dram_lists[i].numentries);
@@ -1559,7 +1550,7 @@ void count_pages()
     for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
       fprintf(process->logfd, ", %lu", process->nvm_lists[i].numentries);
     }
-    fprintf(process->logfd, "]\n");
+    fprintf(process->logfd, "]\tmigrations_up: %lu\tmigrations_down:%lu\n", process->migrations_up, process->migrations_down);
     fflush(process->logfd);
 #endif
     LOG_STATS("\tprocess [%d]\tdram_lists: [%lu", process->pid, process->dram_lists[COLD].numentries);
@@ -1571,7 +1562,17 @@ void count_pages()
       LOG_STATS(", %lu", process->nvm_lists[i].numentries);
     }
     LOG_STATS("]\tcurrent_miss_ratio: %f\ttarget_miss_ratio: %f\tallowed_dram: [%ld]\tcurrent_dram: [%ld]\n", process->current_miss_ratio, process->target_miss_ratio, process->allowed_dram, process->current_dram);
+
+    LOG_STATS("\t\tDRAM accesses: [%"PRIu64"]\tNVM accesses: [%"PRIu64"]\twrong memtype: [%"PRIu64"]\tsamples: [", process->accessed_pages[DRAMREAD], process->accessed_pages[NVMREAD], process->wrong_memtype);
+    for (i = LAST_HEMEM_THREAD + 1; i < PEBS_NPROCS ; i++) {
+      LOG_STATS("%"PRIu64", ", process->samples[i]);
+    }
+    LOG_STATS("]\tmigration_up: [%lu]\tmigrations_down: [%lu]\n", process->migrations_up, process->migrations_down);
+
     //tmp = process;
+	  for (int xxx = LAST_HEMEM_THREAD + 1; xxx < PEBS_NPROCS; xxx++) {
+	    process->samples[xxx] = 0;
+	  }
     process = process->next;
     //pthread_mutex_unlock(&(tmp->process_lock));
   }
@@ -1593,8 +1594,6 @@ void pebs_stats()
           cools);
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
   */
-
-  count_pages();
 
   LOG_STATS("\tnum_processes: [%lu]\tdram_free: [%lu]\tnvm_free: [%lu]\thot_ring: [%lu]\thot_handled: [%ld]\tcold_ring: [%ld]\tcold_handled: [%ld]\tfree_ring: [%ld]\tfree_handled: [%ld]\tstale_candidates: [%ld]\n",
         processes_list.numentries,
@@ -1618,6 +1617,8 @@ void pebs_stats()
         nvm_cools,
         dram_cools_finished,
         nvm_cools_finished);
+
+  count_pages();
+
   hemem_pages_cnt = total_pages_cnt = other_processes_cnt = throttle_cnt = unthrottle_cnt = 0;
 }
-

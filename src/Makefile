@@ -1,9 +1,9 @@
 CC = gcc
 #APP_CFLAGS = -Wall -g3 -O0 -fPIC
-#UCM_CFLAGS = -Wall -g3 -O0
+UCM_CFLAGS = -Wall -g3 -O0
 #SHARED_CFLAGS = -Wall -g3 -O0
 APP_CFLAGS = -Wall -O2 -g3 -fPIC
-UCM_CFLAGS = -Wall -O2 -g3
+#UCM_CFLAGS = -Wall -O2 -g3
 SHARED_CFLAGS = -Wall -O2 -g3
 #CFLAGS = -g3 -Wall -O0 -fPIC
 UCM = ucm
@@ -44,7 +44,7 @@ ucm.o: ${UCM}/ucm.c
 
 hemem-ucm.o: ${UCM}/hemem-ucm.c ${UCM}/hemem-ucm.h ${UCM}/hemem-types.h
 	$(CC) $(UCM_CFLAGS) $(UCM_INCLUDES) -c ${UCM}/hemem-ucm.c -lpthread
-	
+
 channel-shared-app.o: ${SHARED}/channel-shared.c ${SHARED}/channel-shared.h
 	$(CC) $(APP_CFLAGS) $(SHARED_INCLUDES) -o channel-shared-app.o  -c ${SHARED}/channel-shared.c
 

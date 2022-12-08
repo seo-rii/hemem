@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <sched.h>
 
 #include "../src/ucm/timer.h"
 //#include "../src/hemem.h"
@@ -55,6 +56,7 @@ extern double hotset_fraction;
 #define IGNORE_STRAGGLERS
 
 int threads;
+int start_cpu = 8;
 
 uint64_t hot_start = 0;
 uint64_t hotsize = 0;
@@ -93,7 +95,7 @@ static void *print_instantaneous_gups(void *arg)
     for (int i = 0; i < threads; i++) {
       tot_gups += thread_gups[i];
     }
-    fprintf(tot, "%.10f\n", (1.0 * (abs(tot_gups - tot_last_second_gups))) / (1.0e9));
+    fprintf(tot, "%ld\t%.10f\n", rdtscp(), (1.0 * (abs(tot_gups - tot_last_second_gups))) / (1.0e9));
     fflush(tot);
     tot_updates += abs(tot_gups - tot_last_second_gups);
     tot_last_second_gups = tot_gups;
@@ -148,6 +150,18 @@ static void *do_gups(void *arguments)
   uint64_t index1, index2;
   uint64_t lfsr;
   uint64_t iters = args->iters;
+
+  cpu_set_t cpuset;
+  pthread_t thread;
+
+  thread = pthread_self();
+  CPU_ZERO(&cpuset);
+  CPU_SET(start_cpu + args->tid, &cpuset);
+  int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+  if (s != 0) {
+    perror("pthread_setaffinity_np");
+    assert(0);
+  }
 
   srand(args->tid);
   lfsr = rand();
@@ -207,6 +221,7 @@ int main(int argc, char **argv)
   pthread_t t[MAX_THREADS];
   char *log_filename;
   bool wait_for_signal = false;
+  char *start_cpu_str;
 
   // Stop waiting on receiving signal
   signal(SIGUSR1, signal_handler);
@@ -224,6 +239,11 @@ int main(int argc, char **argv)
   }
 
   gettimeofday(&starttime, NULL);
+
+  start_cpu_str = getenv("START_CPU");
+  if (start_cpu_str != NULL) {
+    start_cpu = atoi(start_cpu_str);
+  }
 
   threads = atoi(argv[1]);
   assert(threads <= MAX_THREADS);

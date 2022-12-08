@@ -47,6 +47,8 @@ void *nvm_devdax_mmap;
 
 double target_miss_ratio =  0.1;
 
+uint64_t required_dram = DRAMSIZE;
+
 void* process_request(int fd, void* request)
 {
   int len;
@@ -158,6 +160,7 @@ int add_process()
   request.header.operation = ADD_PROCESS;
   request.header.pid = pid;
   request.target_miss_ratio = target_miss_ratio;
+  request.req_dram = required_dram;
   request.header.msg_size = sizeof(request);
 
   response = process_request(request_fd, &request);
@@ -327,6 +330,7 @@ void hemem_app_init()
   enum status_code status;
   char log_name[64];
   char* target_miss_ratio_str = NULL;
+  char* target_dram_str = NULL;
 
   pid = getpid();
   printf("process id = %d\n", pid);
@@ -413,6 +417,12 @@ void hemem_app_init()
 
   LOG("miss_ratio=%f\n",  target_miss_ratio);
 
+  target_dram_str = getenv("REQ_DRAM");
+  if (target_dram_str != NULL) {
+    required_dram = atoll(target_dram_str);
+  }
+  fprintf(stderr, "DRAM Requested: %lu\n", required_dram);
+  
   status = add_process();
   if (status != 0) {
     perror("add process");
@@ -427,6 +437,7 @@ void hemem_app_init()
 
   status = record_remap_fd();
   if (status != 0) {
+    LOG("status = %u\n", status);
     perror("record remap fd");
     assert(0);
   }

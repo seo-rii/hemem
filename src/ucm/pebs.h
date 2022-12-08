@@ -24,7 +24,7 @@
 #define SAMPLE_PERIOD 101
 //#define SAMPLE_FREQ	100
 
-#define EWMA_FRAC (1.0)
+#define EWMA_FRAC (0.5)
 
 struct perf_sample {
     struct perf_event_header header;

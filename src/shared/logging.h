@@ -30,7 +30,7 @@ static inline void log_time(const char* fmt, ...)
 #define STATS_THREAD
 
 extern FILE *statsf;
-#define LOG_STATS(str, ...) fprintf(stderr, str, __VA_ARGS__)
+#define LOG_STATS(str, ...) fprintf(stderr, str, ## __VA_ARGS__)
 //#define LOG_STATS(str, ...) fprintf(statsf, str, __VA_ARGS__)
 //#define LOG_STATS(str, ...) while (0) {}
 
