@@ -1,4 +1,6 @@
 #!/bin/sh
+mkdir -p /data/fair/logs
+mkdir -p /data/fair/gups
 
 debugfile=/tmp/debug.txt
 rm -f $debugfile
