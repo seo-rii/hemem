@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
+#include <math.h>
 
 #include "iokvs.h"
 
@@ -51,11 +52,14 @@ _Static_assert(sizeof(struct hash_bucket) == 64, "Bad hash bucket size");
 static size_t nbuckets;
 static struct hash_bucket *buckets;
 
-void hasht_init(void)
+void hasht_init(size_t hasht_size)
 {
     size_t i;
+    printf("Target hashtable size %.2f GB\n", (double)(hasht_size / (1024 * 1024 * 1024)));
 
-    nbuckets = TABLESZ(HASHTABLE_POWER);
+    // Must be a power of 2, so convert to nearest power of 2
+    hasht_size = (1ull << ((unsigned long long)round(log2(hasht_size / sizeof(*buckets)))));
+    nbuckets = hasht_size;
     printf("allocing %zu buckets for %zu bytes\n", nbuckets, nbuckets * sizeof(*buckets));
     buckets = calloc(nbuckets + 1, sizeof(*buckets));
     buckets = (struct hash_bucket *) (((uintptr_t) buckets + 63) & ~63ULL);
