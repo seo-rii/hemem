@@ -727,7 +727,7 @@ struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
 
   for(int i = NUM_HOTNESS_LEVELS-1; i >= 0; i--) {
     p = dequeue_page(&(process->nvm_lists[i]));
-/*  
+/*
     if (p == NULL) {
       // got null. list empy. move on.
       continue;
@@ -746,7 +746,7 @@ struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
         break;
       }
     }
-*/
+*/  
     if (p != NULL) {
       // found something hot. we should try to promote it.
       return p;
@@ -910,10 +910,18 @@ static int find_victim_processes_higher(struct hemem_process *process)
   while (current != NULL) {
     pthread_mutex_lock(&(current->process_lock));
 
+    if (process->target_miss_ratio == current->target_miss_ratio) {
+      // processes with the same target miss ratio shouldn't take fast memory from
+      // each other at this stage if there are other processes available to take form
+      tmp = current;
+      current = current->next;
+      pthread_mutex_unlock(&(tmp->process_lock));
+      continue;
+    }
+
     if ((current->current_miss_ratio != -1.0) && (current->target_miss_ratio >= current->current_miss_ratio)) {
       if (current->allowed_dram > 0) {
         // found a victim process that has DRAM we can take
-
         victim_list[num_victims] = current;
         num_victims++;
         gettimeofday(&now, NULL);
@@ -1215,51 +1223,57 @@ void *pebs_policy_thread()
           process->migrate_down_bytes = PEBS_MIGRATE_RATE;
         }
       } else {
-        // process has correct amount of DRAM, need to migrate down enough pages
-        // to free dram for the hot NVM pages. 
+        slack = process->target_miss_ratio / process->current_miss_ratio;
+        if (slack > 2.0) {
+          process->migrate_up_bytes = 0;
+          process->migrate_down_bytes = 0;
+        } else {
+          // process has correct amount of DRAM, need to migrate down enough pages
+          // to free dram for the hot NVM pages. 
 
-        // get number of pages that are in a hotter nvm list than a dram list 
-        // do we need a better way to do this with the hot lists? 
+          // get number of pages that are in a hotter nvm list than a dram list 
+          // do we need a better way to do this with the hot lists? 
         
-        // for each hotness in NVM we ask: how many pages of DRAM are we allowed to replace?
-        for (i = 0; i < NUM_HOTNESS_LEVELS; i++) {
-          tmp_dram[i] = process->dram_lists[i].numentries;
-        }
-        migrate_down_bytes = 0;
-        for (i = NUM_HOTNESS_LEVELS - 1; i > 2; i--) {
-          // algo:
-          // -for each NVM hotness we want to get how many pages we can fit into
-          //  DRAM if we swap colder pages
-          // -tmp_dram is to prevent double counting.
-          // 1) how many pages are at this NVM hotness.
-          // 2) count how many DRAM pages are lower than this hotness
-          // 3) repeat for each DRAM hotness
-          nvm_hot_pages_left_to_migrate = process->nvm_lists[i].numentries;
-          for (j = 0; j < i; j++) {
-            // if we got all the hot pages up then we stop checking
-            if(nvm_hot_pages_left_to_migrate <= 0) {
-              break;
-            }
-
-            // if this level of DRAM has no pages left bail.
-            if(tmp_dram[j] == 0) {
-              continue;
-            }
-
-            // pages we want from this DRAM level is min(pages at this DRAM level, pages we want to move up)
-            pages_from_cur_dram = min(tmp_dram[j], nvm_hot_pages_left_to_migrate);
-            tmp_dram[j] -= pages_from_cur_dram;
-            assert(tmp_dram[j] >= 0);
-            migrate_down_bytes += pages_from_cur_dram * PAGE_SIZE;
+          // for each hotness in NVM we ask: how many pages of DRAM are we allowed to replace?
+          for (i = 0; i < NUM_HOTNESS_LEVELS; i++) {
+            tmp_dram[i] = process->dram_lists[i].numentries;
           }
-        }
-        process->migrate_down_bytes = migrate_down_bytes;
-        if (process->migrate_down_bytes > PEBS_MIGRATE_RATE) {
-          process->migrate_down_bytes = PEBS_MIGRATE_RATE;
-        }
-        process->migrate_up_bytes = process->migrate_down_bytes;
-        if (process->migrate_up_bytes > PEBS_MIGRATE_RATE) {
-          process->migrate_up_bytes = PEBS_MIGRATE_RATE;
+          migrate_down_bytes = 0;
+          for (i = NUM_HOTNESS_LEVELS - 1; i > 2; i--) {
+            // algo:
+            // -for each NVM hotness we want to get how many pages we can fit into
+            //  DRAM if we swap colder pages
+            // -tmp_dram is to prevent double counting.
+            // 1) how many pages are at this NVM hotness.
+            // 2) count how many DRAM pages are lower than this hotness
+            // 3) repeat for each DRAM hotness
+            nvm_hot_pages_left_to_migrate = process->nvm_lists[i].numentries;
+            for (j = 0; j < i; j++) {
+              // if we got all the hot pages up then we stop checking
+              if(nvm_hot_pages_left_to_migrate <= 0) {
+                break;
+              }
+
+              // if this level of DRAM has no pages left bail.
+              if(tmp_dram[j] == 0) {
+                continue;
+              }
+
+              // pages we want from this DRAM level is min(pages at this DRAM level, pages we want to move up)
+              pages_from_cur_dram = min(tmp_dram[j], nvm_hot_pages_left_to_migrate);
+              tmp_dram[j] -= pages_from_cur_dram;
+              assert(tmp_dram[j] >= 0);
+              migrate_down_bytes += pages_from_cur_dram * PAGE_SIZE;
+            }
+          }
+          process->migrate_down_bytes = migrate_down_bytes;
+          if (process->migrate_down_bytes > PEBS_MIGRATE_RATE) {
+            process->migrate_down_bytes = PEBS_MIGRATE_RATE;
+          }
+          process->migrate_up_bytes = process->migrate_down_bytes;
+          if (process->migrate_up_bytes > PEBS_MIGRATE_RATE) {
+            process->migrate_up_bytes = PEBS_MIGRATE_RATE;
+          }
         }
       }
 
@@ -1405,6 +1419,15 @@ void pebs_remove_page(struct hemem_process *process, struct hemem_page *page)
   free_ring_requests++;
   pthread_mutex_unlock(&(process->free_page_ring_lock));
 
+}
+
+void pebs_update_process(struct hemem_process *process, double new_miss_ratio)
+{
+  process_list_remove(&processes_list, process);
+  pthread_mutex_lock(&(process->process_lock));
+  process->target_miss_ratio = new_miss_ratio;
+  pthread_mutex_unlock(&(process->process_lock));
+  enqueue_process(&processes_list, process);
 }
 
 void pebs_add_process(struct hemem_process *process)

@@ -190,6 +190,29 @@ int delete_epoll_ctl(int epoll, int fd)
   return 0;
 }
 
+void ucm_update_miss_ratio(int signum) {
+  if(signum != SIGUSR2) {
+    return;
+  }
+  
+  const char* new_miss_fname = "/tmp/miss_ratio_update";
+  struct hemem_process *p;
+
+  FILE *new_miss_file = fopen(new_miss_fname, "r");
+  int pid = -1;
+  float new_miss = -1.0;
+  fscanf(new_miss_file,"%d:%f", &pid, &new_miss);
+
+  p = find_process(pid);
+
+  if(p == NULL) {
+    LOG("No process with PID %d currently managed", pid);
+  }
+  LOG("updated miss ratio of proc: %d to %f\n", pid, new_miss);
+
+  pebs_update_process(p, new_miss);
+}
+
 
 struct hemem_process* ucm_add_process(int fd, struct add_process_request* request, struct add_process_response* response)
 {
@@ -540,6 +563,10 @@ void hemem_ucm_init() {
     perror("nvm open");
   }
   assert(nvmfd >= 0);
+
+  if (signal(SIGUSR2, ucm_update_miss_ratio) == SIG_ERR) {
+    assert(0 && "Failed to map SIGUSR2 to the missratio update.");
+  }
 
 #ifdef USE_DMA  
   uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);

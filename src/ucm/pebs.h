@@ -15,7 +15,7 @@
 #define PEBS_COOLING_THRESHOLD    (22)
 
 #define HOT_RING_REQS_THRESHOLD   (1024*1024)
-#define COLD_RING_REQS_THRESHOLD  (128)
+#define COLD_RING_REQS_THRESHOLD  (1024*1024)
 #define COOLING_PAGES             (8192)
 
 #define PEBS_NPROCS 24
@@ -40,5 +40,6 @@ void pebs_stats();
 void pebs_shutdown();
 void pebs_add_process(struct hemem_process *process); 
 void pebs_remove_process(struct hemem_process *process);
+void pebs_update_process(struct hemem_process *process, double new_miss_ratio);
 
 #endif /*  HEMEM_PEBS_H  */
