@@ -1193,6 +1193,7 @@ int process_msg(int fd)
   struct msg_header* response_header;
   struct hemem_process* process;
   char* new_send_buf;
+  struct alloc_request* alloc_req;
 
   len = read(fd, recv_buf, MAX_SIZE);
   if (len < sizeof(struct msg_header)) {
@@ -1210,7 +1211,7 @@ int process_msg(int fd)
 
   switch(request_header->operation) {
   case ALLOC_SPACE:
-    struct alloc_request* alloc_req = (struct alloc_request*)recv_buf;
+    alloc_req = (struct alloc_request*)recv_buf;
     len = sizeof(struct alloc_response) + sizeof(struct hemem_page_app) * (alloc_req->length / HUGEPAGE_SIZE + (alloc_req->length % HUGEPAGE_SIZE != 0));
     if (len > MAX_SIZE) {
         new_send_buf = realloc(send_buf, len);

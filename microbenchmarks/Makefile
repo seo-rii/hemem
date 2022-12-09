@@ -6,7 +6,7 @@ CFLAGS = -g3 -Wall -O2
 INCLUDES = -I../linux/usr/include
 LIBS = -lm -lpthread
 
-default: gups-pebs gups-hotset-only testgups #gups-random gups-hotset-move
+default: gups-pebs gups-warmset#gups-random gups-hotset-move
 
 all: gups-pebs gups-random gups-simple gups-lru gups-lru-swap gups-hotset-move gups-hotset-only test #gups
 
