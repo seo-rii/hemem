@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <pthread.h>
 #include <math.h>
+#include <string.h>
 
 #include "iokvs.h"
 
@@ -58,10 +59,11 @@ void hasht_init(size_t hasht_size)
     printf("Target hashtable size %.2f GB\n", (double)(hasht_size / (1024 * 1024 * 1024)));
 
     // Must be a power of 2, so convert to nearest power of 2
-    hasht_size = (1ull << ((unsigned long long)round(log2(hasht_size / sizeof(*buckets)))));
+    hasht_size = (1ull << ((unsigned long long)round(log2(hasht_size / sizeof(struct hash_bucket)))));
     nbuckets = hasht_size;
-    printf("allocing %zu buckets for %zu bytes\n", nbuckets, nbuckets * sizeof(*buckets));
-    buckets = calloc(nbuckets + 1, sizeof(*buckets));
+    printf("allocing %zu buckets for %zu bytes\n", nbuckets, nbuckets * sizeof(struct hash_bucket));
+    buckets = calloc(nbuckets + 1, sizeof(struct hash_bucket));
+    memset(buckets, 0, (nbuckets + 1) * sizeof(struct hash_bucket));
     buckets = (struct hash_bucket *) (((uintptr_t) buckets + 63) & ~63ULL);
     if (buckets == NULL) {
         perror("Allocating item hash table failed");
@@ -72,6 +74,13 @@ void hasht_init(size_t hasht_size)
         if (pthread_spin_init(&buckets[i].lock, 0) != 0) {
           perror("Initializing spin lock failed");
           abort();
+        }
+        for (int j = 0; j < BUCKET_NITEMS; j++) {
+            if(buckets[i].items[j]) {
+                //fprintf(stderr, "Found item %p in bucket %p (%ld, %d)\n", buckets[i].items[j], &buckets[i], i, j);
+                buckets[i].items[j] = NULL;
+                buckets[i].hashes[j] = 0;
+            }
         }
     }
 }
