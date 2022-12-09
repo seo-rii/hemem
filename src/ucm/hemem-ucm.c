@@ -521,8 +521,8 @@ struct hemem_process *find_process(pid_t pid) {
 void add_page(struct hemem_process* process, struct hemem_page *page) {
   struct hemem_page *p;
   pthread_mutex_lock(&(process->pages_lock));
-  HASH_FIND(hh, process->pages, &(page->va), sizeof(uint64_t), p);
-  assert(p == NULL);
+  //HASH_FIND(hh, process->pages, &(page->va), sizeof(uint64_t), p);
+  //assert(p == NULL);
   HASH_ADD(hh, process->pages, va, sizeof(uint64_t), page);
   pthread_mutex_unlock(&(process->pages_lock));
 }
@@ -1144,8 +1144,11 @@ void *handle_fault() {
           // allign faulting address to page boundry
           // huge page boundry in this case due to dax allignment
           page_boundry = fault_addr & ~(PAGE_SIZE - 1);
-
+          struct hemem_page *found_page;
           if (fault_flags & UFFD_PAGEFAULT_FLAG_WP) {
+            handle_wp_fault(process, page_boundry);
+          } else if(found_page = find_page(process, page_boundry)) {
+            LOG("Found existing page at %lx, migrating? %d\n", page_boundry, found_page->migrating);
             handle_wp_fault(process, page_boundry);
           } else {
             handle_missing_fault(process, page_boundry);
