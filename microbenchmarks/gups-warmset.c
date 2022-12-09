@@ -163,14 +163,14 @@ static void *do_gups(void *arguments)
     lfsr = lfsr_fast(lfsr);
     if (lfsr % 100 < 60) {
       lfsr = lfsr_fast(lfsr);
-      index1 = args->hot_start + (lfsr % (args->hotsize)/2);
+      index1 = args->hot_start + (lfsr % (args->hotsize/2));
       uint64_t  tmp = field[index1];
       tmp = tmp + i;
       field[index1] = tmp;
     }
     else if (lfsr % 100 < 90) {
       lfsr = lfsr_fast(lfsr);
-      index1 = args->hot_start + (args->hotsize/2) + (lfsr % (args->hotsize)/2);
+      index1 = args->hot_start + (args->hotsize/2) + (lfsr % args->hotsize);
       uint64_t  tmp = field[index1];
       tmp = tmp + i;
       field[index1] = tmp;
