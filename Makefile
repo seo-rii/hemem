@@ -126,7 +126,7 @@ RUN_PERF = while : ; \
 	done &
 
 FLEXKV_NICE ?= nice -20
-FLEXKV_SERVER_WAIT ?= 60
+FLEXKV_SERVER_WAIT ?= 120
 FLEXKV_SAMPLE_TIME ?= 600
 FLEXKV_HOT_FRAC ?= 0.25
 # TODO: Can we somehow launch client after server is setup
@@ -286,10 +286,11 @@ run_eval_apps: all
 	wait $${FLEX_PID}; \
 	${KILL_MGR} \
 	${RUN_MGR} \
-	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs & \
-	FLEX_PID=$$!; \
-	$(MAKE) run_gapbs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GAPBS_SIZE} PREFIX=$${PREFIX}; \
-	wait $${FLEX_PID}; \
+	$(MAKE) run_gapbs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GAPBS_SIZE} PREFIX=$${PREFIX} & \
+	GAPBS_PID=$$!; \
+	sleep 1200; \
+	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs; \
+	wait $${GAPBS_PID}; \
 	${KILL_MGR}
 
 
@@ -299,6 +300,9 @@ extract_bg: all
 	python extract_script.py ${BG_PREFIXES} ${BG_APPS} ${RES}
 
 EVAL_PREFIXES = "eval_qtmem"
-EVAL_APPS = "Isolated"
+EVAL_APPS = "Isolated,gups,gapbs"
 extract_eval: all
 	python extract_script.py ${EVAL_PREFIXES} ${EVAL_APPS} ${RES}
+
+extract_eval_timeline: all
+	python extract_timeline.py ${EVAL_PREFIXES} ${EVAL_APPS} ${RES}
