@@ -68,9 +68,9 @@ void init_settings(struct settings *s)
     s->keydist = DIST_UNIFORM;
     s->valuesize = 16 * 1024;
     s->get_prob = 0.9;
-    s->warmup_time = 5;
+    s->warmup_time = 120;
     s->cooldown_time = 5;
-    s->run_time = 10;
+    s->run_time = 600;
     s->request_gap = 100 * 1000;
     s->key_seed = 0x123457890123ULL;
     s->op_seed =  0x987654321098ULL;
