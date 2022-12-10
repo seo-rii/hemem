@@ -55,14 +55,11 @@ void* process_request(int fd, void* request)
   size_t request_size;
   struct msg_header* request_header;
   struct msg_header* response;
-  struct msg_header* new_response;
+  static __thread char rsp_buf[MAX_SIZE];
   int ret;
 
-  response = (void*)calloc(1, MAX_SIZE);
-  if (response == NULL) {
-    perror("calloc error");
-    assert(0);
-  }
+  response = (struct msg_header*)rsp_buf;
+  memset(response, 0, MAX_SIZE);
 
   request_header = (struct msg_header*)request;
   request_size = request_header->msg_size;
@@ -97,12 +94,7 @@ void* process_request(int fd, void* request)
   #endif
 
   if (len != response->msg_size) {
-    new_response = realloc(response, response->msg_size);
-    response = new_response;
-    ret = read_msg(fd, (char*)response + len, response->msg_size - len);
-    if (ret != 0) {
       assert(0);
-    }
   }
 
   if (fd == request_fd) {
@@ -146,7 +138,6 @@ int free_space(void *addr, size_t length)
   
   response = process_request(request_fd, &request);
   status = response->header.status;  
-  free(response);
 
   return status;
 }
@@ -165,7 +156,6 @@ int add_process()
 
   response = process_request(request_fd, &request);
   status = response->header.status;  
-  free(response);
 
   return status;
 }
@@ -183,7 +173,6 @@ int remove_process()
   // here it uses the remap_fd to let the central manager record the remap sock fd
   response = process_request(request_fd, &request);
   status = response->header.status;  
-  free(response);
 
   return status;
 }
@@ -201,7 +190,6 @@ int get_uffd(long uffd)
 
   response = process_request(request_fd, &request);
   status = response->header.status;  
-  free(response);
 
   return status;
 }
@@ -218,7 +206,6 @@ int record_remap_fd()
 
   response = process_request(remap_fd, &request);
   status = response->header.status;
-  free(response);
 
   return status;
 }
@@ -528,7 +515,6 @@ static void hemem_mmap_populate(void* addr, size_t length)
 
         page_boundry += pagesize;
     }
-    free(response);
   }
 
 }
