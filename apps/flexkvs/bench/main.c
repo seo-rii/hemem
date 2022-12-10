@@ -1184,21 +1184,24 @@ int main(int argc, char *argv[])
     fflush(stdout);
     phase = BENCHMARK_RUNNING;
 
-    sleep(settings.warmup_time);
+    //sleep(settings.warmup_time);
 
 
     t_start = t_prev = get_nanos();
     uint64_t glbl_ops = 0;
-    uint64_t current_runtime = 0;
+    uint64_t current_runtime = 0, warmup_time = settings.warmup_time;
     while (current_runtime < settings.run_time) {
         sleep(1);
         ++current_runtime;
+        if(current_runtime == warmup_time)
+            printf("Warmup complete\n");
         t_cur = get_nanos();
         tp_total = 0;
         msg_total = 0;
         for (i = 0; i < num_threads; i++) {
             tp = read_cnt(&cs[i].rx_success);
-            glbl_ops += tp;
+            if(current_runtime >= warmup_time)
+                glbl_ops += tp;
             tp /= (double) (t_cur - t_prev) / 1000000000.;
             ttp[i] = tp;
             tp_total += tp;
@@ -1207,7 +1210,8 @@ int main(int argc, char *argv[])
                 hx = cs[i].hist[j];
                 msg_total += hx;
                 hist[j] += hx;
-                glbl_hist[j] += hx;
+                if(current_runtime >= warmup_time)
+                    glbl_hist[j] += hx;
                 cs[i].hist[j] = 0;
             }
         }
@@ -1234,7 +1238,8 @@ int main(int argc, char *argv[])
 
     phase = BENCHMARK_DONE;
 
-    printf("Final throughput = %.4f mops\n", (double)glbl_ops * 1000. / (double)(get_nanos() - t_start));
+    printf("Final throughput = %.4f mops\n", (double)glbl_ops * 1000. / 
+        (double)(get_nanos() - t_start - warmup_time * 1000000000UL));
     for(i = 0; i < HIST_BUCKETS; ++i)
         if(glbl_hist[i] != 0)
             printf("Hist[%d]=%d\n", i, glbl_hist[i]);
