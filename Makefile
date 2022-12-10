@@ -65,8 +65,6 @@ PRELOAD  ?=
 SET_LOW_PRTY = MISS_RATIO=1.0
 SET_HIGH_PRTY = MISS_RATIO=0.1
 
-
-
 CMD_KILL_ALL := \
 	list_descendants () { \
 		local children=$$(ps -o pid= --ppid "$$1"); \
@@ -111,6 +109,7 @@ GAPBS_PRTY  ?= ${SET_LOW_PRTY}
 SETUP_CMD = export LD_LIBRARY_PATH=./src:./Hoard/src:$LD_LIBRARY_PATH; \
 	echo 1000000 > /proc/sys/vm/max_map_count;
 HEMEM_PRELOAD = env LD_PRELOAD=./src/libhemem.so
+
 RUN_MGR = nice -20 ${NUMA_CMD} --physcpubind=${MGR_CPUS} ./src/central-manager & \
 	CTRL_MGR=$$!; \
 	sleep 20;
@@ -123,7 +122,10 @@ RUN_PERF = while : ; \
 		perf_pid=$$!; \
 		sleep 1; \
 		kill -9 $${perf_pid}; \
-	done &
+	done & \
+	PERF_CMD=$$!;
+
+KILL_PERF = kill $${PERF_CMD}; sleep 5;
 
 FLEXKV_NICE ?= nice -20
 FLEXKV_SERVER_WAIT ?= 120
@@ -291,7 +293,8 @@ run_eval_apps: all
 	sleep 1200; \
 	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs; \
 	wait $${GAPBS_PID}; \
-	${KILL_MGR}
+	${KILL_MGR} \
+	${KILL_PERF}
 
 
 BG_PREFIXES = "bg_dram_base,bg_hw_tier,bg_mini_hemem,bg_hemem,bg_test_hemem"
