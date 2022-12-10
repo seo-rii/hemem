@@ -137,7 +137,7 @@ static void *prefill_hotset(void* arguments)
   
 }
 
-bool done_gups = false;
+volatile bool done_gups = false;
 unsigned completed_gups[MAX_THREADS] = {0};
 
 static void *do_gups(void *arguments)

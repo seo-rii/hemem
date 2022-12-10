@@ -12,11 +12,11 @@
 #define PEBS_POLICY_INTERVAL      (1000000) // in us (1 s)
 #define PEBS_MIGRATE_RATE      (1UL * 1024UL * 1024UL * 1024UL) // 1GB
 //#define HOT_WRITE_THRESHOLD       (4)
-#define PEBS_COOLING_THRESHOLD    (22)
+#define PEBS_COOLING_THRESHOLD    (64)
 
 #define HOT_RING_REQS_THRESHOLD   (1024*1024)
 #define COLD_RING_REQS_THRESHOLD  (1024*1024)
-#define COOLING_PAGES             (8192)
+#define COOLING_PAGES             (16384)
 
 #define PEBS_NPROCS 24
 #define PERF_PAGES	(1 + (1 << 16))	// Has to be == 1+2^n, here 1MB

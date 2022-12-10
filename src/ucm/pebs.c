@@ -174,10 +174,6 @@ void *pebs_scan_thread()
 
         switch(ph->type) {
         case PERF_RECORD_SAMPLE:
-	  if((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) != PERF_RECORD_MISC_USER) {
-	    fprintf(stderr, "Unknown PEBS sample misc: %x, type: %x\n", ph->misc, ph->type);
-	  }
-	  /* assert((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) == PERF_RECORD_MISC_USER); */
 
             ps = (struct perf_sample*)ph;
             assert(ps != NULL);
@@ -185,6 +181,10 @@ void *pebs_scan_thread()
               __u64 pfn = ps->addr & HUGE_PFN_MASK;
               process = find_process(ps->pid);
 
+	            if((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) != PERF_RECORD_MISC_USER) {
+	              fprintf(stderr, "Unknown PEBS sample misc: %x, type: %x, pid: %d\n", ph->misc, ph->type, ps->pid);
+	            }
+	  /* assert((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) == PERF_RECORD_MISC_USER); */
               if (process != NULL) {
 		process->samples[i]++;
                 page = find_page(process, pfn);
@@ -239,6 +239,7 @@ void *pebs_scan_thread()
               }
               else {
                 other_processes_cnt++;
+                LOG("pebs_thread received sample from non-qtMem process %d\n", ps->pid);
               }
             }
             else {
@@ -1271,9 +1272,6 @@ void *pebs_policy_thread()
             process->migrate_down_bytes = PEBS_MIGRATE_RATE;
           }
           process->migrate_up_bytes = process->migrate_down_bytes;
-          if (process->migrate_up_bytes > PEBS_MIGRATE_RATE) {
-            process->migrate_up_bytes = PEBS_MIGRATE_RATE;
-          }
         }
       }
 
@@ -1358,22 +1356,22 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
   gettimeofday(&start, NULL);
 
   if (process->current_dram < process->max_dram) {
-  page = dequeue_page(&dram_free_list);
-  if (page != NULL) {
-    assert(page->in_dram);
-    assert(!page->present);
+    page = dequeue_page(&dram_free_list);
+    if (page != NULL) {
+      assert(page->in_dram);
+      assert(!page->present);
 
-    page->present = true;
-    enqueue_page(&(process->dram_lists[COLD]), page);
+      page->present = true;
+      enqueue_page(&(process->dram_lists[COLD]), page);
 
-    gettimeofday(&end, NULL);
-    LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
+      gettimeofday(&end, NULL);
+      LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
 
-    process->allowed_dram += pt_to_pagesize(page->pt);
-    process->current_dram += pt_to_pagesize(page->pt);
+      process->allowed_dram += pt_to_pagesize(page->pt);
+      process->current_dram += pt_to_pagesize(page->pt);
 
-    return page;
-  }
+      return page;
+    }
   }
 
   // DRAM is full, fall back to NVM

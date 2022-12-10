@@ -1,9 +1,12 @@
 #!/bin/sh
+debugfile=/tmp/debug.txt
+rm -f $debugfile
+
 ./run-perf.sh >/dev/null 2>&1 &
 run_perf_pid=$!
 
 for i in `seq 31 38`; do
-  nice -20 numactl -C0,1,2,3,4,5,6,7,23 -m0 -- ./../src/central-manager &
+  nice -20 numactl -C0,1,2,3 -m0 -- ./../src/central-manager >$debugfile 2>&1 &
   central_pid=$!
   sleep 5
   workset=$((i + 1))
