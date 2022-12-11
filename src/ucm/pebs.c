@@ -182,7 +182,7 @@ void *pebs_scan_thread()
               process = find_process(ps->pid);
 
 	            if((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) != PERF_RECORD_MISC_USER) {
-	              fprintf(stderr, "Unknown PEBS sample misc: %x, type: %x, pid: %d\n", ph->misc, ph->type, ps->pid);
+	              //fprintf(stderr, "Unknown PEBS sample misc: %x, type: %x, pid: %d\n", ph->misc, ph->type, ps->pid);
 	            }
 	  /* assert((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) == PERF_RECORD_MISC_USER); */
               if (process != NULL) {
@@ -617,6 +617,9 @@ void handle_ring_requests(struct hemem_process *process)
     }
     page->in_free_ring = false;
 
+    process->current_dram -= pt_to_pagesize(page->pt);
+    process->allowed_dram -= pt_to_pagesize(page->pt);
+
     free_ring_requests_handled++;
   }
 
@@ -782,7 +785,11 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
     }
 
     if (cp == process->cur_cool_in_dram) {
-      process->cur_cool_in_dram = process->dram_lists[NUM_HOTNESS_LEVELS-1].last;
+      assert(cp->in_dram);
+      // then just reset the bookmark pointer to the last page in list
+      // just restart
+      process->cur_cool_in_dram = NULL;
+      process->cur_cool_in_dram_list = 0;
     }
 
     np = dequeue_page(&nvm_free_list);
@@ -794,7 +801,7 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
       np->devdax_offset = old_offset;
       np->in_dram = true;
       np->present = false;
-      np->hot = false;
+      np->hot = 0;
       for (int i = 0; i < NPBUFTYPES; i++) {
         np->accesses[i] = 0;
         np->tot_accesses[i] = 0;
@@ -838,7 +845,11 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
     }
 
     if (p == process->cur_cool_in_nvm) {
-      process->cur_cool_in_nvm = process->nvm_lists[NUM_HOTNESS_LEVELS - 1].last;
+      assert(!p->in_dram);
+      // then just reset the bookmark pointer to the last page in list
+      // just restart
+      process->cur_cool_in_nvm = NULL;
+      process->cur_cool_in_nvm_list = 0;
     }
 
     // compute the access samples this page would have had if it were up to date
@@ -1121,27 +1132,28 @@ void *pebs_policy_thread()
         }
 
         // find a lower priority process to take DRAM from
-        if (remaining_dram > 0)
-        num_victims = find_victim_processes_higher(process);
-        if (num_victims != 0) {
-          dram_portion = remaining_dram / num_victims;
-          dram_portion -= (dram_portion % PAGE_SIZE);
+        if (remaining_dram > 0) {
+          num_victims = find_victim_processes_higher(process);
+          if (num_victims != 0) {
+            dram_portion = remaining_dram / num_victims;
+            dram_portion -= (dram_portion % PAGE_SIZE);
 
-          gettimeofday(&now, NULL);
-          LOG("%f\tpolicy thread found %d higher miss ratio process to take %ld DRAM each\n", elapsed(&startup, &now), num_victims, dram_portion);
-
-          for (i = 0; i < num_victims; i++) {
-            tmp = victim_list[i];
-            pthread_mutex_lock(&(tmp->process_lock));
-            dram_taking = (dram_portion <= tmp->allowed_dram) ? 
-                                  dram_portion : 
-                                  tmp->allowed_dram;
-            tmp->allowed_dram -= dram_taking;
-            remaining_dram -= dram_taking;
             gettimeofday(&now, NULL);
-            LOG("%f\tpolicy thread found higher miss ratio process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
+            LOG("%f\tpolicy thread found %d higher miss ratio process to take %ld DRAM each\n", elapsed(&startup, &now), num_victims, dram_portion);
 
-            pthread_mutex_unlock(&(tmp->process_lock));
+            for (i = 0; i < num_victims; i++) {
+              tmp = victim_list[i];
+              pthread_mutex_lock(&(tmp->process_lock));
+              dram_taking = (dram_portion <= tmp->allowed_dram) ? 
+                                    dram_portion : 
+                                    tmp->allowed_dram;
+              tmp->allowed_dram -= dram_taking;
+              remaining_dram -= dram_taking;
+              gettimeofday(&now, NULL);
+              LOG("%f\tpolicy thread found higher miss ratio process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
+
+              pthread_mutex_unlock(&(tmp->process_lock));
+            }
           }
         }
 
@@ -1198,6 +1210,9 @@ void *pebs_policy_thread()
         }
 
         process->allowed_dram += (requested_dram - remaining_dram);
+        if (process->allowed_dram > DRAMSIZE) {
+          process->allowed_dram = DRAMSIZE;
+        }
       }
       tmp = process;
       process = process->next;

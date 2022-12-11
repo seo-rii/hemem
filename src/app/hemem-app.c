@@ -49,20 +49,17 @@ double target_miss_ratio =  0.1;
 
 uint64_t required_dram = DRAMSIZE;
 
+static __thread struct msg_header *response;
+
 void* process_request(int fd, void* request)
 {
   int len;
   size_t request_size;
   struct msg_header* request_header;
-  struct msg_header* response;
-  struct msg_header* new_response;
+  //struct msg_header* new_response;
   int ret;
 
-  response = (void*)calloc(1, MAX_SIZE);
-  if (response == NULL) {
-    perror("calloc error");
-    assert(0);
-  }
+  memset(response, 0, sizeof(*response));
 
   request_header = (struct msg_header*)request;
   request_size = request_header->msg_size;
@@ -96,7 +93,8 @@ void* process_request(int fd, void* request)
   printf("fd=%d, operation=%d\n", fd, request_header->operation);
   #endif
 
-  if (len != response->msg_size) {
+  assert(len == response->msg_size);
+/*  if (len != response.msg_size) {
     new_response = realloc(response, response->msg_size);
     response = new_response;
     ret = read_msg(fd, (char*)response + len, response->msg_size - len);
@@ -104,7 +102,7 @@ void* process_request(int fd, void* request)
       assert(0);
     }
   }
-
+*/
   if (fd == request_fd) {
     pthread_mutex_unlock(&channel_lock);
   }
@@ -146,7 +144,6 @@ int free_space(void *addr, size_t length)
   
   response = process_request(request_fd, &request);
   status = response->header.status;  
-  free(response);
 
   return status;
 }
@@ -165,7 +162,6 @@ int add_process()
 
   response = process_request(request_fd, &request);
   status = response->header.status;  
-  free(response);
 
   return status;
 }
@@ -183,7 +179,6 @@ int remove_process()
   // here it uses the remap_fd to let the central manager record the remap sock fd
   response = process_request(request_fd, &request);
   status = response->header.status;  
-  free(response);
 
   return status;
 }
@@ -201,7 +196,6 @@ int get_uffd(long uffd)
 
   response = process_request(request_fd, &request);
   status = response->header.status;  
-  free(response);
 
   return status;
 }
@@ -218,7 +212,6 @@ int record_remap_fd()
 
   response = process_request(remap_fd, &request);
   status = response->header.status;
-  free(response);
 
   return status;
 }
@@ -332,6 +325,12 @@ void hemem_app_init()
   char* target_miss_ratio_str = NULL;
   char* target_dram_str = NULL;
 
+  response = (void*)calloc(1, MAX_SIZE);
+  if (response == NULL) {
+    perror("calloc error");
+    assert(0);
+  }
+
   pid = getpid();
   printf("process id = %d\n", pid);
   sprintf(log_name, "logs-app-%d", pid);
@@ -441,7 +440,7 @@ void hemem_app_init()
     perror("record remap fd");
     assert(0);
   }
-  
+
   is_init = true;
 
   LOG("hemem_app_init: finished\n");
@@ -528,7 +527,6 @@ static void hemem_mmap_populate(void* addr, size_t length)
 
         page_boundry += pagesize;
     }
-    free(response);
   }
 
 }
@@ -579,9 +577,9 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
     assert(0);
   }
    
-  if ((flags & MAP_POPULATE) == MAP_POPULATE) {
+//  if ((flags & MAP_POPULATE) == MAP_POPULATE) {
     hemem_mmap_populate(p, length);
-  }
+//  }
   
   internal_call = false;
   
@@ -594,8 +592,6 @@ int hemem_munmap(void* addr, size_t length)
 
   internal_call = true;
   //fprintf(stderr, "munmap(%p, %lu)\n", addr, length);
-
-  fprintf(stderr, "calling free space\n");
 
   #ifdef ONE_MEM_REQUEST
   free_space(addr, length);

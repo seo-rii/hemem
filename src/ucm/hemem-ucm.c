@@ -419,7 +419,7 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
   assert(addr != 0);
   assert(length != 0);
 
-  for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length; page_boundry += pagesize) {
+  for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
     page = find_page(process, page_boundry);
     if (page != NULL) {
       pagesize = pt_to_pagesize(page->pt);
@@ -428,6 +428,9 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
       pebs_remove_page(process, page);
       mem_allocated -= pagesize;
       pages_freed += 1;
+      page_boundry += pagesize;
+    } else {
+      page_boundry += PAGE_SIZE;
     }
   } 
   
