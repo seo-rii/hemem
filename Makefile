@@ -130,7 +130,7 @@ KILL_PERF = kill $${PERF_CMD}; sleep 5;
 FLEXKV_NICE ?= nice -20
 FLEXKV_S_WAIT   ?= 120	
 FLEXKV_WARMUP   ?= 120	
-FLEXKV_RUNTIME  ?= 600
+FLEXKV_RUNTIME  ?= 120
 FLEXKV_HOT_FRAC ?= 0.25
 # TODO: Can we somehow launch client after server is setup
 # instead of waiting an arbitrary amount of time and hoping
@@ -291,7 +291,7 @@ run_eval_apps: all
 	${RUN_MGR} \
 	$(MAKE) run_gapbs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GAPBS_SIZE} PREFIX=$${PREFIX} & \
 	GAPBS_PID=$$!; \
-	sleep 1200; \
+	sleep 600; \
 	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs; \
 	wait $${GAPBS_PID}; \
 	${KILL_MGR} \

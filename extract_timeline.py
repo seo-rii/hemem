@@ -40,6 +40,8 @@ for file_pref in BG_PREFIXES:
 
     for i in throughput.keys():
         if(len(throughput[i]) > 1):
+            plt.ylim(bottom=0)
+            plt.ylim(top=0.2)
             plt.plot(np.arange(0, len(throughput[i][1:])), throughput[i][1:], label=i)
     plt.legend()
     plt.savefig(file_pref + "_timeline.png", bbox_inches='tight',pad_inches = 0)

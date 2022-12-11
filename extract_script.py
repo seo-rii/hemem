@@ -23,6 +23,10 @@ else:
     RES="./results"
 print(RES)
 
+if len(sys.argv) >= 5:
+    KEY_LATS=np.array(sys.argv[4].split(",")).astype(np.float)
+else:
+    KEY_LATS=[0.5, 0.99]
 
 hist_pattern = re.compile(r"Hist\[[0-9]+\]=[0-9]+")
 tput_pattern = re.compile(r"Final throughput = [0-9]+\.[0-9]+ mops")
@@ -63,23 +67,36 @@ for file_pref in BG_PREFIXES:
         outfile.write(throughput[app] + "\t")
     outfile.write("\n")
 
-    # Output histogram
+    # Calculate cdf for the different apps
     cdf = dict()
     total_sum = dict()
+    for app in BG_APPS:
+        cdf[app] = []
+        total_sum[app] = np.sum(latencies[app])
+        curr_sum = 0.0
+        for i in range(MAX_LATENCY):
+            curr_sum += latencies[app][i]
+            cdf[app].append(curr_sum / total_sum[app])
+
+    # Output key latency points
+    for lats in KEY_LATS:
+        outfile.write(str(np.round(lats * 100, 2)) + "% latencies\t")
+        for app in BG_APPS:
+            outfile.write(app + "\t")
+        outfile.write("\n\t")
+        for app in BG_APPS:
+            outfile.write(str(np.searchsorted(cdf[app], lats)) + "\t")
+        outfile.write("\n")
+
+    # Output histogram
     outfile.write("Latency percentiles\t")
     for app in BG_APPS:
-        cdf[app] = 0
-        total_sum[app] = np.sum(latencies[app])
         outfile.write(app + "\t")
     outfile.write("\n")
     for i in range(MAX_LATENCY):
         outfile.write(str(i) + "\t")
         for app in BG_APPS:
-            cdf[app] += latencies[app][i]
-            outfile.write(str(cdf[app] / total_sum[app]) + "\t")
+            outfile.write(str(cdf[app][i]) + "\t")
         outfile.write("\n")
-    outfile.close()
-
-
-                
+    outfile.close() 
 
