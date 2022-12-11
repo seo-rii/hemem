@@ -603,7 +603,7 @@ void handle_ring_requests(struct hemem_process *process)
 
     // reset page stats
     page->present = false;
-    page->hot = false;
+    page->hot = COLD;
     for (int i = 0; i < NPBUFTYPES; i++) {
       page->accesses[i] = 0;
       page->tot_accesses[i] = 0;
@@ -801,7 +801,7 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
       np->devdax_offset = old_offset;
       np->in_dram = true;
       np->present = false;
-      np->hot = 0;
+      np->hot = COLD;
       for (int i = 0; i < NPBUFTYPES; i++) {
         np->accesses[i] = 0;
         np->tot_accesses[i] = 0;
