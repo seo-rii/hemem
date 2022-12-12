@@ -116,14 +116,7 @@ RUN_MGR = nice -20 ${NUMA_CMD} --physcpubind=${MGR_CPUS} ./src/central-manager &
 
 KILL_MGR = kill $${CTRL_MGR}; sleep 5;
 
-RUN_PERF = while : ; \
-	do \
-		perf stat -e mem_load_l3_miss_retired.local_dram,mem_load_retired.local_pmm & \
-		perf_pid=$$!; \
-		sleep 1; \
-		kill -9 $${perf_pid}; \
-	done & \
-	PERF_CMD=$$!;
+RUN_PERF = ${NUMA_CMD_CLIENT} ./run_perf.sh & PERF_CMD=$$!;
 
 KILL_PERF = kill $${PERF_CMD}; sleep 5;
 
@@ -145,7 +138,7 @@ run_flexkvs: ./apps/flexkvs/flexkvs ./apps/flexkvs/kvsbench
 		./apps/flexkvs/kvsbench -t ${FLEXKV_THDS} -T ${FLEXKV_RUNTIME} -w ${FLEXKV_WARMUP} \
 		-h ${FLEXKV_HOT_FRAC} 127.0.0.1:11211 -S $$((15*${FLEXKV_SIZE}/16)) > ${RES}/${PREFIX}_flexkv.txt;
 
-GUPS_ITERS ?= 2000000000
+GUPS_ITERS ?= 4000000000
 run_gups: ./microbenchmarks/gups
 	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
 	${GUPS_PRTY} ${NUMA_CMD} --physcpubind=${APP_CPUS} \
@@ -291,7 +284,7 @@ run_eval_apps: all
 	${RUN_MGR} \
 	$(MAKE) run_gapbs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GAPBS_SIZE} PREFIX=$${PREFIX} & \
 	GAPBS_PID=$$!; \
-	sleep 1200; \
+	sleep 600; \
 	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs; \
 	wait $${GAPBS_PID}; \
 	${KILL_MGR} \
