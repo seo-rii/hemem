@@ -365,6 +365,28 @@ run_eval_apps: all
 	${KILL_MGR} \
 	${KILL_PERF}
 
+run_eval_dynamic: all
+	# qtMem runs
+	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	GUPS_SIZE=$$((64*1024*1024*1024)) \
+	${SETUP_CMD} \
+	PREFIX=dynamic_qtmem \
+	${RUN_MGR} \
+	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_kvs & \
+	FLEX_PID=$$!; \
+	sleep 30; \
+	$(MAKE) run_gups_pebs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=$${GUPS_SIZE} PREFIX=$${PREFIX} & \
+	GUPS_PID=$$!; \
+	sleep 30; \
+	$(MAKE) run_gapbs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GAPBS_SIZE} PREFIX=$${PREFIX} & \
+	GAPBS_PID=$$!; \
+	sleep 30; \
+	kill -9 $${GAPBS_PID}; \
+	kill -9 $${GUPS_PID}; \
+	sleep 30; \
+	kill -9 $${FLEX_PID}; \
+	${KILL_MGR} \
+	${KILL_PERF}
 
 BG_PREFIXES = "bg_dram_base,bg_hw_tier,bg_mini_hemem,bg_hemem,bg_test_hemem"
 BG_APPS = "Isolated,gups,gapbs,bt"
