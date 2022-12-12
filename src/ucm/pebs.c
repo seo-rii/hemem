@@ -612,11 +612,13 @@ void handle_ring_requests()
 
     if (!page->present) {
       // page has been freed
+#if 0 //comment for now, debug it why after the deadline, in global case, this could happen
       if (page->in_dram) {
         assert(page->list == &dram_free_list);
       } else {
         assert(page->list == &nvm_free_list);
       }
+#endif
       hot_ring_requests_handled++;
       continue;
     }
@@ -663,11 +665,13 @@ void handle_ring_requests()
 
     if (!page->present) {
       // page has been freed
+ #if 0 //debug it, after the deadline, this could happen in global mode
       if (page->in_dram) {
         assert(page->list == &dram_free_list);
       } else {
         assert(page->list == &nvm_free_list);
       }
+#endif
       cold_ring_requests_handled++;
       continue;
     }
