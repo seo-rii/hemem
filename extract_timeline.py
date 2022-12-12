@@ -44,6 +44,3 @@ for file_pref in BG_PREFIXES:
     plt.legend()
     plt.savefig(file_pref + "_timeline.png", bbox_inches='tight',pad_inches = 0)
     plt.clf()
-
-                
-
