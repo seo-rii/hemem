@@ -215,6 +215,7 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
 
   process->pid = request->header.pid;
   process->exited = false;
+  process->pending_remap = false;
 
   process->valid_uffd = false;
   pthread_mutex_init(&(process->process_lock), NULL);
@@ -252,6 +253,9 @@ int ucm_remove_process(struct remove_process_request* request, struct remove_pro
   process = find_process(request->header.pid);
   if (process != NULL) {
     process->exited = true;
+    while (process->pending_remap) {
+        ;
+    }
     remove_process(process);
 
     //free(process);
@@ -977,7 +981,14 @@ int remap_pages(pid_t pid, int remap_fd,
   struct remap_response* response;
   size_t msg_size = sizeof(struct remap_request) + sizeof(struct hemem_page_app) * num_fault_pages;
   enum status_code status;
+  struct hemem_process* proc = NULL;
 
+  proc = find_process(pid);
+  if (proc == NULL || proc->exited) {
+    return 0;
+  }
+
+  proc->pending_remap = true;
   request = (struct remap_request*)malloc(msg_size);
   if (request == NULL) {
     return -1;
@@ -996,6 +1007,7 @@ int remap_pages(pid_t pid, int remap_fd,
     return -1;
   }
  
+  proc->pending_remap = false;
   free(request);
 
   status = response->header.status;
@@ -1358,3 +1370,16 @@ struct hemem_page *get_hemem_page(struct hemem_process* process, uint64_t va) {
 void hemem_start_timing(void) { timing = true; }
 
 void hemem_stop_timing(void) { timing = false; }
+
+bool can_migrate_page (pid_t pid)
+{
+    struct hemem_process* proc = NULL;
+
+    proc = find_process(pid);
+    if (proc == NULL || proc->exited) {
+        return false;
+    }
+    else {
+        return true;
+    }
+}

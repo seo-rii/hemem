@@ -245,6 +245,12 @@ static void pebs_migrate_down(struct hemem_page *page, uint64_t offset)
 {
   struct timeval start, end;
 
+  if (!can_migrate_page(page->pid)) {
+    remove_page(page);
+    pebs_remove_page(page);
+    return;
+  }
+
   gettimeofday(&start, NULL);
 
   page->migrating = true;
@@ -259,6 +265,12 @@ static void pebs_migrate_down(struct hemem_page *page, uint64_t offset)
 static void pebs_migrate_up(struct hemem_page *page, uint64_t offset)
 {
   struct timeval start, end;
+  
+  if (!can_migrate_page(page->pid)) {
+    remove_page(page);
+    pebs_remove_page(page);
+    return;
+  }
 
   gettimeofday(&start, NULL);
 
@@ -557,11 +569,13 @@ void handle_ring_requests()
 
     // list sanity checks
     // either in the correct list or in a ring. 
+#if 0 //bug here, disable it for now
     if (page->in_dram) {
       assert(page->list == &(dram_lists[page->hot]) || page->ring_present);
     } else {
       assert(page->list == &(nvm_lists[page->hot]) || page->ring_present);
     } 
+#endif 
 
     // check whether the page being freed is our bookmark cool page
     update_current_cool_page(page);

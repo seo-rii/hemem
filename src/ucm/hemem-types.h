@@ -54,8 +54,9 @@ struct hemem_page {
 struct hemem_process {
   pid_t pid;
   long uffd;
-  bool exited;
+  _Atomic bool exited;
   bool valid_uffd;
+  _Atomic bool pending_remap;
   int remap_fd;
 #ifdef HEMEM_GLOBAL
    FILE* logfd;

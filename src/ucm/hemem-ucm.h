@@ -93,6 +93,8 @@ void hemem_clear_stats();
 void hemem_start_timing(void);
 void hemem_stop_timing(void);
 
+bool can_migrate_page(pid_t pid);
+
 extern struct hemem_process volatile *processes;
 extern pthread_mutex_t processes_lock;
 #endif /* HEMEM_UCM_H */
