@@ -569,7 +569,7 @@ void handle_ring_requests()
 
     // list sanity checks
     // either in the correct list or in a ring. 
-#if 0 //bug here, disable it for now
+#if 1 //bug here, disable it for now
     if (page->in_dram) {
       assert(page->list == &(dram_lists[page->hot]) || page->ring_present);
     } else {
@@ -612,7 +612,7 @@ void handle_ring_requests()
 
     if (!page->present) {
       // page has been freed
-#if 0 //comment for now, debug it why after the deadline, in global case, this could happen
+#if 1 //comment for now, debug it why after the deadline, in global case, this could happen
       if (page->in_dram) {
         assert(page->list == &dram_free_list);
       } else {
@@ -708,7 +708,7 @@ void handle_ring_requests()
 struct hemem_page* find_candidate_nvm_page() {
   struct hemem_page* p;
 
-  for(int i = NUM_HOTNESS_LEVELS-1; i >= 0; i--) {
+  for(int i = NUM_HOTNESS_LEVELS-1; i > 0; i--) {
     p = dequeue_page(&(nvm_lists[i]));
 
     if (p != NULL) {
@@ -721,7 +721,7 @@ struct hemem_page* find_candidate_nvm_page() {
 
 struct hemem_page* find_dram_victim(int64_t max_hotness) {
   struct hemem_page* p;
-  for(int i = max_hotness-1; i >= 0; i--) {
+  for(int i = 0; i < max_hotness; i--) {
     p = (struct hemem_page*)dequeue_page(&(dram_lists[i]));
     if (p != NULL) {
       // found something cold. we should try to evict it.
@@ -915,14 +915,6 @@ void pebs_remove_page(struct hemem_page *page)
   ring_buf_put(free_page_ring, (uint64_t*)page); 
   free_ring_requests++;
   pthread_mutex_unlock(&free_page_ring_lock);
-
-  page->present = false;
-  page->hot = false;
-
-  for (int i = 0; i < NPBUFTYPES; i++) {
-    page->accesses[i] = 0;
-    page->tot_accesses[i] = 0;
-  }
 
 }
 
