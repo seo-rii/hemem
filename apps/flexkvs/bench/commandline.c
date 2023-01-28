@@ -101,7 +101,7 @@ int parse_settings(int argc, char *argv[], struct settings *s)
             {"target-size", required_argument, NULL, 'S'},
             {"keysteer",    no_argument,       NULL, 'K'},
         };
-    static const char *short_opts = "t:C:p:k:n:uzh:v:g:T:w:c:d:s:o:r:S:K";
+    static const char *short_opts = "t:C:p:k:n:uz:h:v:g:T:w:c:d:s:o:r:S:K";
     int c, opt_idx, done = 0;
     char *end;
 
