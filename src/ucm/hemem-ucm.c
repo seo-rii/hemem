@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <sys/time.h>
 
 #include "hemem-ucm.h"
 #include "channel-ucm.h"
@@ -32,19 +33,26 @@
 pthread_t fault_thread;
 pthread_t request_thread;
 pthread_t listen_thread;
-int epoll_fd = -1;
-struct epoll_event epoll_events[MAX_EVENTS];
+int request_epoll_fd = -1;
+int fault_epoll_fd = -1;
 int listen_fd = -1;
+
+struct timeval startup;
+
+struct hemem_process* uffds[1024];
 
 int dramfd = -1;
 int nvmfd = -1;
-long uffd = -1;
 pthread_t stats_thread;
-#ifndef USE_DMA
+#ifdef USE_DMA
+int uffd = -1;
+#else
+#ifdef USE_PARALLEL_MEMCPY
 pthread_t copy_threads[MAX_COPY_THREADS];
-#endif
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
 
-struct hemem_process *processes = NULL;
+struct hemem_process volatile *processes = NULL;
 pthread_mutex_t processes_lock = PTHREAD_MUTEX_INITIALIZER;
 
 uint64_t mem_mmaped = 0;
@@ -66,6 +74,7 @@ void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
 
 #ifndef USE_DMA
+#ifdef USE_PARALLEL_MEMCPY
 struct pmemcpy {
   pthread_mutex_t lock;
   pthread_barrier_t barrier;
@@ -83,8 +92,19 @@ void *hemem_parallel_memcpy_thread(void *arg) {
   void *dst;
   size_t length;
   size_t chunk_size;
+  cpu_set_t cpuset;
+  pthread_t thread;
 
   assert(tid < MAX_COPY_THREADS);
+
+  thread = pthread_self();
+  CPU_ZERO(&cpuset);
+  CPU_SET(PARALLEL_MIGRATE_THREAD_CPU + tid, &cpuset);
+  int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+  if (s != 0) {
+    perror("pthread_setaffinity_np");
+    assert(0);
+  }
 
   for (;;) {
     int r = pthread_barrier_wait(&pmemcpy.barrier);
@@ -112,21 +132,6 @@ void *hemem_parallel_memcpy_thread(void *arg) {
   return NULL;
 }
 
-static void hemem_parallel_memset(void *addr, int c, size_t n) {
-  pthread_mutex_lock(&(pmemcpy.lock));
-  pmemcpy.dst = addr;
-  pmemcpy.length = n;
-  pmemcpy.write_zeros = true;
-
-  int r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-
-  r = pthread_barrier_wait(&pmemcpy.barrier);
-  assert(r == 0 || r == PTHREAD_BARRIER_SERIAL_THREAD);
-
-  pthread_mutex_unlock(&(pmemcpy.lock));
-}
-
 static void hemem_parallel_memcpy(void *dst, void *src, size_t length) {
   pthread_mutex_lock(&(pmemcpy.lock));
   pmemcpy.dst = dst;
@@ -144,7 +149,70 @@ static void hemem_parallel_memcpy(void *dst, void *src, size_t length) {
   // LOG("parallel migration finished\n");
   pthread_mutex_unlock(&(pmemcpy.lock));
 }
-#endif
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
+
+int add_epoll_ctl(int epoll, int fd)
+{
+  int ret;
+  struct epoll_event event;
+
+  event.data.fd = fd;
+  event.events = EPOLLIN | EPOLLET;
+
+  ret = epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &event);
+  #ifdef HEMEM_DEBUG
+  printf("add_epoll_ctl, fd=%d\n", fd);
+  #endif
+
+  if (ret != 0) {
+    perror("epoll_ctl");
+    return -1;
+  }
+
+  return 0;
+}
+
+int delete_epoll_ctl(int epoll, int fd)
+{
+  int ret;
+  ret = epoll_ctl(epoll, EPOLL_CTL_DEL, fd, NULL);
+
+  #ifdef HEMEM_DEBUG
+  printf("delete socket fd:%d\n", fd);
+  #endif
+
+  if (ret != 0) {
+    perror("epoll_ctl");
+    return -1;
+  }
+
+  return 0;
+}
+
+void ucm_update_miss_ratio(int signum) {
+  if(signum != SIGUSR2) {
+    return;
+  }
+  
+  const char* new_miss_fname = "/tmp/miss_ratio_update";
+  struct hemem_process *p;
+
+  FILE *new_miss_file = fopen(new_miss_fname, "r");
+  int pid = -1;
+  float new_miss = -1.0;
+  fscanf(new_miss_file,"%d:%f", &pid, &new_miss);
+
+  p = find_process(pid);
+
+  if(p == NULL) {
+    LOG("No process with PID %d currently managed", pid);
+  }
+  LOG("updated miss ratio of proc: %d to %f\n", pid, new_miss);
+
+  pebs_update_process(p, new_miss);
+}
+
 
 struct hemem_process* ucm_add_process(int fd, struct add_process_request* request, struct add_process_response* response)
 {
@@ -152,6 +220,9 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   struct hemem_process* process;
   uint64_t** buffer;
   int ret;
+#ifdef HEMEM_QOS
+  char logpath[32];
+#endif
 
   process = (struct hemem_process*)calloc(1, sizeof(struct hemem_process));
   if (process == NULL) {
@@ -160,13 +231,17 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   }
 
   process->pid = request->header.pid;
+  process->exited = false;
+#ifdef HEMEM_QOS
+  process->target_miss_ratio = request->target_miss_ratio;
+#endif
   process->valid_uffd = false;
-  pthread_mutex_init(&(process->dram_hot_list.list_lock), NULL);
-  pthread_mutex_init(&(process->dram_cold_list.list_lock), NULL);
-  pthread_mutex_init(&(process->nvm_hot_list.list_lock), NULL);
-  pthread_mutex_init(&(process->nvm_cold_list.list_lock), NULL);
+  for (int i = 0; i < NUM_HOTNESS_LEVELS; i++) {
+    pthread_mutex_init(&(process->dram_lists[i].list_lock), NULL);
+    pthread_mutex_init(&(process->nvm_lists[i].list_lock), NULL);
+  }
   pthread_mutex_init(&(process->pages_lock), NULL);
-  pthread_mutex_init(&(process->free_page_ring_lock), NULL);
+  pthread_mutex_init(&(process->process_lock), NULL);
 
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
@@ -177,17 +252,32 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
   process->free_page_ring = ring_buf_init(buffer, CAPACITY);
+  pthread_mutex_init(&(process->free_page_ring_lock), NULL);
+  
+  process->pages = NULL;
 
   process->cur_cool_in_dram = NULL;
   process->cur_cool_in_nvm = NULL;
-  process->start_dram_page = NULL;
-  process->start_nvm_page = NULL;
-  process->pages = NULL;
-
+  process->cur_cool_in_dram_list = 0;
+  process->cur_cool_in_nvm_list = 0;
   process->need_cool_dram = false;
   process->need_cool_nvm = false;
+  process->migrations_up = process->migrations_down = 0;
+
+  process->max_dram = request->req_dram;
+
+#ifdef HEMEM_QOS  
+  snprintf(&logpath[0], sizeof(logpath) - 1, "/tmp/log-%d.txt", process->pid);
+  process->logfd = fopen(logpath, "w");
+  if (process->logfd == NULL) {
+    perror("process log fopen");
+  }
+  assert(process->logfd != NULL);
+#endif
 
   add_process(process);
+
+  pebs_add_process(process);
 
   response->header.status = SUCCESS;
   response->header.pid = pid;
@@ -210,14 +300,15 @@ int ucm_remove_process(struct remove_process_request* request, struct remove_pro
 
   process = find_process(request->header.pid);
   if (process != NULL) {
+    process->exited = true;
     remove_process(process);
-  }
+    pebs_remove_process(process);
 
-  //todo:free memory, pages, linked list, hash table...
-  ring_buf_free(process->hot_ring);
-  ring_buf_free(process->cold_ring);
-  ring_buf_free(process->free_page_ring);
-  free(process);
+    //todo:free memory, pages, linked list, hash table...
+    ring_buf_free(process->hot_ring);
+    ring_buf_free(process->cold_ring);
+    //free(process);
+  }
 
   response->header.status = SUCCESS;
   response->header.pid = pid;
@@ -267,11 +358,11 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     pagesize = pt_to_pagesize(page->pt);
 
     ucm_addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
-  #ifndef USE_DMA
-    hemem_parallel_memset(ucm_addr, 0, pagesize);
-  #else
-    memset(ucm_addr, 0, pagesize);
-  #endif
+//  #ifndef USE_DMA
+//    hemem_parallel_memset(ucm_addr, 0, pagesize);
+//  #else
+//    memset(ucm_addr, 0, pagesize);
+//  #endif
     memsets++;
 
     page->va = page_boundry;
@@ -280,6 +371,8 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     assert(page->va != 0);
     assert(page->va % PAGE_SIZE == 0);
     page->migrating = false;
+    page->in_migrate_up_queue = false;
+    page->in_migrate_down_queue = false;
     page->migrations_up = page->migrations_down = 0;
     memset(page->accessed_map, 0, sizeof(page->accessed_map));
     page->density = 0;
@@ -319,7 +412,7 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
   response->header.msg_size = sizeof(struct free_response);
 
   process = find_process(request->header.pid);
-  if (process != NULL) {
+  if (process == NULL) {
     response->header.status = FAILED;
     return -1;
   }
@@ -329,16 +422,19 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
   assert(addr != 0);
   assert(length != 0);
 
-  for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length; page_boundry += pagesize) {
+  for (page_boundry = (uint64_t)addr; page_boundry < (uint64_t)addr + length;) {
     page = find_page(process, page_boundry);
-    assert(page != NULL);
+    if (page != NULL) {
+      pagesize = pt_to_pagesize(page->pt);
 
-    pagesize = pt_to_pagesize(page->pt);
-
-    remove_page(process, page);
-    pebs_remove_page(page);
-    mem_allocated -= pagesize;
-    pages_freed += 1;
+      remove_page(process, page);
+      pebs_remove_page(process, page);
+      mem_allocated -= pagesize;
+      pages_freed += 1;
+      page_boundry += pagesize;
+    } else {
+      page_boundry += PAGE_SIZE;
+    }
   } 
   
   response->header.status = SUCCESS;
@@ -349,6 +445,9 @@ int ucm_get_uffd(int fd, struct hemem_process* process, struct get_uffd_response
 {
   process->uffd = recv_fd(fd);
   process->valid_uffd = true;
+
+  uffds[process->uffd] = process;
+  add_epoll_ctl(fault_epoll_fd, process->uffd);
 
   response->header.status = SUCCESS;
   response->header.pid = process->pid;
@@ -425,12 +524,6 @@ void add_process(struct hemem_process *process) {
   HASH_FIND(phh, processes, &(process->pid), sizeof(pid_t), p);
   assert(p == NULL);
   HASH_ADD(phh, processes, pid, sizeof(pid_t), process);
-  ssize_t cnt = HASH_CNT(phh, processes);
-  fprintf(stderr, "Process hash table has %lu processes\n", cnt);
-  struct hemem_process *proc, *tmp;
-  HASH_ITER(phh, processes, proc, tmp) {
-    fprintf(stderr, "------------------\nprocess PID %u\n------------------\n", proc->pid);
-  }
   pthread_mutex_unlock(&processes_lock);
 }
 
@@ -442,7 +535,9 @@ void remove_process(struct hemem_process *process) {
 
 struct hemem_process *find_process(pid_t pid) {
   struct hemem_process *process;
+  pthread_mutex_lock(&processes_lock);
   HASH_FIND(phh, processes, &pid, sizeof(pid_t), process);
+  pthread_mutex_unlock(&processes_lock);
   return process;
 }
 
@@ -450,7 +545,11 @@ void add_page(struct hemem_process* process, struct hemem_page *page) {
   struct hemem_page *p;
   pthread_mutex_lock(&(process->pages_lock));
   HASH_FIND(hh, process->pages, &(page->va), sizeof(uint64_t), p);
-  assert(p == NULL);
+  if (p != NULL) {
+    // don't re-add page to hash table
+    pthread_mutex_unlock(&(process->pages_lock));
+    return;
+  }
   HASH_ADD(hh, process->pages, va, sizeof(uint64_t), page);
   pthread_mutex_unlock(&(process->pages_lock));
 }
@@ -469,54 +568,16 @@ struct hemem_page *find_page(struct hemem_process *process, uint64_t va) {
   return page;
 }
 
-int add_epoll_ctl(int epoll, int fd)
-{
-  int ret;
-  struct epoll_event event;
-
-  event.data.fd = fd;
-  event.events = EPOLLIN | EPOLLET;
-
-  ret = epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &event);
-  #ifdef HEMEM_DEBUG
-  printf("add_epoll_ctl, fd=%d\n", fd);
-  #endif
-
-  if (ret != 0) {
-    perror("epoll_ctl");
-    return -1;
-  }
-
-  return 0;
-}
-
-int delete_epoll_ctl(int epoll, int fd)
-{
-  int ret;
-  ret = epoll_ctl(epoll, EPOLL_CTL_DEL, fd, NULL);
-
-  #ifdef HEMEM_DEBUG
-  printf("delete socket fd:%d\n", fd);
-  #endif
-
-  if (ret != 0) {
-    perror("epoll_ctl");
-    return -1;
-  }
-
-  return 0;
-}
-
 void hemem_ucm_init() {
-  struct uffdio_api uffdio_api;
 #ifdef USE_DMA
+  struct uffdio_api uffdio_api;
   struct uffdio_dma_channs uffdio_dma_channs;
 #endif
   int ret;
 
   log_init("ucm");
 
-  LOG("hemem_init: started\n");
+  LOG("hemem_init: started\n");  
 
   dramfd = open(DRAMPATH, O_RDWR);
   if (dramfd < 0) {
@@ -530,6 +591,11 @@ void hemem_ucm_init() {
   }
   assert(nvmfd >= 0);
 
+  if (signal(SIGUSR2, ucm_update_miss_ratio) == SIG_ERR) {
+    assert(0 && "Failed to map SIGUSR2 to the missratio update.");
+  }
+
+#ifdef USE_DMA  
   uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
   if (uffd == -1) {
     perror("uffd");
@@ -545,9 +611,16 @@ void hemem_ucm_init() {
     perror("ioctl uffdio_api");
     assert(0);
   }
+#endif
 
-  epoll_fd = epoll_create1(0);
-  if (epoll_fd == -1) {
+  request_epoll_fd = epoll_create1(0);
+  if (request_epoll_fd == -1) {
+    perror("epoll_create1");
+    assert(0);
+  }
+
+  fault_epoll_fd = epoll_create1(0);
+  if (fault_epoll_fd == -1) {
     perror("epoll_create1");
     assert(0);
   }
@@ -593,6 +666,7 @@ void hemem_ucm_init() {
   }
 
 #ifndef USE_DMA
+#ifdef USE_PARALLEL_MEMCPY
   uint64_t i;
   ret = pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1);
   assert(ret == 0);
@@ -605,7 +679,8 @@ void hemem_ucm_init() {
                        (void *)i);
     assert(ret == 0);
   }
-#endif
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
 
 #ifdef STATS_THREAD
   ret = pthread_create(&stats_thread, NULL, hemem_stats_thread, NULL);
@@ -625,7 +700,9 @@ void hemem_ucm_init() {
   }
 #endif
 
-  LOG("hemem_init: finished, page size: %lu\n", PAGE_SIZE);
+  gettimeofday(&startup, NULL);
+
+  LOG("hemem_init: finished\n");
 }
 
 void hemem_ucm_stop() {
@@ -689,6 +766,7 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
   void *old_addr;
   void *new_addr;
   struct timeval migrate_start, migrate_end;
+  struct timeval remap_start, remap_end;
   struct timeval start, end;
   uint64_t old_addr_offset, new_addr_offset;
   uint64_t pagesize;
@@ -734,33 +812,42 @@ void hemem_ucm_migrate_up(struct hemem_process *process, struct hemem_page *page
     assert(false);
   }
 #else
+#ifdef USE_PARALLEL_MEMCPY
   hemem_parallel_memcpy(new_addr, old_addr, pagesize);
-#endif
+#else
+  memcpy(new_addr, old_addr, pagesize);
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
   gettimeofday(&end, NULL);
   LOG_TIME("memcpy_to_dram: %f s\n", elapsed(&start, &end));
 
+  process->migrations_up++;
   page->migrations_up++;
   migrations_up++;
 
   page->devdax_offset = dram_offset;
-  page->in_dram = true;
 
   bytes_migrated += pagesize;
 
-
   page_app.va = page->va;
   page_app.devdax_offset = page->devdax_offset;
-  page_app.in_dram = page->in_dram;
+  page_app.in_dram = true;
   page_app.pt = page->pt;
+  gettimeofday(&remap_start, NULL);
   remap_pages(process->pid, process->remap_fd, &page_app, 1);
+  gettimeofday(&remap_end, NULL);
+  LOG_TIME("hemem_remap_page_up: %f s\n", elapsed(&remap_start, &remap_end));
   gettimeofday(&migrate_end, NULL);
   LOG_TIME("hemem_migrate_up: %f s\n", elapsed(&migrate_start, &migrate_end));
+
+  page->in_dram = true;
 }
 
 void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *page, uint64_t nvm_offset) {
   void *old_addr;
   void *new_addr;
   struct timeval migrate_start, migrate_end;
+  struct timeval remap_start, remap_end;
   struct timeval start, end;
   uint64_t old_addr_offset, new_addr_offset;
   uint64_t pagesize;
@@ -807,27 +894,36 @@ void hemem_ucm_migrate_down(struct hemem_process *process, struct hemem_page *pa
     assert(false);
   }
 #else
+#ifdef USE_PARALLEL_MEMCPY
   hemem_parallel_memcpy(new_addr, old_addr, pagesize);
-#endif
+#else
+  memcpy(new_addr, old_addr, pagesize);
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
   gettimeofday(&end, NULL);
   LOG_TIME("memcpy_to_nvm: %f s\n", elapsed(&start, &end));
 
+  process->migrations_down++;
   page->migrations_down++;
   migrations_down++;
 
   page->devdax_offset = nvm_offset;
-  page->in_dram = false;
 
   bytes_migrated += pagesize;
 
   page_app.va = page->va;
   page_app.devdax_offset = page->devdax_offset;
-  page_app.in_dram = page->in_dram;
+  page_app.in_dram = false;
   page_app.pt = page->pt;
+  gettimeofday(&remap_start, NULL);
   remap_pages(process->pid, process->remap_fd, &page_app, 1);
+  gettimeofday(&remap_end, NULL);
+  LOG_TIME("hemem_remap_page_down: %f s\n", elapsed(&remap_start, &remap_end));
 
   gettimeofday(&migrate_end, NULL);
   LOG_TIME("hemem_migrate_down: %f s\n", elapsed(&migrate_start, &migrate_end));
+
+  page->in_dram = false;
 }
 
 void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
@@ -849,9 +945,16 @@ void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
   wp.mode = (protect ? UFFDIO_WRITEPROTECT_MODE_WP : 0);
   ret = ioctl(page->uffd, UFFDIO_WRITEPROTECT, &wp);
 
-  if (ret < 0) {
-    perror("uffdio writeprotect");
-    assert(0);
+  if (ret < 0 && !page->in_free_ring) {
+    if (ret == -EBADF || ret == -ENOENT) {
+      if (!(uffds[page->uffd]->exited)) {
+        perror("uffdio writeprotect");
+        assert(0);
+      }
+    } else {
+      perror("uffdio writeprotect");
+      assert(0);
+    }
   }
   gettimeofday(&end, NULL);
 
@@ -872,14 +975,6 @@ void handle_wp_fault(struct hemem_process *process, uint64_t page_boundry) {
 
   while (page->migrating)
     ;
-  
-  #if 0
-  page_app.va = page->va;
-  page_app.devdax_offset = page->devdax_offset;
-  page_app.in_dram = page->in_dram;
-  page_app.pt = page_app->pt;
-  remap_pages(process->pid, process->remap_fd, &page_app, 1);
-  #endif
 }
 
 void* process_request(int fd, void* request)
@@ -984,14 +1079,16 @@ void handle_missing_fault(struct hemem_process *process,
 
   addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
 
-#ifdef USE_DMA
-  memset(addr, 0, pagesize);
-#else
-  hemem_parallel_memset(addr, 0, pagesize);
-#endif
+//#ifdef USE_DMA
+//  memset(addr, 0, pagesize);
+//#else
+//  hemem_parallel_memset(addr, 0, pagesize);
+//#endif
   memsets++;
 
   // use mmap return addr to track new page's virtual address
+  page->uffd = process->uffd;
+  page->pid = process->pid;
   page->va = page_boundry;
   assert(page->va != 0);
   assert(page->va % PAGE_SIZE == 0);
@@ -1027,6 +1124,9 @@ void *handle_fault() {
   int ret;
   int nmsgs;
   int i;
+  int num_ready_fds, ready_fd;
+  struct epoll_event epoll_events[MAX_EVENTS];
+  struct hemem_process *process;
 
   cpu_set_t cpuset;
   pthread_t thread;
@@ -1041,46 +1141,19 @@ void *handle_fault() {
   }
 
   for (;;) {
-    struct hemem_process *process, *tmp;
+    num_ready_fds = epoll_wait(fault_epoll_fd, epoll_events, MAX_EVENTS, 0);
+    for (i = 0; i < num_ready_fds; i++) {
+      ready_fd = epoll_events[i].data.fd;
 
-    HASH_ITER(phh, processes, process, tmp) {
-      
-      if (!process->valid_uffd) {
-          continue;
-      } 
-
-      struct pollfd pollfd;
-      int pollres;
-      long uffd = process->uffd;
-      pollfd.fd = uffd;
-      pollfd.events = POLLIN;
-
-      pollres = poll(&pollfd, 1, 0);
-
-      switch (pollres) {
-      case -1:
-        perror("poll");
-        assert(0);
-      case 0:
-        //fprintf(stderr, "poll read 0\n");
-        continue;
-      case 1:
-        break;
-      default:
-        fprintf(stderr, "unexpected poll result\n");
-        assert(0);
-      }
-
-      if (pollfd.revents & POLLERR) {
-        fprintf(stderr, "pollerr\n");
-        assert(0);
-      }
-
-      if (!pollfd.revents & POLLIN) {
+      if ((epoll_events[i].events & EPOLLERR) || (epoll_events[i].events & EPOLLHUP) || (!(epoll_events[i].events & EPOLLIN))) {
+        fprintf(stderr, "epoll not EPOLLIN in for uffd\n");
         continue;
       }
 
-      nread = read(uffd, &msg[0], MAX_UFFD_MSGS * sizeof(struct uffd_msg));
+      //TODO: map uffd to process
+      process = uffds[ready_fd];
+
+      nread = read(ready_fd, &msg[0], MAX_UFFD_MSGS * sizeof(struct uffd_msg));
       if (nread == 0) {
         fprintf(stderr, "EOF on userfaultfd\n");
         assert(0);
@@ -1110,8 +1183,11 @@ void *handle_fault() {
           // allign faulting address to page boundry
           // huge page boundry in this case due to dax allignment
           page_boundry = fault_addr & ~(PAGE_SIZE - 1);
-
+          struct hemem_page *found_page;
           if (fault_flags & UFFD_PAGEFAULT_FLAG_WP) {
+            handle_wp_fault(process, page_boundry);
+          } else if((found_page = find_page(process, page_boundry))) {
+            LOG("Found existing page at %lx, migrating? %d\n", page_boundry, found_page->migrating);
             handle_wp_fault(process, page_boundry);
           } else {
             handle_missing_fault(process, page_boundry);
@@ -1121,11 +1197,18 @@ void *handle_fault() {
           range.start = (uint64_t)page_boundry;
           range.len = PAGE_SIZE;
 
-          ret = ioctl(uffd, UFFDIO_WAKE, &range);
+          ret = ioctl(process->uffd, UFFDIO_WAKE, &range);
 
           if (ret < 0) {
-            perror("uffdio wake");
-            assert(0);
+            if (ret == -EBADF || ret == -ENOENT) {
+              if (!process->exited) {
+                perror("uffdio wake");
+                assert(0);
+              }
+            } else {
+              perror("uffdio wake");
+              assert(0);
+            }
           }
         } else if (msg[i].event & UFFD_EVENT_UNMAP) {
           fprintf(stderr, "Received an unmap event\n");
@@ -1152,6 +1235,7 @@ int process_msg(int fd)
   struct msg_header* response_header;
   struct hemem_process* process;
   char* new_send_buf;
+  struct alloc_request* alloc_req;
 
   len = read(fd, recv_buf, MAX_SIZE);
   if (len < sizeof(struct msg_header)) {
@@ -1169,7 +1253,7 @@ int process_msg(int fd)
 
   switch(request_header->operation) {
   case ALLOC_SPACE:
-    struct alloc_request* alloc_req = (struct alloc_request*)recv_buf;
+    alloc_req = (struct alloc_request*)recv_buf;
     len = sizeof(struct alloc_response) + sizeof(struct hemem_page_app) * (alloc_req->length / PAGE_SIZE + (alloc_req->length % PAGE_SIZE != 0));
     if (len > MAX_SIZE) {
         new_send_buf = realloc(send_buf, len);
@@ -1190,7 +1274,7 @@ int process_msg(int fd)
     break;
   case RECORD_REMAP_FD:
     ret = ucm_record_remap_fd(fd, (struct record_remap_fd_request*)recv_buf, (struct record_remap_fd_response*)send_buf);
-    delete_epoll_ctl(epoll_fd, fd);
+    delete_epoll_ctl(request_epoll_fd, fd);
     break;
   case OUTPUT_STATS:
     hemem_print_stats(stdout);
@@ -1253,7 +1337,7 @@ void *accept_new_app()
       assert(0);
     }
 
-    ret = add_epoll_ctl(epoll_fd, cli_fd);
+    ret = add_epoll_ctl(request_epoll_fd, cli_fd);
     if (ret != 0) {
       perror("add_epoll_ctl");
       assert(0);
@@ -1282,19 +1366,19 @@ void *handle_request()
   }
 
   while (1) {
-    num_ready_fds = epoll_wait(epoll_fd, epoll_events, MAX_EVENTS, 0);
+    num_ready_fds = epoll_wait(request_epoll_fd, epoll_events, MAX_EVENTS, 0);
     for (int i = 0; i < num_ready_fds; i++) {
       ready_fd = epoll_events[i].data.fd;
 
       if ((epoll_events[i].events & EPOLLERR)
         || (epoll_events[i].events & EPOLLHUP)
-        || (!epoll_events[i].events & EPOLLIN)) {
-        ret = delete_epoll_ctl(epoll_fd, ready_fd); 
+        || (!(epoll_events[i].events & EPOLLIN))) {
+        ret = delete_epoll_ctl(request_epoll_fd, ready_fd); 
         if (ret != 0) {
           perror("delete_epoll_ctl");
           //todo: what should we do if error
         } 
-
+        fprintf(stderr, "deleted epoll fd %d\n", ready_fd);
         close(ready_fd);
         continue;
       }

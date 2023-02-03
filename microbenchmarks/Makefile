@@ -30,6 +30,21 @@ ${BUILD}/gups-sparse-huge: ${BUILD}/gups-sparse.o ${BUILD}/zipf.o ../src/timer.o
 ${BUILD}/gups-semisparse-huge: ${BUILD}/gups-semisparse.o ${BUILD}/zipf.o ../src/timer.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -lhemem
 
+gups-warmset: gups-warmset.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-warmset gups-warmset.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem
+
+gups-hotset-only: gups-hotset-only.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-hotset-only gups-hotset-only.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem
+
+gups-pebs: gups.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-pebs gups.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem
+
+testgups: test.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o testgups test.o zipf.o ../src/timer.o $(LIBS) #-L$(HEMEMDIR) -lhemem
+
+gups-hotset-move: gups-hotset-move.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-hotset-move gups-hotset-move.o zipf.o $(LIBS) -L$(HEMEMDIR) -lhemem
+
 ${BUILD}/gups-semisparse-oracle: ${BUILD}/gups-semisparse-oracle.o ${BUILD}/zipf.o ../src/timer.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -L$(HEMEMDIR)
 
@@ -95,6 +110,15 @@ ${BUILD}/gups-hotset-move.o: gups-hotset-move.c zipf.c gups.h
 
  ${BUILD}/zipf.o: zipf.c 
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ -c $<
+
+gups-warmset.o: gups-warmset.c zipf.c gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c gups-warmset.c zipf.c
+
+gups-hotset-only.o: gups-hotset-only.c zipf.c gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c gups-hotset-only.c zipf.c
+
+test.o: test.c zipf.c  gups.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c test.c zipf.c
 
 clean:
 	$(RM) ${BUILD}/*

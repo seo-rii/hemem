@@ -7,7 +7,7 @@
 
 extern FILE *hememlogf;
 //#define LOG(...) fprintf(stderr, __VA_ARGS__)
-#define LOG(...) fprintf(hememlogf, __VA_ARGS__); fflush(hememlogf);
+#define LOG(...) { fprintf(hememlogf, __VA_ARGS__); fflush(hememlogf); }
 //#define LOG(str, ...) while (0) {}
 
 extern FILE *timef;
@@ -24,13 +24,13 @@ static inline void log_time(const char* fmt, ...)
 }
 
 //#define LOG_TIME(str, ...) log_time(str, __VA_ARGS__)
-//#define LOG_TIME(str, ...) fprintf(timef, str, __VA_ARGS__)
-#define LOG_TIME(str, ...) while (0) {}
+#define LOG_TIME(str, ...) fprintf(timef, str, __VA_ARGS__)
+//#define LOG_TIME(str, ...) while (0) {}
 
 #define STATS_THREAD
 
 extern FILE *statsf;
-#define LOG_STATS(str, ...) fprintf(stderr, str, __VA_ARGS__)
+#define LOG_STATS(str, ...) fprintf(stderr, str, ## __VA_ARGS__)
 //#define LOG_STATS(str, ...) fprintf(statsf, str, __VA_ARGS__)
 //#define LOG_STATS(str, ...) while (0) {}
 

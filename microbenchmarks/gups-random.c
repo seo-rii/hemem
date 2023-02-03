@@ -51,6 +51,8 @@ extern uint64_t hotset_start;
 extern double hotset_fraction;
 #endif
 
+#define IGNORE_STRAGGLERS
+
 int threads;
 
 uint64_t hot_start = 0;
@@ -92,6 +94,9 @@ char *filename = "indices1.txt";
 
 FILE *hotsetfile = NULL;
 
+bool done_gups = false;
+unsigned completed_gups[MAX_THREADS] = {0};
+
 static void *do_gups(void *arguments)
 {
   //printf("do_gups entered\n");
@@ -108,6 +113,9 @@ static void *do_gups(void *arguments)
 
   index = 0;
 
+  done_gups = false;
+  completed_gups[args->tid] = 0;
+
   fprintf(hotsetfile, "Thread %d region: %p - %p\thot set: %p - %p\n", args->tid, field, field + (args->size * elt_size), field + args->hot_start, field + args->hot_start + (args->hotsize * elt_size));   
 
   for (i = 0; i < args->iters; i++) {
@@ -123,8 +131,13 @@ static void *do_gups(void *arguments)
       memset(data, data[0] + i, elt_size);
       memcpy(&field[index * elt_size], data, elt_size);
     }
+#ifdef IGNORE_STRAGGLERS
+    if(done_gups)
+      break;
+#endif
   }
-
+  done_gups = true;
+  completed_gups[args->tid] = i;
   return 0;
 }
 
@@ -240,7 +253,10 @@ int main(int argc, char **argv)
 
   secs = elapsed(&starttime, &stoptime);
   //printf("Elapsed time: %.4f seconds.\n", secs);
-  gups = threads * ((double)updates) / (secs * 1.0e9);
+  gups = 0;
+  for(int i = 0; i < threads; ++i)
+    gups += completed_gups[i];
+  gups /= (secs * 1.0e9);
   //printf("GUPS = %.10f\n", gups);
   //memset(thread_gups, 0, sizeof(thread_gups));
 
@@ -267,7 +283,10 @@ int main(int argc, char **argv)
 
   secs = elapsed(&starttime, &stoptime);
   printf("Elapsed time: %.4f seconds.\n", secs);
-  gups = threads * ((double)updates) / (secs * 1.0e9);
+  gups = 0;
+  for(int i = 0; i < threads; ++i)
+    gups += completed_gups[i];
+  gups /= (secs * 1.0e9);
   printf("GUPS = %.10f\n", gups);
 
   //memset(thread_gups, 0, sizeof(thread_gups));

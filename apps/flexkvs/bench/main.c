@@ -46,7 +46,7 @@
 #include <protocol_binary.h>
 
 #include "benchmark.h"
-#include "../../common/socket_shim.h"
+#include "socket_shim.h"
 
 #ifdef USE_MTCP
 # include <mtcp_api.h>
@@ -1011,7 +1011,7 @@ static void *thread_run(void *arg)
 
    /* wait until we start running */
     while (phase < BENCHMARK_PRELOAD) {
-        pthread_yield();
+        sched_yield();
     }
 
     printf("[%d] Preloading keys...\n", cn);
@@ -1038,7 +1038,7 @@ static void *thread_run(void *arg)
 
    /* wait until we start running */
     while (phase < BENCHMARK_WARMUP) {
-        pthread_yield();
+        sched_yield();
     }
 
     num_evs = 32;
@@ -1049,7 +1049,7 @@ static void *thread_run(void *arg)
 
     /* wait until we start running */
     while (phase < BENCHMARK_RUNNING) {
-        pthread_yield();
+        sched_yield();
     }
     printf("[%d] Start running...\n", cn);
     fflush(stdout);
@@ -1069,6 +1069,13 @@ static void *thread_run(void *arg)
         }
 
         send_pending(c);
+    }
+
+    for(i = 0; i < settings.conns; ++i) {
+        if ((ret = ss_close(sc, c->conns[i].fd)) < 0) {
+            fprintf(stderr, "[%d] ss_close failed\n", cn);
+            abort();
+        }
     }
 
     return NULL;
@@ -1106,9 +1113,9 @@ int main(int argc, char *argv[])
 #endif
     int i, j, num_threads;
     struct core *cs;
-    uint64_t t_prev, t_cur;
+    uint64_t t_prev, t_cur, t_start;
     long double *ttp, tp, tp_total;
-    uint32_t *hist, hx;
+    uint32_t *hist, *glbl_hist, hx;
     uint64_t msg_total;
     double fracs[6] = { 0.5, 0.9, 0.95, 0.99, 0.999, 0.9999 };
     size_t fracs_pos[sizeof(fracs) / sizeof(fracs[0])];
@@ -1147,6 +1154,7 @@ int main(int argc, char *argv[])
     /* allocate instrumentation structs */
     ttp = calloc(num_threads, sizeof(*ttp));
     hist = calloc(HIST_BUCKETS, sizeof(*hist));
+    glbl_hist = calloc(HIST_BUCKETS, sizeof(*glbl_hist));
 
     if (cs == NULL || ttp == NULL || hist == NULL) {
         fprintf(stderr, "allocation failed failed\n");
@@ -1170,23 +1178,30 @@ int main(int argc, char *argv[])
     phase = BENCHMARK_WARMUP;
 
     while (init_count < num_threads) {
-        pthread_yield();
+        sched_yield();
     }
     printf("Preloading completed\n");
     fflush(stdout);
     phase = BENCHMARK_RUNNING;
 
-    sleep(settings.warmup_time);
+    //sleep(settings.warmup_time);
 
 
-    t_prev = get_nanos();
-    while (1) {
+    t_start = t_prev = get_nanos();
+    uint64_t glbl_ops = 0;
+    uint64_t current_runtime = 0, warmup_time = settings.warmup_time;
+    while (current_runtime < settings.run_time) {
         sleep(1);
+        ++current_runtime;
+        if(current_runtime == warmup_time)
+            printf("Warmup complete\n");
         t_cur = get_nanos();
         tp_total = 0;
         msg_total = 0;
         for (i = 0; i < num_threads; i++) {
             tp = read_cnt(&cs[i].rx_success);
+            if(current_runtime >= warmup_time)
+                glbl_ops += tp;
             tp /= (double) (t_cur - t_prev) / 1000000000.;
             ttp[i] = tp;
             tp_total += tp;
@@ -1195,6 +1210,8 @@ int main(int argc, char *argv[])
                 hx = cs[i].hist[j];
                 msg_total += hx;
                 hist[j] += hx;
+                if(current_runtime >= warmup_time)
+                    glbl_hist[j] += hx;
                 cs[i].hist[j] = 0;
             }
         }
@@ -1209,50 +1226,23 @@ int main(int argc, char *argv[])
                 hist_value(fracs_pos[0]), hist_value(fracs_pos[1]),
                 hist_value(fracs_pos[2]), hist_value(fracs_pos[3]),
                 hist_value(fracs_pos[4]), hist_value(fracs_pos[5]));
-
-        
-
-#if 0
-#ifdef PRINT_PERCORE
-        for (i = 0; i < num_threads; i++) {
-            printf("core[%d]=%'.2Lf mbps  ", i,
-                    ttp[i] * message_size * 8 / 1000000.);
-        }
-#endif
-        printf("\n");
-        printf("stats:\n");
-        for (i = 0; i < num_threads; i++) {
-            printf("    core %2d: (tg=%"PRIu64", ts=%"PRIu64", rg=%"PRIu64
-                ", rs=%"PRIu64", rS=%"PRIu64", rF=%"PRIu64", rC=%"PRIu64
-                ", rN=%"PRIu64", tC=%"PRIu64", tN=%"PRIu64" epu=%"PRIu64
-                ")\n", i,
-                read_cnt(&cs[i].tx_get), read_cnt(&cs[i].tx_set),
-                read_cnt(&cs[i].rx_get), read_cnt(&cs[i].rx_set),
-                read_cnt(&cs[i].rx_success), read_cnt(&cs[i].rx_fail),
-                read_cnt(&cs[i].rx_calls), read_cnt(&cs[i].rx_nanos),
-                read_cnt(&cs[i].tx_calls), read_cnt(&cs[i].tx_nanos),
-                read_cnt(&cs[i].epupd));
-        }
-#endif
-#if 0
-#ifdef PRINT_STATS
-        for (i = 0; i < num_threads; i++) {
-            for (j = 0; j < settings.conns; j++) {
-                printf("      t[%d].conns[%d]:  pend=%u  rx_l=%u  tx_l=%u  "
-                        "tx_o=%u  cnt=%"PRIu64" fd=%d\n",
-                        i, j, cs[i].conns[j].pending, cs[i].conns[j].rx_len,
-                        cs[i].conns[j].tx_len, cs[i].conns[j].tx_len, cs[i].conns[j].cnt,
-                        cs[i].conns[j].fd);
-            }
-        }
-#endif
-#endif
-
         fflush(stdout);
         memset(hist, 0, sizeof(*hist) * HIST_BUCKETS);
 
         t_prev = t_cur;
     }
+    phase = BENCHMARK_COOLDOWN;
+
+    for (i = 0; i < num_threads; i++)
+        pthread_join(cs[i].pthread, NULL);
+
+    phase = BENCHMARK_DONE;
+
+    printf("Final throughput = %.4f mops\n", (double)glbl_ops * 1000. / 
+        (double)(get_nanos() - t_start - warmup_time * 1000000000UL));
+    for(i = 0; i < HIST_BUCKETS; ++i)
+        if(glbl_hist[i] != 0)
+            printf("Hist[%d]=%d\n", i, glbl_hist[i]);
 
 #ifdef USE_MTCP
     mtcp_destroy();

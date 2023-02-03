@@ -11,10 +11,16 @@
 
 #define DEQUEUE_PEEK_PAGES (32)
 
-struct fifo_list {
+struct page_list {
   struct hemem_page *first, *last;
   pthread_mutex_t list_lock;
-  size_t numentries;
+  volatile size_t numentries;
+};
+
+struct process_list {
+  struct hemem_process *first, *last;
+  pthread_mutex_t list_lock;
+  volatile size_t numentries;
 };
 
 enum dequeue_policy {
@@ -23,10 +29,13 @@ enum dequeue_policy {
   DEQ_LOWEST_DENSITY = 2,
 };
 
-void enqueue_fifo(struct fifo_list *list, struct hemem_page *page);
-struct hemem_page* dequeue_fifo(struct fifo_list *list, enum dequeue_policy policy);
-void page_list_remove_page(struct fifo_list *list, struct hemem_page *page);
-void next_page(struct fifo_list *list, struct hemem_page *page, struct hemem_page **res);
+void enqueue_page(struct page_list *list, struct hemem_page *page);
+struct hemem_page* dequeue_page(struct page_list *list, enum dequeue_policy policy);
+void page_list_remove(struct page_list *list, struct hemem_page *page);
+struct hemem_page* prev_page(struct page_list *list, struct hemem_page *page);
 
+void enqueue_process(struct process_list *list, struct hemem_process *process);
+void process_list_remove(struct process_list *list, struct hemem_process *process);
+struct hemem_process* peek_process(struct process_list *list);
 #endif
 

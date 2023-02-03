@@ -33,6 +33,7 @@
 static struct key *generate_keys(struct rng *rng, size_t n, size_t ks);
 static void distribute_uniform(struct key *keys, size_t n);
 static void distribute_zipf(struct key *keys, size_t n, double s);
+static void distribute_hot(struct key *keys, size_t n, double hotset, double hot_access_chance);
 static struct key *draw_key(struct key *keys, size_t n, struct rng *rng);
 
 
@@ -47,8 +48,10 @@ void workload_init(struct workload *wl)
     wl->keys_num = settings.keynum;
     if (settings.keydist == DIST_UNIFORM) {
         distribute_uniform(wl->keys, wl->keys_num);
-    } else {
+    } else if (settings.keydist == DIST_ZIPF) {
         distribute_zipf(wl->keys, wl->keys_num, settings.keydistparams.zipf.s);
+    } else {
+        distribute_hot(wl->keys, wl->keys_num, settings.keydistparams.hot.keys, 0.9);
     }
 }
 
@@ -64,9 +67,12 @@ void workload_adjust(struct workload *wl, struct workload *wl2)
     if (settings.keydist == DIST_UNIFORM) {
         distribute_uniform(wl->keys, wl->keys_num);
         distribute_uniform(wl2->keys, wl2->keys_num);
-    } else {
+    } else if (settings.keydist == DIST_ZIPF) {
         distribute_zipf(wl->keys, wl->keys_num, settings.keydistparams.zipf.s);
         distribute_zipf(wl2->keys, wl2->keys_num, settings.keydistparams.zipf.s);
+    } else {
+        distribute_hot(wl->keys, wl->keys_num, settings.keydistparams.hot.keys, 0.9);
+        distribute_hot(wl2->keys, wl2->keys_num, settings.keydistparams.hot.keys, 0.9);
     }
 }
 
@@ -133,6 +139,29 @@ static void distribute_zipf(struct key *keys, size_t n, double s)
 
     for (i = 0; i < n; i++) {
         sum += 1 / pow(i + 1, s) / c;
+        keys[i].cdf = sum;
+    }
+}
+
+/** Distribute keys according to hotset distribution. */
+static void distribute_hot(struct key *keys, size_t n, double hotset_percent, double hot_access_chance)
+{
+    double cold_access_chance = 1.0 - hot_access_chance;
+
+    double hotset_size = n * hotset_percent;
+    double coldset_size = n - hotset_size;
+
+    size_t i;
+    double sum = 0;
+
+    // Hot key cdf
+    for (i = 0; i < hotset_size; i++) {
+        sum += 1.0 / hotset_size * hot_access_chance;
+        keys[i].cdf = sum;
+    }
+    // Cold key cdf
+    for (; i < n; i++) {
+        sum += 1.0 / coldset_size * cold_access_chance;
         keys[i].cdf = sum;
     }
 }

@@ -9,43 +9,46 @@
 
 #include "hemem-types.h"
 
-#define PEBS_KSWAPD_INTERVAL      (10000) // in us (10ms)
-#define PEBS_KSWAPD_MIGRATE_RATE  (10UL * 1024UL * 1024UL * 1024UL) // 10GB
+#define PEBS_POLICY_INTERVAL      (1000000) // in us (1 s)
+#define PEBS_MIGRATE_RATE      (1UL * 1024UL * 1024UL * 1024UL) // 1GB
+//#define HOT_WRITE_THRESHOLD       (4)
 #if PAGE_SIZE == HUGEPAGE_SIZE
 #define HOT_READ_THRESHOLD        (8)
 #define HOT_WRITE_THRESHOLD       (4)
-#define PEBS_COOLING_THRESHOLD    (10)
+#define PEBS_COOLING_THRESHOLD    (64)
 #elif PAGE_SIZE == BASEPAGE_SIZE
 #define HOT_READ_THRESHOLD        (8)
 #define HOT_WRITE_THRESHOLD       (4)
-#define PEBS_COOLING_THRESHOLD    (6)
+#define PEBS_COOLING_THRESHOLD    (32)
 #endif
 
 #define HOT_RING_REQS_THRESHOLD   (1024*1024)
-#define COLD_RING_REQS_THRESHOLD  (128)
-#define COOLING_PAGES             (8192)
+#define COLD_RING_REQS_THRESHOLD  (1024*1024)
+#define COOLING_PAGES             (16384)
 
 #define PEBS_NPROCS 24
 #define PERF_PAGES	(1 + (1 << 16))	// Has to be == 1+2^n, here 1MB
 //#define SAMPLE_PERIOD	10007
-#define SAMPLE_PERIOD 5003
+#define SAMPLE_PERIOD 101
 //#define SAMPLE_FREQ	100
 
+#define EWMA_FRAC (0.5)
 
 struct perf_sample {
     struct perf_event_header header;
     __u64	ip;
     __u32 pid, tid;    /* if PERF_SAMPLE_TID */
     __u64 addr;        /* if PERF_SAMPLE_ADDR */
-    __u64 weight;      /* if PERF_SAMPLE_WEIGHT */
 };
 
-void *pebs_kswapd();
-void pebs_remove_page(struct hemem_page *page);
+void pebs_remove_page(struct hemem_process *process, struct hemem_page *page);
 struct hemem_page* pebs_pagefault(struct hemem_process *process);
 void pebs_init(void);
 void pebs_stats();
 void pebs_clear_stats();
 void pebs_shutdown();
+void pebs_add_process(struct hemem_process *process); 
+void pebs_remove_process(struct hemem_process *process);
+void pebs_update_process(struct hemem_process *process, double new_miss_ratio);
 
 #endif /*  HEMEM_PEBS_H  */

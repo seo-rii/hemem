@@ -18,8 +18,8 @@
 
 //#define HEMEM_DEBUG
 
-#define NVMSIZE   (128L * (1024L * 1024L * 1024L))
-#define DRAMSIZE  (8L * (1024L * 1024L * 1024L))
+#define NVMSIZE   (512L * (1024L * 1024L * 1024L))
+#define DRAMSIZE  (128L * (1024L * 1024L * 1024L))
 
 //#define NVMSIZE   (16L * (1024L * 1024L * 1024L))
 //#define DRAMSIZE  (16L * (1024L * 1024L * 1024L))
@@ -54,13 +54,7 @@
 
 #define MAX_FAULT_PAGES 16
 
-#define FAULT_THREAD_CPU  (0)
-#define STATS_THREAD_CPU  (23)
-#define SCANNING_THREAD_CPU (FAULT_THREAD_CPU + 1)
-#define MIGRATION_THREAD_CPU (SCANNING_THREAD_CPU + 1)
-#define REQUEST_THREAD_CPU (MIGRATION_THREAD_CPU + 1)
-#define REMAP_THREAD_CPU (REQUEST_THREAD_CPU + 1)
-#define LISTEN_THREAD_CPU (REMAP_THREAD_CPU + 1)
+#define STATS_THREAD_CPU  (0)
 
 enum memtypes {
   FASTMEM = 0,
@@ -132,6 +126,8 @@ struct free_response {
 
 struct add_process_request {
   struct msg_header header; 
+  double target_miss_ratio;
+  uint64_t req_dram;
 };
 
 struct add_process_response {

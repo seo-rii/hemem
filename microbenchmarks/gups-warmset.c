@@ -34,7 +34,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <signal.h>
-#include <sched.h>
 
 #include "../src/ucm/timer.h"
 //#include "../src/hemem.h"
@@ -56,10 +55,9 @@ extern double hotset_fraction;
 #define IGNORE_STRAGGLERS
 
 int threads;
-int start_cpu = 8;
 
 uint64_t hot_start = 0;
-volatile uint64_t hotsize = 0;
+uint64_t hotsize = 0;
 bool move_hotset = false;
 
 struct gups_args {
@@ -70,14 +68,15 @@ struct gups_args {
   uint64_t size;           // size of region
   uint64_t elt_size;       // size of elements
   uint64_t hot_start;            // start of hot set
+  uint64_t hotsize;        // size of hot set
 };
+
 
 uint64_t thread_gups[MAX_THREADS];
 
 static unsigned long updates, nelems;
 
 uint64_t tot_updates = 0;
-volatile bool received_signal = false;
 
 static void *print_instantaneous_gups(void *arg)
 {
@@ -95,7 +94,7 @@ static void *print_instantaneous_gups(void *arg)
     for (int i = 0; i < threads; i++) {
       tot_gups += thread_gups[i];
     }
-    fprintf(tot, "%ld\t%.10f\n", rdtscp(), (1.0 * (abs(tot_gups - tot_last_second_gups))) / (1.0e9));
+    fprintf(tot, "%.10f\n", (1.0 * (abs(tot_gups - tot_last_second_gups))) / (1.0e9));
     fflush(tot);
     tot_updates += abs(tot_gups - tot_last_second_gups);
     tot_last_second_gups = tot_gups;
@@ -117,6 +116,27 @@ char *filename = "indices1.txt";
 
 FILE *hotsetfile = NULL;
 
+bool hotset_only = false;
+
+static void *prefill_hotset(void* arguments)
+{
+  struct gups_args *args = (struct gups_args*)arguments;
+  uint64_t *field = (uint64_t*)(args->field);
+  uint64_t i;
+  uint64_t index1;
+
+  index1 = 0;
+
+  for (i = 0; i < args->hotsize; i++) {
+    index1 = i;
+    uint64_t  tmp = field[index1];
+    tmp = tmp + i;
+    field[index1] = tmp;
+  }
+  return 0;
+  
+}
+
 volatile bool done_gups = false;
 unsigned completed_gups[MAX_THREADS] = {0};
 
@@ -130,18 +150,6 @@ static void *do_gups(void *arguments)
   uint64_t lfsr;
   uint64_t iters = args->iters;
 
-  cpu_set_t cpuset;
-  pthread_t thread;
-
-  thread = pthread_self();
-  CPU_ZERO(&cpuset);
-  CPU_SET(start_cpu + args->tid, &cpuset);
-  int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
-  if (s != 0) {
-    perror("pthread_setaffinity_np");
-    assert(0);
-  }
-
   srand(args->tid);
   lfsr = rand();
 
@@ -153,9 +161,16 @@ static void *do_gups(void *arguments)
 
   for (i = 0; i < iters || iters == 0; i++) {
     lfsr = lfsr_fast(lfsr);
-    if (lfsr % 100 < 90) {
+    if (lfsr % 100 < 60) {
       lfsr = lfsr_fast(lfsr);
-      index1 = args->hot_start + (lfsr % hotsize);
+      index1 = args->hot_start + (lfsr % (args->hotsize/2));
+      uint64_t  tmp = field[index1];
+      tmp = tmp + i;
+      field[index1] = tmp;
+    }
+    else if (lfsr % 100 < 90) {
+      lfsr = lfsr_fast(lfsr);
+      index1 = args->hot_start + (args->hotsize/2) + (lfsr % args->hotsize);
       uint64_t  tmp = field[index1];
       tmp = tmp + i;
       field[index1] = tmp;
@@ -180,10 +195,10 @@ static void *do_gups(void *arguments)
   return 0;
 }
 
+bool received_signal = false;
 void signal_handler() 
 {
   received_signal = true;
-  hotsize += hotsize / 2;
 }
 
 int main(int argc, char **argv)
@@ -200,7 +215,6 @@ int main(int argc, char **argv)
   pthread_t t[MAX_THREADS];
   char *log_filename;
   bool wait_for_signal = false;
-  char *start_cpu_str;
 
   // Stop waiting on receiving signal
   signal(SIGUSR1, signal_handler);
@@ -218,11 +232,6 @@ int main(int argc, char **argv)
   }
 
   gettimeofday(&starttime, NULL);
-
-  start_cpu_str = getenv("START_CPU");
-  if (start_cpu_str != NULL) {
-    start_cpu = atoi(start_cpu_str);
-  }
 
   threads = atoi(argv[1]);
   assert(threads <= MAX_THREADS);
@@ -294,13 +303,25 @@ int main(int argc, char **argv)
     ga[i]->size = nelems;
     ga[i]->elt_size = elt_size;
     ga[i]->hot_start = 0;        // hot set at start of thread's region
+    ga[i]->hotsize = hotsize;
+  }
+
+  if (hotset_only) {
+    for (i = 0; i < threads; i++) {
+      int r = pthread_create(&t[i], NULL, prefill_hotset, (void*)ga[i]);
+      assert(r == 0);
+    }
+    // wait for worker threads
+    for (i = 0; i < threads; i++) {
+      int r = pthread_join(t[i], NULL);
+      assert(r == 0);
+    }
   }
 
   if(updates != 0) {
     // run through gups once to touch all memory
     // spawn gups worker threads
     for (i = 0; i < threads; i++) {
-      ga[i]->iters = updates * 2;
       int r = pthread_create(&t[i], NULL, do_gups, (void*)ga[i]);
       assert(r == 0);
     }
@@ -325,13 +346,11 @@ int main(int argc, char **argv)
   filename = "indices2.txt";
 
   memset(thread_gups, 0, sizeof(thread_gups));
-  /*
   if(wait_for_signal) {
     fprintf(stderr, "Waiting for signal\n");
     while(!received_signal);
     fprintf(stderr, "Received signal\n");
   }
-  */
   pthread_t print_thread;
   int pt = pthread_create(&print_thread, NULL, print_instantaneous_gups, log_filename);
   assert(pt == 0);
@@ -348,7 +367,6 @@ int main(int argc, char **argv)
 
   // wait for worker threads
   for (i = 0; i < threads; i++) {
-    ga[i]->iters = updates;
     int r = pthread_join(t[i], NULL);
     assert(r == 0);
   }
@@ -391,5 +409,4 @@ int main(int argc, char **argv)
 
   return 0;
 }
-
 
