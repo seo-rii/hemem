@@ -151,13 +151,13 @@ void *pebs_scan_thread()
     for (i = LAST_HEMEM_THREAD + 1; i < PEBS_NPROCS; i++) {
       for(j = 0; j < NPBUFTYPES; j++) {
 
-	static struct perf_event_mmap_page *perf_page_shadow[PEBS_NPROCS][NPBUFTYPES];
+	      static struct perf_event_mmap_page *perf_page_shadow[PEBS_NPROCS][NPBUFTYPES];
 
-	if(perf_page_shadow[i][j] == NULL) {
-	  perf_page_shadow[i][j] = perf_page[i][j];
-	} else {
-	  assert(perf_page_shadow[i][j] == perf_page[i][j]);
-	}
+	      if(perf_page_shadow[i][j] == NULL) {
+	        perf_page_shadow[i][j] = perf_page[i][j];
+	      } else {
+	        assert(perf_page_shadow[i][j] == perf_page[i][j]);
+	      }
 
         p = perf_page[i][j];
         pbuf = (char *)p + p->data_offset;
@@ -168,7 +168,7 @@ void *pebs_scan_thread()
           continue;
         }
 
-	assert(p->data_head > p->data_tail);
+	      assert(p->data_head > p->data_tail);
 
         ph = (void *)(pbuf + (p->data_tail % p->data_size));
 
@@ -184,24 +184,24 @@ void *pebs_scan_thread()
 	            if((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) != PERF_RECORD_MISC_USER) {
 	              //fprintf(stderr, "Unknown PEBS sample misc: %x, type: %x, pid: %d\n", ph->misc, ph->type, ps->pid);
 	            }
-	  /* assert((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) == PERF_RECORD_MISC_USER); */
+	            /* assert((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) == PERF_RECORD_MISC_USER); */
               if (process != NULL) {
-		process->samples[i]++;
+		            process->samples[i]++;
                 page = find_page(process, pfn);
                 if (page != NULL) {
                   if (page->va != 0) {
-		    assert(j == DRAMREAD || j == NVMREAD);
-		    if(j == DRAMREAD) {
-		      if(!page->in_dram) {
-			process->wrong_memtype++;
-		      }
-		      /* assert(page->in_dram); */
-		    } else {
-		      if(page->in_dram) {
-			process->wrong_memtype++;
-		      }
-		      /* assert(!page->in_dram); */
-		    }
+		                assert(j == DRAMREAD || j == NVMREAD);
+		                if(j == DRAMREAD) {
+		                  if(!page->in_dram) {
+			                  process->wrong_memtype++;
+		                  }
+		                  /* assert(page->in_dram); */
+		                } else {
+		                  if(page->in_dram) {
+			                  process->wrong_memtype++;
+		                  }
+		                  /* assert(!page->in_dram); */
+		                }
 #ifdef HEMEM_QOS
                     process->accessed_pages[j]++;
 #endif
@@ -232,21 +232,21 @@ void *pebs_scan_thread()
                   hemem_pages_cnt++;
                 }
                 else {
-		  /* assert(0); */
+		              /* assert(0); */
                   other_pages_cnt++;
                 }
                 total_pages_cnt++;
               }
               else {
                 other_processes_cnt++;
-                LOG("pebs_thread received sample from non-qtMem process %d\n", ps->pid);
+                //LOG("pebs_thread received sample from non-qtMem process %d\n", ps->pid);
               }
             }
             else {
               zero_pages_cnt++;
             }
 
-	    /* ps->addr = 0; */
+	          /* ps->addr = 0; */
   	      break;
         case PERF_RECORD_THROTTLE:
         case PERF_RECORD_UNTHROTTLE:
@@ -277,10 +277,13 @@ static void pebs_migrate_down(struct hemem_process *process, struct hemem_page *
 
   gettimeofday(&start, NULL);
 
+  assert(page->pid == process->pid);
+
   page->migrating = true;
   hemem_ucm_wp_page(page, true);
   hemem_ucm_migrate_down(process, page, offset);
   process->current_dram -= pt_to_pagesize(page->pt);
+  process->current_nvm += pt_to_pagesize(page->pt);
   page->migrating = false; 
 
   gettimeofday(&end, NULL);
@@ -293,10 +296,13 @@ static void pebs_migrate_up(struct hemem_process *process, struct hemem_page *pa
 
   gettimeofday(&start, NULL);
 
+  assert(page->pid == process->pid);
+
   page->migrating = true;
   hemem_ucm_wp_page(page, true);
   hemem_ucm_migrate_up(process, page, offset);
   process->current_dram += pt_to_pagesize(page->pt);
+  process->current_nvm -= pt_to_pagesize(page->pt);
   page->migrating = false;
 
   gettimeofday(&end, NULL);
@@ -308,6 +314,8 @@ void make_hot(struct hemem_process* process, struct hemem_page* page, int new_ho
 {
   assert(page != NULL);
   assert(page->va != 0);
+
+  assert(page->pid == process->pid);
 
   if (page->hot == new_hot) {
     if (page->in_dram) {
@@ -339,6 +347,8 @@ void make_cold(struct hemem_process* process, struct hemem_page* page, int new_h
 {
   assert(page != NULL);
   assert(page->va != 0);
+
+  assert(page->pid == process->pid);
 
   if (page->hot == new_hot) {
     if (page->in_dram) {
@@ -401,7 +411,7 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
       return NULL;
     }
   } else if ((!dram) && (process->cur_cool_in_nvm == NULL) && (process->cur_cool_in_nvm_list == 0)) {
-    for (int i = NUM_HOTNESS_LEVELS-1; i > 0 && process->cur_cool_in_nvm == NULL; i--) {
+    for (i = NUM_HOTNESS_LEVELS-1; i > 0 && process->cur_cool_in_nvm == NULL; i--) {
       // find the current oldest hottest page in NVM
       process->cur_cool_in_nvm = process->nvm_lists[i].last;
       process->cur_cool_in_nvm_list = i;
@@ -424,6 +434,7 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
     cool_list = process->cur_cool_in_dram_list;
     cur_bins = process->dram_lists;
     if (current) {
+      assert(current->pid == process->pid);
       assert(current->list == &(cur_bins[current->hot]));
     }
   } else {
@@ -431,6 +442,7 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
     cool_list = process->cur_cool_in_nvm_list;
     cur_bins = process->nvm_lists;
     if (current) {
+      assert(current->pid == process->pid);
       assert(current->list == &(cur_bins[current->hot]));
     }
   }
@@ -452,12 +464,15 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
       }
     }
 
+
     // sanity check we grabbed a page in the appropriate memory type and
     // from the appropriate list
     if (dram) {
+        assert(p->pid == process->pid);
         assert(p->in_dram);
         assert(p->list == &(process->dram_lists[p->hot]));
     } else {
+        assert(p->pid == process->pid);
         assert(!p->in_dram);
         assert(p->list == &(process->nvm_lists[p->hot]));
     }
@@ -541,6 +556,7 @@ void update_current_cool_page(struct hemem_process *process, struct hemem_page *
 {
   if (page == process->cur_cool_in_dram) {
     // first a set of sanity checks
+    assert(page->pid == process->pid);
     assert(page->in_dram);
     assert(page->list == &(process->dram_lists[page->hot]));
     // then just reset the bookmark pointer to the last page in list
@@ -549,6 +565,7 @@ void update_current_cool_page(struct hemem_process *process, struct hemem_page *
     process->cur_cool_in_dram_list = 0;
   } else if (page == process->cur_cool_in_nvm) {
     // first, a bunch of sanity checks
+    assert(page->pid == process->pid);
     assert(!(page->in_dram));
     assert(page->list == &(process->nvm_lists[page->hot]));
     // then just reset the bookmark pointer to the last page in list
@@ -584,14 +601,17 @@ void handle_ring_requests(struct hemem_process *process)
       break;
     }
 
+
     list = page->list;
     assert(list != NULL);
 
     // list sanity checks
     // either in the correct list or in a ring. 
     if (page->in_dram) {
+      assert(page->pid == process->pid);
       assert(page->list == &(process->dram_lists[page->hot]) || page->ring_present);
     } else {
+      assert(page->pid == process->pid);
       assert(page->list == &(process->nvm_lists[page->hot]) || page->ring_present);
     } 
 
@@ -603,6 +623,7 @@ void handle_ring_requests(struct hemem_process *process)
 
     // reset page stats
     page->present = false;
+    page->pid = -1;
     page->hot = COLD;
     for (int i = 0; i < NPBUFTYPES; i++) {
       page->accesses[i] = 0;
@@ -611,14 +632,16 @@ void handle_ring_requests(struct hemem_process *process)
 
     if (page->in_dram) {
       enqueue_page(&dram_free_list, page);
+
+      // update process DRAM stats
+      process->current_dram -= pt_to_pagesize(page->pt);
+      process->allowed_dram -= pt_to_pagesize(page->pt);
     }
     else {
       enqueue_page(&nvm_free_list, page);
+      process->current_nvm -= pt_to_pagesize(page->pt);
     }
     page->in_free_ring = false;
-
-    process->current_dram -= pt_to_pagesize(page->pt);
-    process->allowed_dram -= pt_to_pagesize(page->pt);
 
     free_ring_requests_handled++;
   }
@@ -633,6 +656,7 @@ void handle_ring_requests(struct hemem_process *process)
       break;
     }
 
+
     if (!page->present) {
       // page has been freed
       if (page->in_dram) {
@@ -643,6 +667,8 @@ void handle_ring_requests(struct hemem_process *process)
       hot_ring_requests_handled++;
       continue;
     }
+
+    assert(page->pid == process->pid);
     
     // compute the access samples this page would have had if it were up to date
     // with cooling
@@ -684,6 +710,7 @@ void handle_ring_requests(struct hemem_process *process)
       break;
     }
 
+
     if (!page->present) {
       // page has been freed
       if (page->in_dram) {
@@ -694,6 +721,8 @@ void handle_ring_requests(struct hemem_process *process)
       cold_ring_requests_handled++;
       continue;
     }
+
+    assert(page->pid == process->pid);
     
     // compute the access samples this page would have had if it were up to date
     // with cooling
@@ -753,6 +782,7 @@ struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
 */  
     if (p != NULL) {
       // found something hot. we should try to promote it.
+      assert(p->pid == process->pid);
       return p;
     }
   }
@@ -784,6 +814,8 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
       break;
     }
 
+    assert(cp->pid == process->pid);
+
     if (cp == process->cur_cool_in_dram) {
       assert(cp->in_dram);
       // then just reset the bookmark pointer to the last page in list
@@ -795,16 +827,17 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
     np = dequeue_page(&nvm_free_list);
     if (np != NULL) {
       assert(!(np->present));
+      assert(np->pid == -1);
 
       old_offset = cp->devdax_offset;
       pebs_migrate_down(process, cp, np->devdax_offset);
       np->devdax_offset = old_offset;
       np->in_dram = true;
       np->present = false;
-      np->hot = COLD;
+      assert(np->hot == COLD);
       for (int i = 0; i < NPBUFTYPES; i++) {
-        np->accesses[i] = 0;
-        np->tot_accesses[i] = 0;
+        assert(np->accesses[i] == 0);
+        assert(np->tot_accesses[i] == 0);
       }
 
       enqueue_page(&(process->nvm_lists[cp->hot]), cp);
@@ -822,7 +855,7 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
     //assert(np != NULL);
   }
   gettimeofday(&now, NULL);
-  LOG("%f\tprocess %d has migrated %ld bytes down\n", elapsed(&startup, &now), process->pid, migrated_bytes);
+  //LOG("%f\tprocess %d has migrated %ld bytes down\n", elapsed(&startup, &now), process->pid, migrated_bytes);
 }
 
 void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes)
@@ -844,6 +877,7 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
       break;
     }
 
+
     if (p == process->cur_cool_in_nvm) {
       assert(!p->in_dram);
       // then just reset the bookmark pointer to the last page in list
@@ -851,6 +885,8 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
       process->cur_cool_in_nvm = NULL;
       process->cur_cool_in_nvm_list = 0;
     }
+
+    assert(p->pid == process->pid);
 
     // compute the access samples this page would have had if it were up to date
     // with cooling
@@ -877,16 +913,17 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
       //}
     }
     assert(!np->present);
+    assert(np->pid == -1);
 
     old_offset = p->devdax_offset;
     pebs_migrate_up(process, p, np->devdax_offset);
     np->devdax_offset = old_offset;
     np->in_dram = false;
     np->present = false;
-    np->hot = COLD;
+    assert(np->hot == COLD);
     for (int i = 0; i < NPBUFTYPES; i++) {
-      np->accesses[i] = 0;
-      np->tot_accesses[i] = 0;
+      assert(np->accesses[i] == 0);
+      assert(np->tot_accesses[i] == 0);
     }
 
     p->hot = new_hotness;
@@ -896,7 +933,7 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
     migrated_bytes += pt_to_pagesize(p->pt);
   }
   gettimeofday(&now, NULL);
-  LOG("%f\tprocess %d has migrated %ld bytes up\n", elapsed(&startup, &now), process->pid, migrated_bytes);
+  //LOG("%f\tprocess %d has migrated %ld bytes up\n", elapsed(&startup, &now), process->pid, migrated_bytes);
 }
 
 #ifdef HEMEM_QOS
@@ -1292,7 +1329,7 @@ void *pebs_policy_thread()
 
       // migrate down first to free up DRAM space
       gettimeofday(&now, NULL);
-      LOG("%f\tprocess %d is migrating %ld bytes down\n", elapsed(&startup, &now), process->pid, process->migrate_down_bytes);
+      //LOG("%f\tprocess %d is migrating %ld bytes down\n", elapsed(&startup, &now), process->pid, process->migrate_down_bytes);
       process_migrate_down(process, process->migrate_down_bytes);
 
       tmp = process;
@@ -1307,7 +1344,7 @@ void *pebs_policy_thread()
       
       // now migrate up to newly freed DRAM space
       gettimeofday(&now, NULL);
-      LOG("%f\tprocess %d is migrating %ld bytes up\n", elapsed(&startup, &now), process->pid, process->migrate_up_bytes);
+      //LOG("%f\tprocess %d is migrating %ld bytes up\n", elapsed(&startup, &now), process->pid, process->migrate_up_bytes);
       process_migrate_up(process, process->migrate_up_bytes);
       
       process->cur_cool_in_dram = partial_cool(process, true);
@@ -1377,6 +1414,7 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
       assert(!page->present);
 
       page->present = true;
+      page->pid = process->pid;
       enqueue_page(&(process->dram_lists[COLD]), page);
 
       gettimeofday(&end, NULL);
@@ -1396,10 +1434,13 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
     assert(!page->present);
 
     page->present = true;
+    page->pid = process->pid;
     enqueue_page(&(process->nvm_lists[COLD]), page);
 
     gettimeofday(&end, NULL);
     LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
+
+    process->current_nvm += pt_to_pagesize(page->pt);
 
     return page;
   }
@@ -1452,6 +1493,7 @@ void pebs_add_process(struct hemem_process *process)
   enqueue_process(&processes_list, process);
   pthread_mutex_lock(&(process->process_lock));
   process->current_miss_ratio = -1;
+  process->current_nvm = 0;
   process->current_dram = 0;
   process->allowed_dram = 0;
   pthread_mutex_unlock(&(process->process_lock));
@@ -1472,6 +1514,7 @@ void pebs_add_process(struct hemem_process *process)
   
   // in non-QOS mode, the lc list just acts like the total process list
   process->current_dram = 0;
+  process->current_nvm = 0;
   process->allowed_dram = DRAMSIZE / (processes_list.numentries + 1);
   enqueue_process(&processes_list, process);
 
@@ -1486,6 +1529,7 @@ void pebs_remove_process(struct hemem_process *process)
   pthread_mutex_lock(&(process->process_lock));
   freed_dram = process->current_dram;
   process->current_dram = 0;
+  process->current_nvm = 0;
   process->allowed_dram = 0;
   pthread_mutex_unlock(&(process->process_lock));
   
@@ -1524,6 +1568,7 @@ void pebs_init(void)
     p->in_dram = true;
     p->ring_present = false;
     p->in_free_ring = false;
+    p->pid = -1;
     p->pt = pagesize_to_pt(PAGE_SIZE);
 
     enqueue_page(&dram_free_list, p);
@@ -1537,6 +1582,7 @@ void pebs_init(void)
     p->in_dram = false;
     p->ring_present = false;
     p->in_free_ring = false;
+    p->pid = -1;
     p->pt = pagesize_to_pt(PAGE_SIZE);
 
     enqueue_page(&nvm_free_list, p);
@@ -1576,7 +1622,7 @@ void count_pages()
   while (process != NULL) {
     //pthread_mutex_lock(&(process->process_lock));
 #ifdef HEMEM_QOS
-    fprintf(process->logfd, "%ld\t%f\t%lu\t%lu", rdtscp(), process->current_miss_ratio, process->current_dram, process->allowed_dram);
+    fprintf(process->logfd, "%ld\t%f\t%lu\t%lu\t%lu", rdtscp(), process->current_miss_ratio, process->current_dram, process->allowed_dram, process->current_nvm);
     fprintf(process->logfd, "\tdram_lists: [%lu", process->dram_lists[COLD].numentries);
     for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
       fprintf(process->logfd, ", %lu", process->dram_lists[i].numentries);
@@ -1597,7 +1643,7 @@ void count_pages()
     for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
       LOG_STATS(", %lu", process->nvm_lists[i].numentries);
     }
-    LOG_STATS("]\tcurrent_miss_ratio: %f\ttarget_miss_ratio: %f\tallowed_dram: [%ld]\tcurrent_dram: [%ld]\n", process->current_miss_ratio, process->target_miss_ratio, process->allowed_dram, process->current_dram);
+    LOG_STATS("]\tcurrent_miss_ratio: %f\ttarget_miss_ratio: %f\tallowed_dram: [%ld]\tcurrent_dram: [%ld]\tcurrent_nvm: [%ld]\n", process->current_miss_ratio, process->target_miss_ratio, process->allowed_dram, process->current_dram, process->current_nvm);
 
     LOG_STATS("\t\tDRAM accesses: [%"PRIu64"]\tNVM accesses: [%"PRIu64"]\twrong memtype: [%"PRIu64"]\tsamples: [", process->accessed_pages[DRAMREAD], process->accessed_pages[NVMREAD], process->wrong_memtype);
     for (i = LAST_HEMEM_THREAD + 1; i < PEBS_NPROCS ; i++) {

@@ -29,11 +29,8 @@ struct hemem_page {
   long  uffd;
   enum pagetypes pt;
   volatile bool migrating;
-  bool in_migrate_up_queue;
-  bool in_migrate_down_queue;
   bool present;
   uint64_t hot;
-  uint64_t naccesses;
   uint64_t migrations_up, migrations_down;
   uint64_t local_clock;
   bool ring_present;
@@ -63,6 +60,7 @@ struct hemem_process {
   uint64_t migrations_up, migrations_down;
 #endif
   volatile uint64_t current_dram;
+  volatile uint64_t current_nvm;
   volatile uint64_t allowed_dram;
   uint64_t max_dram;
 

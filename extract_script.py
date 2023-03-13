@@ -26,7 +26,7 @@ print(RES)
 if len(sys.argv) >= 5:
     KEY_LATS=np.array(sys.argv[4].split(",")).astype(np.float)
 else:
-    KEY_LATS=[0.5, 0.99]
+    KEY_LATS=[0.5, 0.9, 0.99]
 
 hist_pattern = re.compile(r"Hist\[[0-9]+\]=[0-9]+")
 tput_pattern = re.compile(r"Final throughput = [0-9]+\.[0-9]+ mops")
