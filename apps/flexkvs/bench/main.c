@@ -93,6 +93,7 @@ struct settings settings;
 static struct workload workload;
 static volatile enum benchmark_phase phase;
 static volatile uint16_t init_count = 0;
+static bool skip_load = false;
 /*static uint32_t max_pending = 64;*/
 
 #ifdef DEL_TEST
@@ -1021,7 +1022,9 @@ static void *thread_run(void *arg)
     printf("[%d] Preloading more keys...\n", cn);
     load_other_keys(c);
 #else
-    load_keys(c);
+    if (!skip_load) {
+        load_keys(c);
+    }
 #endif
 
     printf("[%d] Preloaded keys...\n", cn);
@@ -1131,6 +1134,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
     num_threads = settings.threads;
+    skip_load = settings.skip_load;
 
     /* initialize workload */
     workload_init(&workload);

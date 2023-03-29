@@ -55,7 +55,8 @@ void print_usage(void)
         "  -o, --op-seed=SEED    Seed for operation PRG.\n"
         "  -r, --trace=FILE      Write operation trace to file.\n"
         "  -S, --target-size     Target key memory usage. Causes key-num to be ignored [default 0]\n"
-        "  -K, --keysteer        Key-based steering.\n");
+        "  -K, --keysteer        Key-based steering.\n"
+        "  -l, --skip-load       Skip loading of keys.\n");
 }
 
 void init_settings(struct settings *s)
@@ -77,6 +78,7 @@ void init_settings(struct settings *s)
     s->target_size = 0;
     s->keybased = false;
     s->batchsize = 32;
+    s->skip_load = false;
 }
 
 int parse_settings(int argc, char *argv[], struct settings *s)
@@ -100,8 +102,9 @@ int parse_settings(int argc, char *argv[], struct settings *s)
             {"op-seed",     required_argument, NULL, 'o'},
             {"target-size", required_argument, NULL, 'S'},
             {"keysteer",    no_argument,       NULL, 'K'},
+            {"skip-load",   no_argument,       NULL, 'l'},
         };
-    static const char *short_opts = "t:C:p:k:n:uz:h:v:g:T:w:c:d:s:o:r:S:K";
+    static const char *short_opts = "t:C:p:k:n:uz:h:v:g:T:w:c:d:s:o:r:S:K:l";
     int c, opt_idx, done = 0;
     char *end;
 
@@ -242,6 +245,9 @@ int parse_settings(int argc, char *argv[], struct settings *s)
                 break;
             case 'K':
                 settings.keybased = true;
+                break;
+            case 'l':
+                settings.skip_load = true;
                 break;
             case -1:
                 done = 1;
