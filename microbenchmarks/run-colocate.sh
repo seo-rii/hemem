@@ -11,7 +11,7 @@ run_perf_pid=$!
 nice -20 numactl -C0,1,2,3 -m0 -- ./../src/central-manager >$debugfile 2>&1 &
 central_pid=$!
 sleep 5
-nice -20 numactl -C8,9 -m0   -- env START_CPU=8  MISS_RATIO=1.0 LD_PRELOAD=/home/amanda/hemem/src/libhemem.so ./gups-pebs 2 0 35 8 35 0 /tmp/gups-first.txt &
+nice -20 numactl -C8,9 -m0   -- env START_CPU=8  MISS_RATIO=1.0 LD_PRELOAD=/home/amanda/hemem/src/libhemem.so ./gups-pebs 2 0 35 8 34 0 /tmp/gups-first.txt &
 gups1_pid=$!
 sleep 10
 nice -20 numactl -C10,11 -m0 -- env START_CPU=10 MISS_RATIO=0.1 LD_PRELOAD=/home/amanda/hemem/src/libhemem.so ./gups-pebs 2 0 35 8 34 0 /tmp/gups-second.txt &
@@ -31,7 +31,7 @@ gups6_pid=$!
 sleep 100
 kill -s USR1 $gups5_pid
 sleep 50
-echo $gups1_pid:0.9 > /tmp/miss_ratio_update
+echo $gups1_pid:0.1 > /tmp/miss_ratio_update
 kill -s USR2 $central_pid
 sleep 100
 

@@ -1081,6 +1081,7 @@ void *pebs_policy_thread()
   int i, j;
   int nvm_hot_pages_left_to_migrate, pages_from_cur_dram;
   int num_victims;
+  uint64_t migrate_rate = PEBS_MIGRATE_RATE;
 #endif
 
   thread = pthread_self();
@@ -1150,11 +1151,11 @@ void *pebs_policy_thread()
         if (slack >= 2.0) {
           // we are more than 100% off our target, give process a large chunk
           // of DRAM (1 GB)
-          requested_dram = PEBS_MIGRATE_RATE;
+          requested_dram = migrate_rate;
         } else {
           // process is kind of close to its target miss ratio, so give it
           // a smaller chunk of DRAM
-          requested_dram = (PEBS_MIGRATE_RATE * (slack - 1));
+          requested_dram = (migrate_rate * (slack - 1));
           requested_dram -= (requested_dram % PAGE_SIZE);
         }
         assert(requested_dram % PAGE_SIZE == 0);
@@ -1264,16 +1265,16 @@ void *pebs_policy_thread()
       if (process->allowed_dram > process->current_dram) {
         // process can have more DRAM, so it can migrate things up if it can
         process->migrate_up_bytes = process->allowed_dram - process->current_dram;
-        if (process->migrate_up_bytes > PEBS_MIGRATE_RATE) {
-          process->migrate_up_bytes = PEBS_MIGRATE_RATE;
+        if (process->migrate_up_bytes > migrate_rate) {
+          process->migrate_up_bytes = migrate_rate;
         }
         process->migrate_down_bytes = 0;
       } else if (process->allowed_dram < process->current_dram) {
         // process has too much dram, so it needs to migrate things down
         process->migrate_up_bytes = 0;
         process->migrate_down_bytes = process->current_dram - process->allowed_dram;
-        if (process->migrate_down_bytes > PEBS_MIGRATE_RATE) {
-          process->migrate_down_bytes = PEBS_MIGRATE_RATE;
+        if (process->migrate_down_bytes > migrate_rate) {
+          process->migrate_down_bytes = migrate_rate;
         }
       } else {
         slack = process->target_miss_ratio / process->current_miss_ratio;
@@ -1320,8 +1321,8 @@ void *pebs_policy_thread()
             }
           }
           process->migrate_down_bytes = migrate_down_bytes;
-          if (process->migrate_down_bytes > PEBS_MIGRATE_RATE) {
-            process->migrate_down_bytes = PEBS_MIGRATE_RATE;
+          if (process->migrate_down_bytes > migrate_rate) {
+            process->migrate_down_bytes = migrate_rate;
           }
           process->migrate_up_bytes = process->migrate_down_bytes;
         }

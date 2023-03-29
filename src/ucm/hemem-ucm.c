@@ -523,7 +523,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
 //  #endif
     memsets++;
 
-    LOG("allocated page for process %d at va %lx\n", pid, page_boundry);
+    //LOG("allocated page for process %d at va %lx\n", pid, page_boundry);
 
     page->va = page_boundry;
     page->pid = process->pid;
@@ -1052,7 +1052,7 @@ void handle_missing_fault(struct hemem_process *process,
   in_dram = page->in_dram;
   pagesize = pt_to_pagesize(page->pt);
 
-  LOG("handled page fault for process %u for va %lx\n", process->pid, page_boundry);
+  //LOG("handled page fault for process %u for va %lx\n", process->pid, page_boundry);
 
   addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
 
