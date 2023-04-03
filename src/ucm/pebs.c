@@ -1081,7 +1081,15 @@ void *pebs_policy_thread()
   int i, j;
   int nvm_hot_pages_left_to_migrate, pages_from_cur_dram;
   int num_victims;
-  uint64_t migrate_rate = PEBS_MIGRATE_RATE;
+  struct hemem_process *need_fastmem[MAX_PROCESSES];
+  struct hemem_process *take_fastmem[MAX_PROCESSES];
+  int num_need_memory;
+  int num_take_memory;
+  uint64_t dram_delta;
+  double memshare_need;
+  double memshare_take;
+  double tmp_ratio;
+  double ratio;
 #endif
 
   thread = pthread_self();
@@ -1123,6 +1131,11 @@ void *pebs_policy_thread()
       pthread_mutex_unlock(&(tmp->process_lock));
     }
 
+    num_need_memory = 0;
+    num_take_memory = 0;
+    memshare_need = 0;
+    memshare_take = 0;
+
     // figure out how much dram we need to reallocate based on ratio diffs
     // if our current miss ratio is less than target, then we are good and
     // can even take dram from this process if needed; if current miss
@@ -1139,122 +1152,52 @@ void *pebs_policy_thread()
         continue;
       }
 
-      if (process->target_miss_ratio >= process->current_miss_ratio) {
-        // this process does not need more dram
-        tmp = process;
-        process = process->next;
-        pthread_mutex_unlock(&(tmp->process_lock));
-        continue;
-      } else {
-        // process needs more DRAM
-        slack = process->current_miss_ratio / process->target_miss_ratio;
-        if (slack >= 2.0) {
-          // we are more than 100% off our target, give process a large chunk
-          // of DRAM (1 GB)
-          requested_dram = migrate_rate;
-        } else {
-          // process is kind of close to its target miss ratio, so give it
-          // a smaller chunk of DRAM
-          requested_dram = (migrate_rate * (slack - 1));
-          requested_dram -= (requested_dram % PAGE_SIZE);
+      ratio = process->current_miss_ratio / process->target_miss_ratio;
+
+      if (ratio > 1) {
+        need_fastmem[num_need_memory] = process;
+        num_need_memory++;
+        memshare_need += (ratio);
+      } else if (ratio < 1) {
+        take_fastmem[num_take_memory] = process;
+        num_take_memory++;
+        tmp_ratio = ((process->target_miss_ratio / process->current_miss_ratio));
+        if (tmp_ratio > PEBS_MIGRATE_RATE) {
+          tmp_ratio = PEBS_MIGRATE_RATE;
         }
-        assert(requested_dram % PAGE_SIZE == 0);
-        remaining_dram = requested_dram;
-
-        // check dram free list first
-        if (dram_free_list.numentries > 0) {
-          dram_taking = (remaining_dram <= dram_free_list.numentries * PAGE_SIZE) ?
-                                remaining_dram :
-                                dram_free_list.numentries * PAGE_SIZE;
-          remaining_dram -= dram_taking;
-        }
-
-        // find a lower priority process to take DRAM from
-        if (remaining_dram > 0) {
-          num_victims = find_victim_processes_higher(process);
-          if (num_victims != 0) {
-            dram_portion = remaining_dram / num_victims;
-            dram_portion -= (dram_portion % PAGE_SIZE);
-
-            gettimeofday(&now, NULL);
-            LOG("%f\tpolicy thread found %d higher miss ratio process to take %ld DRAM each\n", elapsed(&startup, &now), num_victims, dram_portion);
-
-            for (i = 0; i < num_victims; i++) {
-              tmp = victim_list[i];
-              pthread_mutex_lock(&(tmp->process_lock));
-              dram_taking = (dram_portion <= tmp->allowed_dram) ? 
-                                    dram_portion : 
-                                    tmp->allowed_dram;
-              tmp->allowed_dram -= dram_taking;
-              remaining_dram -= dram_taking;
-              gettimeofday(&now, NULL);
-              LOG("%f\tpolicy thread found higher miss ratio process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
-
-              pthread_mutex_unlock(&(tmp->process_lock));
-            }
-          }
-        }
-
-        // if we still need dram, try to find higher priority process to take form
-        if (remaining_dram > 0) {
-          num_victims = find_victim_processes_lower(process);
-          if (num_victims != 0) {
-            dram_portion = remaining_dram / num_victims;
-            dram_portion -= (dram_portion % PAGE_SIZE);
-
-            gettimeofday(&now, NULL);
-            LOG("%f\tpolicy thread found %d lower miss ratio process to take %ld DRAM each\n", elapsed(&startup, &now), num_victims, dram_portion);
-
-            for (i = 0; i < num_victims; i++) {
-              tmp = victim_list[i];
-              pthread_mutex_lock(&(tmp->process_lock));
-              dram_taking = (dram_portion <= tmp->allowed_dram) ?
-                                    dram_portion :
-                                    tmp->allowed_dram;
-              tmp->allowed_dram -= dram_taking;
-              remaining_dram -= dram_taking;
-              gettimeofday(&now, NULL);
-              LOG("%f\tpolicy thread found lower miss ratio process %d to take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
-
-              pthread_mutex_unlock(&(tmp->process_lock));
-            }
-          }
-        }
-
-        // we still need DRAM, forcibly take from a lower priority process
-        if (remaining_dram > 0) {
-          num_victims = find_victim_processes_forced(process);
-          if (num_victims != 0) {
-            dram_portion = remaining_dram / num_victims;
-            dram_portion -= (dram_portion & PAGE_SIZE);
-
-            gettimeofday(&now, NULL);
-            LOG("%f\tpolicy thread found %d higher miss ratio process to forcibly take %ld DRAM each\n", elapsed(&startup, &now), num_victims, dram_portion);
-
-            for (i = 0; i < num_victims; i++) {
-              tmp = victim_list[i];
-              pthread_mutex_lock(&(tmp->process_lock));
-              dram_taking = (dram_portion <= tmp->allowed_dram) ?
-                                    dram_portion :
-                                    tmp->allowed_dram;
-              tmp->allowed_dram -= dram_taking;
-              remaining_dram -= dram_taking;
-              gettimeofday(&now, NULL);
-              LOG("%f\tpolicy thread found higher miss ratio process process %d to forcibly take %ld DRAM from [still has %ld DRAM]\n", elapsed(&startup, &now), tmp->pid, dram_taking, tmp->allowed_dram);
-
-              pthread_mutex_unlock(&(tmp->process_lock));
-            }
-          }
-        }
-
-        process->allowed_dram += (requested_dram - remaining_dram);
-        if (process->allowed_dram > DRAMSIZE) {
-          process->allowed_dram = DRAMSIZE;
-        }
+        memshare_take += tmp_ratio;
       }
+
       tmp = process;
       process = process->next;
       pthread_mutex_unlock(&(tmp->process_lock));
+    }
+
+    LOG("ratio of memory needed %.4f\tratio of memory taking %.4f\n", memshare_need, memshare_take);
+
+    for (i = 0; i < num_need_memory; i++) {
+      process = need_fastmem[i];
+      pthread_mutex_lock(&(process->process_lock));
+      dram_delta = ((((process->current_miss_ratio / process->target_miss_ratio)) / memshare_need)) * PEBS_MIGRATE_RATE;
+      dram_delta -= (dram_delta % PAGE_SIZE);
+      process->allowed_dram += dram_delta;
+      LOG("process %u allocated %lu more dram, now allowed %lu dram\n", process->pid, dram_delta, process->allowed_dram);
+      pthread_mutex_unlock(&(process->process_lock));
+    }
+    
+    for (i = 0; i < num_take_memory; i++) {
+      process = take_fastmem[i];
+      pthread_mutex_lock(&(process->process_lock));
+      tmp_ratio = ((process->target_miss_ratio / process->current_miss_ratio));
+      if (tmp_ratio > PEBS_MIGRATE_RATE) {
+        tmp_ratio = PEBS_MIGRATE_RATE;
+      }
+      dram_delta = ((tmp_ratio) / memshare_take) * PEBS_MIGRATE_RATE;
+      dram_delta -= (dram_delta % PAGE_SIZE);
+      process->allowed_dram -= dram_delta;
+      assert(process->allowed_dram >= 0);
+      LOG("process %u allocated %lu less dram, now allowed %lu dram\n", process->pid, dram_delta, process->allowed_dram);
+      pthread_mutex_unlock(&(process->process_lock));
     }
 
     // make room on DRAM for by migrating down pages for each process
@@ -1265,20 +1208,15 @@ void *pebs_policy_thread()
       if (process->allowed_dram > process->current_dram) {
         // process can have more DRAM, so it can migrate things up if it can
         process->migrate_up_bytes = process->allowed_dram - process->current_dram;
-        if (process->migrate_up_bytes > migrate_rate) {
-          process->migrate_up_bytes = migrate_rate;
-        }
         process->migrate_down_bytes = 0;
       } else if (process->allowed_dram < process->current_dram) {
         // process has too much dram, so it needs to migrate things down
         process->migrate_up_bytes = 0;
         process->migrate_down_bytes = process->current_dram - process->allowed_dram;
-        if (process->migrate_down_bytes > migrate_rate) {
-          process->migrate_down_bytes = migrate_rate;
-        }
       } else {
         slack = process->target_miss_ratio / process->current_miss_ratio;
         if (slack > 2.0) {
+          // process is doing just fine, doesn't need to migrate anything
           process->migrate_up_bytes = 0;
           process->migrate_down_bytes = 0;
         } else {
@@ -1320,10 +1258,11 @@ void *pebs_policy_thread()
               migrate_down_bytes += pages_from_cur_dram * PAGE_SIZE;
             }
           }
-          process->migrate_down_bytes = migrate_down_bytes;
-          if (process->migrate_down_bytes > migrate_rate) {
-            process->migrate_down_bytes = migrate_rate;
+          
+          if (migrate_down_bytes > (PEBS_MIGRATE_RATE / processes_list.numentries)) {
+            migrate_down_bytes = PEBS_MIGRATE_RATE / processes_list.numentries;
           }
+          process->migrate_down_bytes = migrate_down_bytes;
           process->migrate_up_bytes = process->migrate_down_bytes;
         }
       }
@@ -1619,7 +1558,8 @@ void count_pages()
   struct timeval now;
   int i;
   gettimeofday(&now, NULL);
-  process = peek_process(&processes_list);
+  //process = peek_process(&processes_list);
+  process = processes_list.first;
   while (process != NULL) {
     //pthread_mutex_lock(&(process->process_lock));
 #ifdef HEMEM_QOS
