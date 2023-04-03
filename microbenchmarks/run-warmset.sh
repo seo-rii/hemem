@@ -11,7 +11,7 @@ for i in `seq 31 38`; do
   warmset=$((i))
   echo "=== $warmset ==="
   echo "=== $warmset ===" >> warmset-results.txt
-  numactl -N0 -m0 -- ./gups-warmset 16 1000000000 $workset 8 $warmset 0 /tmp/warmsweep.$i.txt >> warmset-results.txt
+  numactl -N0 -m0 -- env LD_PRELOAD=/home/amanda/hemem/src/libhemem.so ./gups-warmset 16 1000000000 $workset 8 $warmset 0 /tmp/warmsweep.$i.txt >> warmset-results.txt
   kill -9 ${central_pid}
   sleep 5
 done

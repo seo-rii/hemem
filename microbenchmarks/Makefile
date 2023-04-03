@@ -20,7 +20,7 @@ gups: gups.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups gups.o zipf.o ../src/timer.o $(LIBS)
 
 gups-warmset: gups-warmset.o
-	$(CC) $(CFLAGS) $(INCLUDES) -o gups-warmset gups-warmset.o zipf.o ../src/timer.o $(LIBS) #-L$(HEMEMDIR) -lhemem
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-warmset gups-warmset.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem
 
 gups-hotset-only: gups-hotset-only.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups-hotset-only gups-hotset-only.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem
