@@ -59,6 +59,7 @@ struct hemem_process {
   uint64_t migrate_up_bytes, migrate_down_bytes;
   uint64_t migrations_up, migrations_down;
 #endif
+  volatile uint64_t mem_allocated;
   volatile uint64_t current_dram;
   volatile uint64_t current_nvm;
   volatile uint64_t allowed_dram;

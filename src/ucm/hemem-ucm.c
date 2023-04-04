@@ -544,6 +544,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     page_boundry += pagesize;
 
     mem_allocated += pagesize;
+    process->mem_allocated += pagesize;
     pages_allocated++;
   } 
   
@@ -585,6 +586,7 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
       remove_page(process, page);
       pebs_remove_page(process, page);
       mem_allocated -= pagesize;
+      process->mem_allocated -= pagesize;
       pages_freed += 1;
       page_boundry += pagesize;
     } else {
@@ -932,7 +934,7 @@ void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
   ret = ioctl(page->uffd, UFFDIO_WRITEPROTECT, &wp);
 
   if (ret < 0 && !page->in_free_ring) {
-    if (ret == -EBADF || ret == -ENOENT) {
+    if (ret == EBADF || ret == ENOENT) {
       if (!(uffds[page->uffd]->exited)) {
         perror("uffdio writeprotect");
         assert(0);
@@ -1072,6 +1074,7 @@ void handle_missing_fault(struct hemem_process *process,
   page->migrations_up = page->migrations_down = 0;
 
   mem_allocated += pagesize;
+  process->mem_allocated += pagesize;
 
   // place in hemem's page tracking list
   add_page(process, page);

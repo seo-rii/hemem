@@ -1086,10 +1086,15 @@ void *pebs_policy_thread()
   int num_need_memory;
   int num_take_memory;
   uint64_t dram_delta;
+  uint64_t total_dram;
+  uint64_t dram_share;
   double memshare_need;
   double memshare_take;
   double tmp_ratio;
   double ratio;
+  uint64_t interprocess_migrate = PEBS_MIGRATE_RATE / 2;
+  uint64_t intraprocess_migrate = PEBS_MIGRATE_RATE / 2;
+  uint64_t migrate_share;
 #endif
 
   thread = pthread_self();
@@ -1104,6 +1109,11 @@ void *pebs_policy_thread()
   for (;;) {
    gettimeofday(&start, NULL);
 #ifdef HEMEM_QOS
+    num_need_memory = 0;
+    num_take_memory = 0;
+    memshare_need = 0;
+    memshare_take = 0;
+
     // go through once to handle ring requests and calculate current miss ratios 
     process = peek_process(&processes_list);
     while (process != NULL) {
@@ -1125,25 +1135,12 @@ void *pebs_policy_thread()
         // shouldn't try to manage it for now 
         process->current_miss_ratio = -1.0;
       }
-
-      tmp = process;
-      process = process->next;
-      pthread_mutex_unlock(&(tmp->process_lock));
-    }
-
-    num_need_memory = 0;
-    num_take_memory = 0;
-    memshare_need = 0;
-    memshare_take = 0;
-
-    // figure out how much dram we need to reallocate based on ratio diffs
-    // if our current miss ratio is less than target, then we are good and
-    // can even take dram from this process if needed; if current miss
-    // ratio is larger than the target, this process needs more dram
-    process = peek_process(&processes_list);
-    while (process != NULL) {
-      pthread_mutex_lock(&(process->process_lock));
-
+    
+      // figure out how much dram we need to reallocate based on ratio diffsj
+      // if our current miss ratio is less than target, then we are good and
+      // can even take dram from this process if needed; if current miss
+      // ratio is larger than the target, this process needs more dram
+      
       if (process->current_miss_ratio == -1.0) {
         // skip this process -- we don't have current access information for it
         tmp = process;
@@ -1152,18 +1149,25 @@ void *pebs_policy_thread()
         continue;
       }
 
+      // how are we doing on our miss ratio vs target?
       ratio = process->current_miss_ratio / process->target_miss_ratio;
 
       if (ratio > 1) {
+        // not meeting target, give more dram
         need_fastmem[num_need_memory] = process;
         num_need_memory++;
-        memshare_need += (ratio);
+        tmp_ratio = ratio;
+        if (tmp_ratio > interprocess_migrate) {
+          tmp_ratio = interprocess_migrate;
+        }
+        memshare_need += tmp_ratio;
       } else if (ratio < 1) {
+        // below target, can take dram
         take_fastmem[num_take_memory] = process;
         num_take_memory++;
         tmp_ratio = ((process->target_miss_ratio / process->current_miss_ratio));
-        if (tmp_ratio > PEBS_MIGRATE_RATE) {
-          tmp_ratio = PEBS_MIGRATE_RATE;
+        if (tmp_ratio > interprocess_migrate) {
+          tmp_ratio = interprocess_migrate;
         }
         memshare_take += tmp_ratio;
       }
@@ -1173,32 +1177,68 @@ void *pebs_policy_thread()
       pthread_mutex_unlock(&(tmp->process_lock));
     }
 
-    LOG("ratio of memory needed %.4f\tratio of memory taking %.4f\n", memshare_need, memshare_take);
 
+    LOG("ratio of memory needed %.4f\tratio of memory taking %.4f\n", memshare_need, memshare_take);
+    //assert(memshare_need == memshare_take);
+
+    total_dram = 0;
+
+    // give share of migration bandwidth to processes that need more dram
     for (i = 0; i < num_need_memory; i++) {
       process = need_fastmem[i];
       pthread_mutex_lock(&(process->process_lock));
-      dram_delta = ((((process->current_miss_ratio / process->target_miss_ratio)) / memshare_need)) * PEBS_MIGRATE_RATE;
+      tmp_ratio = ((process->current_miss_ratio / process->target_miss_ratio));
+      if (tmp_ratio > interprocess_migrate) {
+        tmp_ratio = interprocess_migrate;
+      }
+      dram_delta = (tmp_ratio / memshare_need) * interprocess_migrate;
       dram_delta -= (dram_delta % PAGE_SIZE);
+      assert(dram_delta <= DRAMSIZE);
       process->allowed_dram += dram_delta;
+      total_dram += process->allowed_dram;
       LOG("process %u allocated %lu more dram, now allowed %lu dram\n", process->pid, dram_delta, process->allowed_dram);
       pthread_mutex_unlock(&(process->process_lock));
     }
     
+    // give share of migration bandwidth to processes that are giving up dram
     for (i = 0; i < num_take_memory; i++) {
       process = take_fastmem[i];
       pthread_mutex_lock(&(process->process_lock));
       tmp_ratio = ((process->target_miss_ratio / process->current_miss_ratio));
-      if (tmp_ratio > PEBS_MIGRATE_RATE) {
-        tmp_ratio = PEBS_MIGRATE_RATE;
+      if (tmp_ratio > interprocess_migrate) {
+        tmp_ratio = interprocess_migrate;
       }
-      dram_delta = ((tmp_ratio) / memshare_take) * PEBS_MIGRATE_RATE;
+      dram_delta = (tmp_ratio / memshare_take) * interprocess_migrate;
       dram_delta -= (dram_delta % PAGE_SIZE);
       process->allowed_dram -= dram_delta;
       assert(process->allowed_dram >= 0);
+      total_dram += process->allowed_dram;
       LOG("process %u allocated %lu less dram, now allowed %lu dram\n", process->pid, dram_delta, process->allowed_dram);
       pthread_mutex_unlock(&(process->process_lock));
     }
+
+    //assert(total_dram <= DRAMSIZE);
+
+    // give leftover dram to all processes in equal chunks
+    if (total_dram < DRAMSIZE) {
+      dram_share = (DRAMSIZE - total_dram) / ((processes_list.numentries > 0) ? processes_list.numentries : 1);
+      dram_share -= (dram_share % PAGE_SIZE);
+
+      process = peek_process(&processes_list);
+      while (process != NULL) {
+        pthread_mutex_lock(&(process->process_lock));
+        process->allowed_dram += dram_share;
+        if (process->allowed_dram > process->mem_allocated) {
+          process->allowed_dram = process->mem_allocated;
+        }
+        LOG("process %u allocated share of %lu extra dram, now allowed %lu dram\n", process->pid, dram_share, process->allowed_dram);
+        tmp = process;
+        process = process->next;
+        pthread_mutex_unlock(&(tmp->process_lock));
+      }
+    }
+
+    migrate_share = intraprocess_migrate / ((processes_list.numentries > 0) ? processes_list.numentries : 1);
 
     // make room on DRAM for by migrating down pages for each process
     process = peek_process(&processes_list);
@@ -1209,10 +1249,12 @@ void *pebs_policy_thread()
         // process can have more DRAM, so it can migrate things up if it can
         process->migrate_up_bytes = process->allowed_dram - process->current_dram;
         process->migrate_down_bytes = 0;
+        LOG("process %u migrating %lu bytes down and %lu bytes up\n", process->pid, process->migrate_up_bytes, process->migrate_down_bytes);
       } else if (process->allowed_dram < process->current_dram) {
         // process has too much dram, so it needs to migrate things down
         process->migrate_up_bytes = 0;
         process->migrate_down_bytes = process->current_dram - process->allowed_dram;
+        LOG("process %u migrating %lu bytes down and %lu bytes up\n", process->pid, process->migrate_up_bytes, process->migrate_down_bytes);
       } else {
         slack = process->target_miss_ratio / process->current_miss_ratio;
         if (slack > 2.0) {
@@ -1224,7 +1266,7 @@ void *pebs_policy_thread()
           // to free dram for the hot NVM pages. 
 
           // get number of pages that are in a hotter nvm list than a dram list 
-          // do we need a better way to do this with the hot lists? 
+          // do we need a better way to do this with the hot lists?
         
           // for each hotness in NVM we ask: how many pages of DRAM are we allowed to replace?
           for (i = 0; i < NUM_HOTNESS_LEVELS; i++) {
@@ -1259,11 +1301,12 @@ void *pebs_policy_thread()
             }
           }
           
-          if (migrate_down_bytes > (PEBS_MIGRATE_RATE / processes_list.numentries)) {
-            migrate_down_bytes = PEBS_MIGRATE_RATE / processes_list.numentries;
+          if (migrate_down_bytes > migrate_share) {
+            migrate_down_bytes = migrate_share;
           }
           process->migrate_down_bytes = migrate_down_bytes;
           process->migrate_up_bytes = process->migrate_down_bytes;
+          LOG("process %u migrating %lu bytes down and %lu bytes up\n", process->pid, process->migrate_up_bytes, process->migrate_down_bytes);
         }
       }
 
