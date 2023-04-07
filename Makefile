@@ -5,6 +5,28 @@
 
 default: all
 
+# <--------------------------- SETUP NVM COMMANDS --------------------------->
+# NOTE: Reboot is required along with setting appropriate BIOS options
+
+setup_mm:
+	sudo ipmctl create -goal MemoryMode=100
+
+setup_hemem_numa_preboot:
+	sudo ipmctl create -goal PersistentMemoryType=AppDirect
+
+setup_numa_postboot:
+	sudo ndctl destroy-namespace all --force
+	numactl -H
+	sudo ndctl create-namespace --mode=devdax --map=mem -c
+	daxctl list
+	sudo daxctl reconfigure-device dax1.0 --mode=system-ram -f
+	numactl -H
+
+setup_hemem_postboot:
+	sudo ndctl create-namespace -f -e namespace0.0 --mode=devdax --align 2M
+	sudo ndctl create-namespace --region=1 --mode=devdax
+	ndctl list
+
 # <----------------------------- BUILD COMMANDS -----------------------------> 
 
 RES ?= ./results
