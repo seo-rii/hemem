@@ -201,6 +201,21 @@ run_bg_hw_tier: all
 	$(MAKE) run_bt APP_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
 	wait;
 
+run_znuma_tier: all
+	echo "1" > /proc/sys/kernel/numa_balancing;
+	PREFIX=bg_znuma_tier; \
+	NUMA_CMD="numactl -N 0 -m 0,2"; \
+	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	$(MAKE) run_flexkvs NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_Isolated; \
+	$(MAKE) run_flexkvs NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gups & \
+	$(MAKE) run_gups NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GUPS_SIZE} PREFIX=$${PREFIX}; \
+	wait; \
+	$(MAKE) run_gapbs NUMA_CMD="$${NUMA_CMD}" PRELOAD="" APP_SIZE=${GAPBS_SIZE} GAPBS_TRIALS=$$((${GAPBS_TRIALS} * 3)) PREFIX=$${PREFIX} & \
+	$(MAKE) run_flexkvs NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gapbs; \
+	wait; \
+	$(MAKE) run_flexkvs NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_bt & \
+	$(MAKE) run_bt NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
+	wait;
 
 # FlexKV occupies first half of DRAM/NVM, and other app the other half
 run_bg_sw_tier: all
@@ -380,12 +395,7 @@ run_eval_dynamic_hw: all
 	pkill kvsbench; \
 	pkill flexkvs;
 
-#BG_PREFIXES = "bg_dram_base,bg_hw_tier,bg_mini_hemem,bg_hemem,bg_test_hemem"
-#BG_APPS = "Isolated,gups,gapbs,bt"
-#extract_bg: all
-#	python extract_script.py ${BG_PREFIXES} ${BG_APPS} ${RES}
-
-BG_PREFIXES = "bg_hw_tier"
+BG_PREFIXES = "bg_dram_base,bg_hw_tier,bg_znuma_tier,bg_mini_hemem,bg_hemem,bg_test_hemem"
 BG_APPS = "Isolated,gups,gapbs,bt"
 extract_bg: all
 	python extract_script.py ${BG_PREFIXES} ${BG_APPS} ${RES}
