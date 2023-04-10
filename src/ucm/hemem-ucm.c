@@ -546,7 +546,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     mem_allocated += pagesize;
     process->mem_allocated += pagesize;
     pages_allocated++;
-  } 
+  }
   
   response->header.msg_size = sizeof(struct alloc_response) + response->num_pages * sizeof(struct hemem_page_app);
   response->header.status = SUCCESS;
@@ -1078,6 +1078,7 @@ void handle_missing_fault(struct hemem_process *process,
 
   // place in hemem's page tracking list
   add_page(process, page);
+
 
   missing_faults_handled++;
   pages_allocated++;
