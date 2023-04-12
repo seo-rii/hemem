@@ -144,7 +144,7 @@ RUN_PERF = ${NUMA_CMD_CLIENT} ./run_perf.sh & PERF_CMD=$$!;
 KILL_PERF = kill $${PERF_CMD}; pkill perf; sleep 5;
 
 FLEXKV_NICE ?= nice -20
-FLEXKV_S_WAIT   ?= 120	
+FLEXKV_S_WAIT   ?= 180	
 FLEXKV_WARMUP   ?= 150	
 FLEXKV_RUNTIME  ?= 450
 FLEXKV_HOT_FRAC ?= 0.25
@@ -213,7 +213,7 @@ run_bg_dram_base: all
 	$(MAKE) run_flexkvs BASE_NODE=$${BASE_NODE} PRELOAD="" \
 		FLEXKV_SIZE=$${APP_SIZE} PREFIX=$${PREFIX}_bt & \
 	$(MAKE) run_bt BASE_NODE=$${BASE_NODE} PRELOAD=""\
-		APP_SIZE=D PREFIX=$${PREFIX}; \
+		BT_SIZE=D PREFIX=$${PREFIX}; \
 	wait;\
 	pkill flexkvs;
 
@@ -232,29 +232,32 @@ run_bg_hw_tier: all
 	wait; \
 	pkill flexkvs;\
 	$(MAKE) run_flexkvs FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_bt & \
-	$(MAKE) run_bt APP_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
+	$(MAKE) run_bt BT_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
 	wait;\
 	pkill flexkvs;
 
 run_znuma_tier: all
-	echo "1" > /proc/sys/kernel/numa_balancing;
+	echo "1" > /proc/sys/kernel/numa_balancing;\
 	PREFIX=bg_znuma_tier; \
-	NUMA_CMD="numactl -N 0 -m 0,2"; \
+	BASE_NODE=1;\
+	NUMA_CMD="numactl -N 1 -m 1,3"; \
 	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
-	$(MAKE) run_flexkvs NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_Isolated; \
-	pkill flexkvs;\
-	$(MAKE) run_flexkvs NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gups & \
-	$(MAKE) run_gups NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GUPS_SIZE} PREFIX=$${PREFIX}; \
-	wait; \
-	pkill flexkvs;\
-	$(MAKE) run_gapbs NUMA_CMD="$${NUMA_CMD}" PRELOAD="" APP_SIZE=${GAPBS_SIZE} GAPBS_TRIALS=$$((${GAPBS_TRIALS} * 3)) PREFIX=$${PREFIX} & \
-	$(MAKE) run_flexkvs NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gapbs; \
-	wait; \
-	pkill flexkvs;\
-	$(MAKE) run_flexkvs NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_bt & \
-	$(MAKE) run_bt NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
+	$(MAKE) run_flexkvs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_Isolated; \
 	wait;\
-	pkill flexkvs;
+	pkill flexkvs;\
+	$(MAKE) run_flexkvs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gups & \
+	$(MAKE) run_gups BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GUPS_SIZE} PRELOAD="" PREFIX=$${PREFIX}; \
+	wait; \
+	pkill flexkvs;\
+	$(MAKE) run_flexkvs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gapbs & \
+	$(MAKE) run_gapbs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GAPBS_SIZE} PRELOAD="" GAPBS_TRIALS=$$((${GAPBS_TRIALS} * 3)) PREFIX=$${PREFIX}; \
+	wait; \
+	pkill flexkvs;\
+	$(MAKE) run_flexkvs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_bt & \
+	$(MAKE) run_bt BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" BT_SIZE=${BT_SIZE} PPRELOAD="" REFIX=$${PREFIX}; \
+	wait;\
+	pkill flexkvs;\
+	echo "0" > /proc/sys/kernel/numa_balancing;
 
 # FlexKV occupies first half of DRAM/NVM, and other app the other half
 run_bg_sw_tier: all
@@ -284,7 +287,7 @@ run_bg_sw_tier: all
 		NVMOFFSET=0 DRAMOFFSET=0 FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
 	$(MAKE) run_bt NVMSIZE=$${NVMSIZE} DRAMSIZE=$${DRAMSIZE} PRELOAD="${HEMEM_PRELOAD}" \
 		NVMOFFSET=$${NVMSIZE} DRAMOFFSET=$${DRAMSIZE} \
-		APP_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
+		BT_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
 	wait;\
 	pkill flexkvs;
 
@@ -313,7 +316,7 @@ run_test_bg_sw_tier: all
 	$(MAKE) run_flexkvs NVMSIZE=$${NVMSIZE} NVMOFFSET=0 PRELOAD="${HEMEM_PRELOAD}" \
 		FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
 	$(MAKE) run_bt NVMSIZE=$${NVMSIZE} DRAMSIZE=0 NVMOFFSET=$${NVMSIZE} DRAMOFFSET=$${DRAMSIZE} \
-		PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
+		PRELOAD="${HEMEM_PRELOAD}" BT_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
 	wait; \
 	pkill flexkvs;
 
@@ -345,7 +348,7 @@ run_bg_mini_sw_tier: all
 		PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
 	$(MAKE) run_bt NVMSIZE=$${NVMSIZE} DRAMSIZE=$${DRAMSIZE} \
 		NVMOFFSET=$${NVMSIZE} DRAMOFFSET=$${DRAMSIZE} \
-		PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
+		PRELOAD="${HEMEM_PRELOAD}" BT_SIZE=${BT_SIZE} PREFIX=$${PREFIX}; \
 	wait; \
 	pkill flexkvs;
 
@@ -373,7 +376,7 @@ run_eval_apps: all
 	${RUN_MGR} \
 	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
 	FLEX_PID=$$!; \
-	$(MAKE) run_bt PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${BT_SIZE} PREFIX=$${PREFIX} & \
+	$(MAKE) run_bt PRELOAD="${HEMEM_PRELOAD}" BT_SIZE=${BT_SIZE} PREFIX=$${PREFIX} & \
 	wait $${FLEX_PID}; \
 	${KILL_MGR} \
 	${KILL_PERF}
