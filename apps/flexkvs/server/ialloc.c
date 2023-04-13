@@ -86,11 +86,12 @@ void ialloc_init(void)
         mem_base_phys = id.base;
     }
 #else
-    //if ((seg_base = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_POPULATE,
+    if ((seg_base = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_POPULATE,
+                    -1, 0)) == MAP_FAILED)
     //if ((seg_base = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
     //                -1, 0)) == MAP_FAILED)
-    if ((seg_base = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
-                    -1, 0)) == MAP_FAILED)
+    //if ((seg_base = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS,
+    //                -1, 0)) == MAP_FAILED)
     {
         perror("mmap() of segments base failed");
         abort();

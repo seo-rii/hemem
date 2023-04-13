@@ -6,7 +6,7 @@ CFLAGS = -g3 -Wall -O2
 INCLUDES = -I../linux/usr/include
 LIBS = -lm -lpthread
 
-default: gups-pebs gups-warmset#gups-random gups-hotset-move
+default: gups-pebs gups-warmset gups gups-warmset-znuma #gups-random gups-hotset-move
 
 all: gups-pebs gups-random gups-simple gups-lru gups-lru-swap gups-hotset-move gups-hotset-only test #gups
 
@@ -18,6 +18,9 @@ gups-small: gups-small.o
 
 gups: gups.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups gups.o zipf.o ../src/timer.o $(LIBS)
+
+gups-warmset-znuma: gups-warmset.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-warmset-znuma gups-warmset.o zipf.o ../src/timer.o $(LIBS)
 
 gups-warmset: gups-warmset.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups-warmset gups-warmset.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem
@@ -62,4 +65,4 @@ test.o: test.c zipf.c  gups.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c test.c zipf.c
 
 clean:
-	$(RM) *.o gups gups-hotset-move gups-lru-swap gups-lru gups-simple gups-random gups-pebs
+	$(RM) *.o gups gups-hotset-move gups-lru-swap gups-lru gups-simple gups-random gups-pebs gups-warmset gups-warmset-znuma

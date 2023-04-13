@@ -15,6 +15,7 @@ microbenchmarks/gups-lru-swap
 microbenchmarks/gups-random
 microbenchmarks/gups-hotset-move
 microbenchmarks/gups-warmset
+microbenchmarks/gups-warmset-znuma
 memsim/mmgr_simple
 memsim/mmgr_linux
 memsim/mmgr_simple_mmm

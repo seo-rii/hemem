@@ -144,7 +144,7 @@ RUN_PERF = ${NUMA_CMD_CLIENT} ./run_perf.sh & PERF_CMD=$$!;
 KILL_PERF = kill $${PERF_CMD}; pkill perf; sleep 5;
 
 FLEXKV_NICE ?= nice -20
-FLEXKV_S_WAIT   ?= 180	
+FLEXKV_S_WAIT   ?= 240	
 FLEXKV_WARMUP   ?= 150	
 FLEXKV_RUNTIME  ?= 450
 FLEXKV_HOT_FRAC ?= 0.25
