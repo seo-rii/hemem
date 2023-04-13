@@ -708,7 +708,7 @@ void handle_ring_requests()
 struct hemem_page* find_candidate_nvm_page() {
   struct hemem_page* p;
 
-  for(int i = NUM_HOTNESS_LEVELS-1; i > 0; i--) {
+  for(int i = NUM_HOTNESS_LEVELS-1; i > 1; i--) {
     p = dequeue_page(&(nvm_lists[i]));
 
     if (p != NULL) {

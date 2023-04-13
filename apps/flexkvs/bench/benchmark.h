@@ -31,6 +31,7 @@
 enum key_dist {
     DIST_UNIFORM,
     DIST_ZIPF,
+    DIST_HOT,
 };
 
 struct settings {
@@ -45,6 +46,9 @@ struct settings {
         struct {
             double s;
         } zipf;
+        struct {
+            double keys;
+        } hot;
     } keydistparams;
     double get_prob;
     enum key_dist keydist;
@@ -59,7 +63,10 @@ struct settings {
 
     uint8_t batchsize;
 
+    uint64_t target_size;
     bool keybased;
+
+    bool skip_load;
 };
 
 struct key {
@@ -117,3 +124,4 @@ void workload_adjust(struct workload *wl, struct workload *wl2);
 void workload_core_init(struct workload *wl, struct workload_core *wc);
 void workload_op(struct workload *wl, struct workload_core *wc, struct key **k,
         enum workload_op *op);
+

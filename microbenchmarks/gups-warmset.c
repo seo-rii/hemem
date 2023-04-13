@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <sched.h>
 
 #include "../src/ucm/timer.h"
 //#include "../src/hemem.h"
@@ -55,6 +56,7 @@ extern double hotset_fraction;
 #define IGNORE_STRAGGLERS
 
 int threads;
+int start_cpu = 8;
 
 uint64_t hot_start = 0;
 uint64_t hotsize = 0;
@@ -116,27 +118,6 @@ char *filename = "indices1.txt";
 
 FILE *hotsetfile = NULL;
 
-bool hotset_only = false;
-
-static void *prefill_hotset(void* arguments)
-{
-  struct gups_args *args = (struct gups_args*)arguments;
-  uint64_t *field = (uint64_t*)(args->field);
-  uint64_t i;
-  uint64_t index1;
-
-  index1 = 0;
-
-  for (i = 0; i < args->hotsize; i++) {
-    index1 = i;
-    uint64_t  tmp = field[index1];
-    tmp = tmp + i;
-    field[index1] = tmp;
-  }
-  return 0;
-  
-}
-
 volatile bool done_gups = false;
 unsigned completed_gups[MAX_THREADS] = {0};
 
@@ -149,7 +130,19 @@ static void *do_gups(void *arguments)
   uint64_t index1, index2;
   uint64_t lfsr;
   uint64_t iters = args->iters;
+  
+  cpu_set_t cpuset;
+  pthread_t thread;
 
+  thread = pthread_self();
+  CPU_ZERO(&cpuset);
+  CPU_SET(start_cpu + args->tid, &cpuset);
+  int s = pthread_setaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
+  if (s != 0) {
+    perror("pthread_setaffinity_np");
+    assert(0);
+  }
+  
   srand(args->tid);
   lfsr = rand();
 
@@ -215,6 +208,7 @@ int main(int argc, char **argv)
   pthread_t t[MAX_THREADS];
   char *log_filename;
   bool wait_for_signal = false;
+  char *start_cpu_str;
 
   // Stop waiting on receiving signal
   signal(SIGUSR1, signal_handler);
@@ -232,6 +226,11 @@ int main(int argc, char **argv)
   }
 
   gettimeofday(&starttime, NULL);
+
+  start_cpu_str = getenv("START_CPU");
+  if (start_cpu_str != NULL) {
+    start_cpu = atoi(start_cpu_str);
+  }
 
   threads = atoi(argv[1]);
   assert(threads <= MAX_THREADS);
@@ -304,18 +303,6 @@ int main(int argc, char **argv)
     ga[i]->elt_size = elt_size;
     ga[i]->hot_start = 0;        // hot set at start of thread's region
     ga[i]->hotsize = hotsize;
-  }
-
-  if (hotset_only) {
-    for (i = 0; i < threads; i++) {
-      int r = pthread_create(&t[i], NULL, prefill_hotset, (void*)ga[i]);
-      assert(r == 0);
-    }
-    // wait for worker threads
-    for (i = 0; i < threads; i++) {
-      int r = pthread_join(t[i], NULL);
-      assert(r == 0);
-    }
   }
 
   if(updates != 0) {

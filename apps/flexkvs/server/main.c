@@ -32,12 +32,13 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <sys/un.h>
+#include <signal.h>
 
 #include <protocol_binary.h>
 
 #include "iokvs.h"
-#include "../../common/socket_shim.h"
-#include <utils.h>
+#include "socket_shim.h"
+#include "utils.h"
 
 #ifndef BATCH_MAX
 #define BATCH_MAX 1
@@ -72,14 +73,14 @@ extern void hemem_print_stats();
 static int open_listening(ssctx_t sc, int cn)
 {
     int fd, ret;
-    //struct sockaddr_un sa;
-    struct sockaddr_in si;
+    struct sockaddr_un sa;
+    //struct sockaddr_in si;
     char buf[32];
 
     sprintf(buf, "kvs_sock%d", cn);
     fprintf(stderr, "open listening %d\n", cn);
-    if ((fd = ss_socket(sc, AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
-	//if ((fd = ss_socket(sc, AF_UNIX, SOCK_STREAM, 0)) < 0) {
+    //if ((fd = ss_socket(sc, AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
+	if ((fd = ss_socket(sc, AF_UNIX, SOCK_STREAM, 0)) < 0) {
         fprintf(stderr, "[%d] socket failed\n", cn);
         abort();
     }
@@ -96,15 +97,16 @@ static int open_listening(ssctx_t sc, int cn)
         abort();
     }
 
-    memset(&si, 0, sizeof(si));
+    //memset(&si, 0, sizeof(si));
     
-    //strncpy(sa.sun_path, buf, sizeof(sa.sun_path) - 1);
-    //sa.sun_family = AF_UNIX;
-    si.sin_family = AF_INET;
-    si.sin_port = htons(LISTEN_PORT);
+    strncpy(sa.sun_path, buf, sizeof(sa.sun_path) - 1);
+    sa.sun_family = AF_UNIX;
+    //si.sin_family = AF_INET;
+    //si.sin_port = htons(LISTEN_PORT);
 
     /* bind socket */
-    if ((ret = ss_bind(sc, fd, (struct sockaddr *) &si, sizeof(si))) < 0) {
+    //if ((ret = ss_bind(sc, fd, (struct sockaddr *) &si, sizeof(si))) < 0) {
+    if ((ret = ss_bind(sc, fd, (struct sockaddr *) &sa, sizeof(sa))) < 0) {
         fprintf(stderr, "[%d] bind failed: %d\n", cn, ret);
         perror("bind");
 	abort();
@@ -593,7 +595,7 @@ static void *processing_thread(void *data)
     int i, epfd, lfd, n;
     struct item_allocator ia;
     size_t total_reqs = 0, total_clean = 0;
-    static uint16_t qcounter;
+    static uint16_t qcounter = 0;
     uint16_t q;
     ssctx_t sc;
     ss_epev_t *evs;
@@ -614,7 +616,7 @@ static void *processing_thread(void *data)
     iallocs[q] = &ia;
     __sync_fetch_and_add(&n_ready, 1);
 
-    printf("Worker starting\n");
+    printf("[%d]: Worker starting\n", q);
 
     while (1) {
         if ((n = ss_epoll_wait(sc, epfd, evs, EPOLL_EVENTS, 1)) < 0) {
@@ -679,6 +681,8 @@ int main(int argc, char *argv[])
     unsigned num_threads, i;
     pthread_t *pts;
 
+    sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
+
     if (settings_init(argc, argv) != 0) {
       return EXIT_FAILURE;
     }
@@ -692,7 +696,7 @@ int main(int argc, char *argv[])
 #endif
 
     printf("initiating hash table\n");
-    hasht_init();
+    hasht_init(settings.hasht_size);
     printf("initiating ialloc\n");
     ialloc_init();
 
@@ -716,3 +720,4 @@ int main(int argc, char *argv[])
     }
     return 0;
 }
+

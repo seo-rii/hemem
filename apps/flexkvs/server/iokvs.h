@@ -43,6 +43,8 @@ struct settings {
     size_t segmaxnum;
     /** Size of seqment clean queue */
     size_t segcqsize;
+    /** Size of hashtable in bytes */
+    size_t hasht_size;
     /** Segment cleaning ratio */
     double clean_ratio;
     /** UDP port to listen on */
@@ -66,7 +68,7 @@ int settings_init(int argc, char *argv[]);
 /* Hash table operations */
 
 /** Initialize hash table. */
-void hasht_init(void);
+void hasht_init(size_t hasht_size);
 
 /** Prefetch hash table slot */
 void hasht_prefetch1(uint32_t hv);
@@ -238,7 +240,7 @@ static inline void item_ref(struct item *it)
 {
     uint16_t old;
     old = __sync_add_and_fetch(&it->refcount, 1);
-    assert(old != 1);
+    //assert(old != 1);
 }
 
 /**
@@ -282,3 +284,4 @@ static inline void myt_item_release(void *it)
 uint32_t jenkins_hash(const void *key, size_t length);
 
 #endif // ndef IOKVS_H_
+

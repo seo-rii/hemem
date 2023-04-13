@@ -44,6 +44,8 @@ void print_usage(void)
         "  -u, --key-uniform     Uniform key distribution  [default]\n"
         "  -z, --key-zipf=S      Zipf key distribution;\n"
         "                        S is the zipf parameter.\n"
+        "  -h, --key-hot=S       Hotset key distribution;\n"
+        "                        S is the fraction of keys that are hot.\n"
         "  -v, --val-size=BYTES  Value size in bytes       [default 1024].\n"
         "  -g, --get-prob=PROB   Probability of GET Reqs.  [default .9].\n"
         "  -T, --time=SECS       Measurement time in [s].  [default 10].\n"
@@ -52,7 +54,9 @@ void print_usage(void)
         "  -s, --key-seed=SEED   Seed for key PRG.\n"
         "  -o, --op-seed=SEED    Seed for operation PRG.\n"
         "  -r, --trace=FILE      Write operation trace to file.\n"
-        "  -K, --keysteer        Key-based steering.\n");
+        "  -S, --target-size     Target key memory usage. Causes key-num to be ignored [default 0]\n"
+        "  -K, --keysteer        Key-based steering.\n"
+        "  -l, --skip-load       Skip loading of keys.\n");
 }
 
 void init_settings(struct settings *s)
@@ -63,16 +67,18 @@ void init_settings(struct settings *s)
     s->keysize = 32;
     s->keynum = 1000;
     s->keydist = DIST_UNIFORM;
-    s->valuesize = 1024;
+    s->valuesize = 16 * 1024;
     s->get_prob = 0.9;
-    s->warmup_time = 5;
+    s->warmup_time = 120;
     s->cooldown_time = 5;
-    s->run_time = 10;
+    s->run_time = 600;
     s->request_gap = 100 * 1000;
     s->key_seed = 0x123457890123ULL;
     s->op_seed =  0x987654321098ULL;
+    s->target_size = 0;
     s->keybased = false;
     s->batchsize = 32;
+    s->skip_load = false;
 }
 
 int parse_settings(int argc, char *argv[], struct settings *s)
@@ -85,6 +91,7 @@ int parse_settings(int argc, char *argv[], struct settings *s)
             {"key-num",     required_argument, NULL, 'n'},
             {"key-uniform", no_argument,       NULL, 'u'},
             {"key-zipf",    required_argument, NULL, 'z'},
+            {"key-hot",     required_argument, NULL, 'h'},
             {"val-size",    required_argument, NULL, 'v'},
             {"get-prob",    required_argument, NULL, 'g'},
             {"time",        required_argument, NULL, 'T'},
@@ -93,9 +100,11 @@ int parse_settings(int argc, char *argv[], struct settings *s)
             {"delay",       required_argument, NULL, 'd'},
             {"key-seed",    required_argument, NULL, 's'},
             {"op-seed",     required_argument, NULL, 'o'},
+            {"target-size", required_argument, NULL, 'S'},
             {"keysteer",    no_argument,       NULL, 'K'},
+            {"skip-load",   no_argument,       NULL, 'l'},
         };
-    static const char *short_opts = "t:C:p:k:n:uz:v:g:T:w:c:d:s:o:r:K";
+    static const char *short_opts = "t:C:p:k:n:uz:h:v:g:T:w:c:d:s:o:r:S:K:l";
     int c, opt_idx, done = 0;
     char *end;
 
@@ -136,7 +145,7 @@ int parse_settings(int argc, char *argv[], struct settings *s)
                 }
                 break;
             case 'n':
-                s->keynum = strtoul(optarg, &end, 10);
+                s->keynum = strtoull(optarg, &end, 10);
                 if (!*optarg || *end || s->keynum < 1) {
                     fprintf(stderr, "Key count needs to be a positive "
                             "integer\n");
@@ -160,6 +169,15 @@ int parse_settings(int argc, char *argv[], struct settings *s)
                 s->keydistparams.zipf.s = strtod(optarg, &end);
                 if (!*optarg || *end) {
                     fprintf(stderr, "Zipf parameter needs to be a floating "
+                            "point number.\n");
+                    return -1;
+                }
+                break;
+            case 'h':
+                s->keydist = DIST_HOT;
+                s->keydistparams.hot.keys = strtod(optarg, &end);
+                if (!*optarg || *end) {
+                    fprintf(stderr, "Hotset parameter needs to be a floating "
                             "point number.\n");
                     return -1;
                 }
@@ -218,8 +236,18 @@ int parse_settings(int argc, char *argv[], struct settings *s)
                     return -1;
                 }
                 break;
+            case 'S':
+                settings.target_size = strtoull(optarg, &end, 0);
+                if (!*optarg || *end) {
+                    fprintf(stderr, "Key seed needs to be an integer.\n");
+                    return -1;
+                }
+                break;
             case 'K':
                 settings.keybased = true;
+                break;
+            case 'l':
+                settings.skip_load = true;
                 break;
             case -1:
                 done = 1;
@@ -252,7 +280,20 @@ int parse_settings(int argc, char *argv[], struct settings *s)
     /* parse port */
     s->dstport = strtoul(end, NULL, 10);
 
+    if(s->target_size != 0)
+        s->keynum = s->target_size / (s->keysize + s->valuesize);
+    
+    printf("Number of keys = %u (size %.2f GB)\n", s->keynum, 
+        ((double)s->keynum * (double)(s->keysize + s->valuesize)) 
+        / ((double)(1024 * 1024 * 1024)));
+    
+    if(s->keydist == DIST_HOT) {
+        printf("Hot set size = %.2f GB\n", s->keydistparams.hot.keys * 
+            ((double)s->keynum * (double)(s->keysize + s->valuesize)) 
+            / ((double)(1024 * 1024 * 1024)));
+    }
     // TODO: ensure key size / key num combination is valid
 
     return 0;
 }
+

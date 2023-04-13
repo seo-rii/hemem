@@ -312,7 +312,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
 //  #ifndef USE_DMA
 //    hemem_parallel_memset(ucm_addr, 0, pagesize);
 //  #else
-    memset(ucm_addr, 0, pagesize);
+//    memset(ucm_addr, 0, pagesize);
 //  #endif
     memsets++;
 
@@ -1045,7 +1045,7 @@ void handle_missing_fault(struct hemem_process *process,
   addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
 
 //#ifdef USE_DMA
-  memset(addr, 0, pagesize);
+//  memset(addr, 0, pagesize);
 //#else
 //  hemem_parallel_memset(addr, 0, pagesize);
 //#endif
@@ -1150,7 +1150,11 @@ void *handle_fault() {
           // huge page boundry in this case due to dax allignment
           page_boundry = fault_addr & ~(PAGE_SIZE - 1);
 
+          struct hemem_page *found_page;
           if (fault_flags & UFFD_PAGEFAULT_FLAG_WP) {
+            handle_wp_fault(process, page_boundry);
+          } else if((found_page = find_page(page_boundry, process->pid))) {
+            LOG("Found existing page at %lx, migrating? %d\n", page_boundry, found_page->migrating);
             handle_wp_fault(process, page_boundry);
           } else {
             handle_missing_fault(process, page_boundry);
@@ -1198,6 +1202,7 @@ int process_msg(int fd)
   struct msg_header* response_header;
   struct hemem_process* process;
   char* new_send_buf;
+  struct alloc_request* alloc_req;
 
   len = read(fd, recv_buf, MAX_SIZE);
   if (len < sizeof(struct msg_header)) {
@@ -1215,7 +1220,7 @@ int process_msg(int fd)
 
   switch(request_header->operation) {
   case ALLOC_SPACE:
-    struct alloc_request* alloc_req = (struct alloc_request*)recv_buf;
+    alloc_req = (struct alloc_request*)recv_buf;
     len = sizeof(struct alloc_response) + sizeof(struct hemem_page_app) * (alloc_req->length / HUGEPAGE_SIZE + (alloc_req->length % HUGEPAGE_SIZE != 0));
     if (len > MAX_SIZE) {
         new_send_buf = realloc(send_buf, len);

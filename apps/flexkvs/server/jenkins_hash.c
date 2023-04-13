@@ -430,3 +430,4 @@ uint32_t jenkins_hash( const void *key, size_t length)
 #else /* HASH_XXX_ENDIAN == 1 */
 #error Must define HASH_BIG_ENDIAN or HASH_LITTLE_ENDIAN
 #endif /* HASH_XXX_ENDIAN == 1 */
+
