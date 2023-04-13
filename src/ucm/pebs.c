@@ -1672,6 +1672,7 @@ void count_pages()
   struct timeval now;
   int i;
   gettimeofday(&now, NULL);
+  double dram_usage = 0, nvm_usage = 0;
   //process = peek_process(&processes_list);
   process = processes_list.first;
   while (process != NULL) {
@@ -1706,7 +1707,12 @@ void count_pages()
       LOG_STATS("%"PRIu64", ", process->samples[i]);
     }
     LOG_STATS("]\tmigration_up: [%lu]\tmigrations_down: [%lu]\n", process->migrations_up, process->migrations_down);
-
+    // To allow redirect by external scripts, we print to stdout
+    fprintf(stdout, "p%d: %.2f GB DRAM, %.2f GB NVM,\t", process->pid, 
+      ((double)process->current_dram) / (1024.0 * 1024.0 * 1024.0), 
+      ((double)process->current_nvm) / (1024.0 * 1024.0 * 1024.0));
+    dram_usage += ((double)process->current_dram) / (1024.0 * 1024.0 * 1024.0);
+    nvm_usage += ((double)process->current_nvm) / (1024.0 * 1024.0 * 1024.0);
     //tmp = process;
 	  for (int xxx = LAST_HEMEM_THREAD + 1; xxx < PEBS_NPROCS; xxx++) {
 	    process->samples[xxx] = 0;
@@ -1714,6 +1720,8 @@ void count_pages()
     process = process->next;
     //pthread_mutex_unlock(&(tmp->process_lock));
   }
+  fprintf(stdout, "total: %.2f GB DRAM, %.2f GB NVM\n", dram_usage, nvm_usage);
+  fflush(stdout);
 }
 
 void pebs_stats()

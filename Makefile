@@ -133,7 +133,7 @@ SETUP_CMD = export LD_LIBRARY_PATH=./src:./Hoard/src:$LD_LIBRARY_PATH; \
 	echo 1000000 > /proc/sys/vm/max_map_count;
 HEMEM_PRELOAD = env LD_PRELOAD=./src/libhemem.so
 
-RUN_MGR = nice -20 ${NUMA_CMD} --physcpubind=${MGR_CPUS} ./src/central-manager & \
+RUN_MGR = nice -20 ${NUMA_CMD} --physcpubind=${MGR_CPUS} ./src/central-manager > $${file}_mem_usage.txt & \
 	CTRL_MGR=$$!; \
 	sleep 20;
 
@@ -359,20 +359,24 @@ run_eval_apps: all
 	${SETUP_CMD} \
 	PREFIX=eval_qtmem; \
 	${RUN_PERF} \
+	file=${RES}/$${PREFIX}_Isolated; \
 	${RUN_MGR} \
 	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_Isolated; \
 	${KILL_MGR} \
+	file=${RES}/$${PREFIX}_gups_fkvs; \
 	${RUN_MGR} \
 	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gups & \
 	FLEX_PID=$$!; \
 	$(MAKE) run_gups_pebs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GUPS_SIZE} PREFIX=$${PREFIX} & \
 	wait $${FLEX_PID}; \
 	${KILL_MGR} \
+	file=${RES}/$${PREFIX}_gapbs_fkvs; \
 	${RUN_MGR} \
 	$(MAKE) run_gapbs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GAPBS_SIZE} PREFIX=$${PREFIX} & \
 	GAPBS_PID=$$!; \
 	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs; \
 	${KILL_MGR} \
+	file=${RES}/$${PREFIX}_bt_fkvs; \
 	${RUN_MGR} \
 	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
 	FLEX_PID=$$!; \
@@ -463,7 +467,7 @@ run_eval_dynamic_hw: all
 	pkill kvsbench; \
 	pkill flexkvs;
 
-BG_PREFIXES = "bg_dram_base,bg_hw_tier,bg_znuma_tier,bg_mini_hemem,bg_hemem,bg_test_hemem"
+BG_PREFIXES = bg_znuma_tier #"bg_dram_base,bg_hw_tier,bg_znuma_tier,bg_mini_hemem,bg_hemem,bg_test_hemem"
 BG_APPS = "Isolated,gups,gapbs,bt"
 extract_bg: all
 	python extract_script.py ${BG_PREFIXES} ${BG_APPS} ${RES}
