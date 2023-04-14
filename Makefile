@@ -504,7 +504,7 @@ extract_eval_timeline: all
 	python extract_timeline.py ${EVAL_PREFIXES} ${EVAL_APPS} ${RES}
 
 DYNAMIC_PREFIXES = "dynamic"
-DYNAMIC_APPS="qtMem,HeMem"
+DYNAMIC_APPS="qtMem,HeMem,znuma"
 extract_dynamic: all
 	python extract_script.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
 
