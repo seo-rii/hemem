@@ -462,6 +462,37 @@ run_eval_dynamic_hemem: all
 	pkill flexkvs;
 
 
+run_eval_dynamic_znuma: all
+	BASE_NODE=1;\
+	NUMA_CMD="numactl -N 1 -m 1,3"; \
+	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	FLEXKV_RUNTIME=240; \
+	FLEXKV_HOT_FRAC=0.15; \
+	FLEXKV_HOT_FRAC2=0.30; \
+	GUPS_SIZE=$$((128*1024*1024*1024)); \
+	GAPBS_SIZE=28; \
+	APP_THREADS=4; \
+	GAPBS_CPUS=5-10; \
+	GUPS_CPUS=11-16; \
+	PREFIX=dynamic; \
+	$(MAKE) run_flexkvs_grow BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" PRELOAD="" FLEXKV_RUNTIME=$${FLEXKV_RUNTIME} FLEXKV_HOT_FRAC=$${FLEXKV_HOT_FRAC} FLEXKV_HOT_FRAC2=$${FLEXKV_HOT_FRAC2} FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_znuma & \
+	FLEX_PID=$$!; \
+	$(MAKE) run_gapbs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_THDS=$${APP_THREADS} APP_CPUS=$${GAPBS_CPUS} PRELOAD="" APP_SIZE=$${GAPBS_SIZE} PREFIX=$${PREFIX} & \
+	GUPS_PID=$$!; \
+	sleep 560; \
+	$(MAKE) run_gups_pebs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_THDS=$${APP_THREADS} APP_CPUS=$${GUPS_CPUS} PRELOAD="" APP_SIZE=$${GUPS_SIZE} PREFIX=$${PREFIX} & \
+	GAPBS_PID=$$!; \
+	sleep 240; \
+	echo Done; \
+	kill -9 $${GAPBS_PID}; \
+	kill -9 $${GUPS_PID}; \
+	kill -9 $${FLEX_PID}; \
+	pkill bc; \
+	pkill gups-pebs; \
+	pkill kvsbench; \
+	pkill flexkvs;
+
+
 run_eval_dynamic_hw: all
 	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
 	GUPS_SIZE=$$((64*1024*1024*1024)); \
