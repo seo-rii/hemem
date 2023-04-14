@@ -1074,7 +1074,7 @@ uint64_t count_coldest_dram_bins(struct hemem_process *process)
 
   uint64_t count = 0;
 
-  for (int i = 0; i < 2; i++) {
+  for (int i = 0; i < 1; i++) {
     count += process->dram_lists[i].numentries;
   }
 
@@ -1200,7 +1200,7 @@ void *pebs_policy_thread()
 
       if (process->ratio > 1) {
         // not meeting target, do we have hot NVM pages? If no, it needs more DRAM
-        if ((count_hottest_nvm_bins(process) > count_coldest_dram_bins(process))) {
+        //if ((count_hottest_nvm_bins(process) > count_coldest_dram_bins(process))) {
           // not meeting target and have more hot NVM pages than cold DRAM pages; give more dram
           need_fastmem[num_need_memory] = process;
           num_need_memory++;
@@ -1212,7 +1212,7 @@ void *pebs_policy_thread()
             process->ratio = max_ratio;
           }
           memshare_need += process->ratio;
-        }
+        //}
       } else if (process->ratio < 1) {
         // below target, can take dram
         take_fastmem[num_take_memory] = process;
