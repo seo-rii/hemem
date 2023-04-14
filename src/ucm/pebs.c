@@ -1708,7 +1708,7 @@ void count_pages()
     }
     LOG_STATS("]\tmigration_up: [%lu]\tmigrations_down: [%lu]\n", process->migrations_up, process->migrations_down);
     // To allow redirect by external scripts, we print to stdout
-    fprintf(stdout, "p%d: %.2f GB DRAM, %.2f GB NVM,\t", process->pid, 
+    fprintf(stdout, "p%d: %.0f GB DRAM, %.0f GB NVM,\t", process->pid, 
       ((double)process->current_dram) / (1024.0 * 1024.0 * 1024.0), 
       ((double)process->current_nvm) / (1024.0 * 1024.0 * 1024.0));
     dram_usage += ((double)process->current_dram) / (1024.0 * 1024.0 * 1024.0);
@@ -1720,7 +1720,7 @@ void count_pages()
     process = process->next;
     //pthread_mutex_unlock(&(tmp->process_lock));
   }
-  fprintf(stdout, "total: %.2f GB DRAM, %.2f GB NVM\n", dram_usage, nvm_usage);
+  fprintf(stdout, "total: %.0f GB DRAM, %.0f GB NVM\n", dram_usage, nvm_usage);
   fflush(stdout);
 }
 

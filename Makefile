@@ -17,9 +17,11 @@ setup_hemem_numa_preboot:
 setup_numa_postboot:
 	sudo ndctl destroy-namespace all --force
 	numactl -H
-	sudo ndctl create-namespace --mode=devdax --map=mem -c
+	sudo ndctl create-namespace --region=1 --mode=devdax --map=mem -c
+	sudo ndctl create-namespace --region=2 --mode=devdax --map=mem -c
 	daxctl list
 	sudo daxctl reconfigure-device dax1.0 --mode=system-ram -f
+	sudo daxctl reconfigure-device dax2.0 --mode=system-ram -f
 	numactl -H
 
 setup_hemem_postboot:
@@ -148,6 +150,10 @@ FLEXKV_S_WAIT   ?= 240
 FLEXKV_WARMUP   ?= 150	
 FLEXKV_RUNTIME  ?= 450
 FLEXKV_HOT_FRAC ?= 0.25
+
+ZNUMA_MEASURE ?= 0
+NUMASTAT ?= ${NUMA_CMD_CLIENT} ./scripts/numastat.sh
+
 # TODO: Can we somehow launch client after server is setup
 # instead of waiting an arbitrary amount of time and hoping
 # that the server is ready in that time?
@@ -156,6 +162,10 @@ run_flexkvs: ./apps/flexkvs/flexkvs ./apps/flexkvs/kvsbench
 
 	${FLEXKV_PRTY} ${FLEXKV_NICE} ${NUMA_CMD} --physcpubind=${FLEXKV_CPUS} \
 		${PRELOAD} ./apps/flexkvs/flexkvs flexkvs.conf ${FLEXKV_THDS} ${FLEXKV_SIZE} & \
+	FLEXKVS_SERVER=$$!; \
+	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
+		${NUMASTAT} $${FLEXKVS_SERVER} > ${RES}/${PREFIX}_flexkv_mem_usage.txt & \
+	fi; \
 	sleep ${FLEXKV_S_WAIT}; \
 	${FLEXKV_NICE} ${NUMA_CMD_CLIENT} \
 		./apps/flexkvs/kvsbench -t ${FLEXKV_THDS} -T ${FLEXKV_RUNTIME} -w ${FLEXKV_WARMUP} \
@@ -242,19 +252,22 @@ run_znuma_tier: all
 	BASE_NODE=1;\
 	NUMA_CMD="numactl -N 1 -m 1,3"; \
 	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
-	$(MAKE) run_flexkvs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_Isolated; \
+	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_Isolated; \
 	wait;\
 	pkill flexkvs;\
-	$(MAKE) run_flexkvs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gups & \
-	$(MAKE) run_gups BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GUPS_SIZE} PRELOAD="" PREFIX=$${PREFIX}; \
+	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gups & \
+	$(MAKE) run_gups BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GUPS_SIZE} PRELOAD="" PREFIX=$${PREFIX} & \
+	./scripts/numastat.sh $$! > ${RES}/$${PREFIX}_gups_mem_usage.txt; \
 	wait; \
 	pkill flexkvs;\
-	$(MAKE) run_flexkvs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gapbs & \
-	$(MAKE) run_gapbs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GAPBS_SIZE} PRELOAD="" GAPBS_TRIALS=$$((${GAPBS_TRIALS} * 3)) PREFIX=$${PREFIX}; \
+	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gapbs & \
+	$(MAKE) run_gapbs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GAPBS_SIZE} PRELOAD="" GAPBS_TRIALS=$$((${GAPBS_TRIALS} * 3)) PREFIX=$${PREFIX} & \
+	./scripts/numastat.sh $$! > ${RES}/$${PREFIX}_gapbs_mem_usage.txt; \
 	wait; \
 	pkill flexkvs;\
-	$(MAKE) run_flexkvs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_bt & \
-	$(MAKE) run_bt BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" BT_SIZE=${BT_SIZE} PPRELOAD="" REFIX=$${PREFIX}; \
+	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_bt & \
+	$(MAKE) run_bt BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" BT_SIZE=${BT_SIZE} PPRELOAD="" REFIX=$${PREFIX} & \
+	./scripts/numastat.sh $$! > ${RES}/$${PREFIX}_bt_mem_usage.txt; \
 	wait;\
 	pkill flexkvs;\
 	echo "0" > /proc/sys/kernel/numa_balancing;
@@ -470,24 +483,24 @@ run_eval_dynamic_hw: all
 BG_PREFIXES = bg_znuma_tier #"bg_dram_base,bg_hw_tier,bg_znuma_tier,bg_mini_hemem,bg_hemem,bg_test_hemem"
 BG_APPS = "Isolated,gups,gapbs,bt"
 extract_bg: all
-	python extract_script.py ${BG_PREFIXES} ${BG_APPS} ${RES}
+	python scripts/extract_script.py ${BG_PREFIXES} ${BG_APPS} ${RES}
 
 extract_bg_timeline: all
-	python extract_timeline.py ${BG_PREFIXES} ${BG_APPS} ${RES}
+	python scripts/extract_timeline.py ${BG_PREFIXES} ${BG_APPS} ${RES}
 
 EVAL_PREFIXES = "eval_qtmem"
 EVAL_APPS = "Isolated,gups,gapbs,bt"
 extract_eval: all
-	python extract_script.py ${EVAL_PREFIXES} ${EVAL_APPS} ${RES}
+	python scripts/extract_script.py ${EVAL_PREFIXES} ${EVAL_APPS} ${RES}
 
 extract_eval_timeline: all
-	python extract_timeline.py ${EVAL_PREFIXES} ${EVAL_APPS} ${RES}
+	python scripts/extract_timeline.py ${EVAL_PREFIXES} ${EVAL_APPS} ${RES}
 
 DYNAMIC_PREFIXES = "dynamic"
 DYNAMIC_APPS="qtMem"
 extract_dynamic: all
-	python extract_script.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
+	python scripts/extract_script.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
 
 extract_dynamic_timeline: all
-	python extract_timeline.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
+	python scripts/extract_timeline.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
 
