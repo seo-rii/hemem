@@ -148,6 +148,7 @@ FLEXKV_S_WAIT   ?= 240
 FLEXKV_WARMUP   ?= 150	
 FLEXKV_RUNTIME  ?= 450
 FLEXKV_HOT_FRAC ?= 0.25
+FLEXKV_HOT_FRAC2 ?= 0.25
 # TODO: Can we somehow launch client after server is setup
 # instead of waiting an arbitrary amount of time and hoping
 # that the server is ready in that time?
@@ -160,6 +161,19 @@ run_flexkvs: ./apps/flexkvs/flexkvs ./apps/flexkvs/kvsbench
 	${FLEXKV_NICE} ${NUMA_CMD_CLIENT} \
 		./apps/flexkvs/kvsbench -t ${FLEXKV_THDS} -T ${FLEXKV_RUNTIME} -w ${FLEXKV_WARMUP} \
 		-h ${FLEXKV_HOT_FRAC} 127.0.0.1:11211 -S $$((15*${FLEXKV_SIZE}/16)) > ${RES}/${PREFIX}_flexkv.txt;
+
+run_flexkvs_grow: ./apps/flexkvs/flexkvs ./apps/flexkvs/kvsbench
+	-./apps/flexkvs/unlink_socks.sh; # Cleanup
+
+	${FLEXKV_PRTY} ${FLEXKV_NICE} ${NUMA_CMD} --physcpubind=${FLEXKV_CPUS} \
+		${PRELOAD} ./apps/flexkvs/flexkvs flexkvs.conf ${FLEXKV_THDS} ${FLEXKV_SIZE} & \
+	sleep ${FLEXKV_S_WAIT}; \
+	${FLEXKV_NICE} ${NUMA_CMD_CLIENT} \
+		./apps/flexkvs/kvsbench -t ${FLEXKV_THDS} -T ${FLEXKV_RUNTIME} -w ${FLEXKV_WARMUP} \
+		-h ${FLEXKV_HOT_FRAC} 127.0.0.1:11211 -S $$((15*${FLEXKV_SIZE}/16)) > ${RES}/${PREFIX}_flexkv_1.txt;
+	${FLEXKV_NICE} ${NUMA_CMD_CLIENT} \
+		./apps/flexkvs/kvsbench -t ${FLEXKV_THDS} -T ${FLEXKV_RUNTIME} -w 0 \
+		-h ${FLEXKV_HOT_FRAC2} 127.0.0.1:11211 -S $$((15*${FLEXKV_SIZE}/16)) -l > ${RES}/${PREFIX}_flexkv_2.txt;
 
 GUPS_ITERS ?= 4000000000
 run_gups: ./microbenchmarks/gups
@@ -384,8 +398,11 @@ run_eval_apps: all
 run_eval_dynamic: all
 	# qtMem runs
 	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
-	GUPS_SIZE=$$((64*1024*1024*1024)); \
-	GAPBS_SIZE=27; \
+	FLEXKV_RUNTIME=240; \
+	FLEXKV_HOT_FRAC=0.15; \
+	FLEXKV_HOT_FRAC2=0.30; \
+	GUPS_SIZE=$$((128*1024*1024*1024)); \
+	GAPBS_SIZE=28; \
 	APP_THREADS=4; \
 	GAPBS_CPUS=5-10; \
 	GUPS_CPUS=11-16; \
@@ -393,14 +410,14 @@ run_eval_dynamic: all
 	PREFIX=dynamic; \
 	${RUN_PERF} \
 	${RUN_MGR} \
-	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_HOT_FRAC=0.33 FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_qtMem & \
+	$(MAKE) run_flexkvs_grow PRELOAD="${HEMEM_PRELOAD}" FLEXKV_RUNTIME=$${FLEXKV_RUNTIME} FLEXKV_HOT_FRAC=$${FLEXKV_HOT_FRAC} FLEXKV_HOT_FRAC2=$${FLEXKV_HOT_FRAC2} FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_qtMem & \
 	FLEX_PID=$$!; \
 	$(MAKE) run_gapbs APP_THDS=$${APP_THREADS} APP_CPUS=$${GAPBS_CPUS} PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=$${GAPBS_SIZE} PREFIX=$${PREFIX} & \
 	GAPBS_PID=$$!; \
-	sleep 300; \
+	sleep 560; \
 	$(MAKE) run_gups_pebs APP_THDS=$${APP_THREADS} APP_CPUS=$${GUPS_CPUS} PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=$${GUPS_SIZE} PREFIX=$${PREFIX} & \
 	GUPS_PID=$$!; \
-	sleep 180; \
+	sleep 240; \
 	echo Done; \
 	kill -9 $${GAPBS_PID}; \
 	kill -9 $${GUPS_PID}; \
@@ -411,8 +428,11 @@ run_eval_dynamic: all
 run_eval_dynamic_hemem: all
 	# qtMem runs
 	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
-	GUPS_SIZE=$$((64*1024*1024*1024)); \
-	GAPBS_SIZE=27; \
+	FLEXKV_RUNTIME=240; \
+	FLEXKV_HOT_FRAC=0.15; \
+	FLEXKV_HOT_FRAC2=0.30; \
+	GUPS_SIZE=$$((128*1024*1024*1024)); \
+	GAPBS_SIZE=28; \
 	APP_THREADS=4; \
 	GAPBS_CPUS=5-10; \
 	GUPS_CPUS=11-16; \
@@ -420,14 +440,14 @@ run_eval_dynamic_hemem: all
 	NVMSIZE2=$$((${NVMSIZE}/4)); DRAMSIZE2=$$((${DRAMSIZE}/4)); \
 	${SETUP_CMD} \
 	PREFIX=dynamic; \
-	$(MAKE) run_flexkvs NVMSIZE=$${NVMSIZE1} DRAMSIZE=$${DRAMSIZE1} NVMOFFSET=$${NVMSIZE} DRAMOFFSET=$${DRAMSIZE} PRELOAD="${HEMEM_PRELOAD}" FLEXKV_HOT_FRAC=0.33 FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_HeMem & \
+	$(MAKE) run_flexkvs_grow NVMSIZE=$${NVMSIZE1} DRAMSIZE=$${DRAMSIZE1} NVMOFFSET=$${NVMSIZE1} DRAMOFFSET=$${DRAMSIZE1} PRELOAD="${HEMEM_PRELOAD}" FLEXKV_RUNTIME=$${FLEXKV_RUNTIME} FLEXKV_HOT_FRAC=$${FLEXKV_HOT_FRAC} FLEXKV_HOT_FRAC2=$${FLEXKV_HOT_FRAC2} FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_HeMem & \
 	FLEX_PID=$$!; \
 	$(MAKE) run_gapbs NVMSIZE=$${NVMSIZE2} DRAMSIZE=$${DRAMSIZE2} NVMOFFSET=0 DRAMOFFSET=0 APP_THDS=$${APP_THREADS} APP_CPUS=$${GAPBS_CPUS} PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=$${GAPBS_SIZE} PREFIX=$${PREFIX} & \
 	GUPS_PID=$$!; \
-	sleep 300; \
-	$(MAKE) run_gups_pebs NVMSIZE=$${NVMSIZE2} DRAMSIZE=$${DRAMSIZE2} NVMOFFSET=$${NVMSIZE2} DRAMOFFSET=$${DRAMSIZE2} APP_THDS=$${APP_THREADS} APP_CPUS=$${GUPS_CPUS} PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GUPS_SIZE} PREFIX=$${PREFIX} & \
+	sleep 560; \
+	$(MAKE) run_gups_pebs NVMSIZE=$${NVMSIZE2} DRAMSIZE=$${DRAMSIZE2} NVMOFFSET=$${NVMSIZE2} DRAMOFFSET=$${DRAMSIZE2} APP_THDS=$${APP_THREADS} APP_CPUS=$${GUPS_CPUS} PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=$${GUPS_SIZE} PREFIX=$${PREFIX} & \
 	GAPBS_PID=$$!; \
-	sleep 180; \
+	sleep 240; \
 	echo Done; \
 	kill -9 $${GAPBS_PID}; \
 	kill -9 $${GUPS_PID}; \
@@ -485,5 +505,5 @@ extract_dynamic: all
 	python extract_script.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
 
 extract_dynamic_timeline: all
-	python extract_timeline.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
+	python extract_dynamic_timeline.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
 
