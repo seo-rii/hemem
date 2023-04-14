@@ -325,7 +325,7 @@ run_test_bg_sw_tier: all
 		PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GAPBS_SIZE} PREFIX=$${PREFIX} & \
 	$(MAKE) run_flexkvs NVMSIZE=$${NVMSIZE} NVMOFFSET=0 PRELOAD="${HEMEM_PRELOAD}" \
 		FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs; \
-	wait;
+	wait;\
 	pkill flexkvs;\
 	$(MAKE) run_flexkvs NVMSIZE=$${NVMSIZE} NVMOFFSET=0 PRELOAD="${HEMEM_PRELOAD}" \
 		FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
@@ -356,7 +356,7 @@ run_bg_mini_sw_tier: all
 		PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GAPBS_SIZE} PREFIX=$${PREFIX} & \
 	$(MAKE) run_flexkvs NVMSIZE=$${NVMSIZE} DRAMSIZE=$${DRAMSIZE} NVMOFFSET=0 DRAMOFFSET=0 \
 		PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs; \
-	wait;
+	wait;\
 	pkill flexkvs;\
 	$(MAKE) run_flexkvs NVMSIZE=$${NVMSIZE} DRAMSIZE=$${DRAMSIZE} NVMOFFSET=0 DRAMOFFSET=0 \
 		PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
@@ -504,7 +504,7 @@ extract_eval_timeline: all
 	python extract_timeline.py ${EVAL_PREFIXES} ${EVAL_APPS} ${RES}
 
 DYNAMIC_PREFIXES = "dynamic"
-DYNAMIC_APPS="qtMem"
+DYNAMIC_APPS="qtMem,HeMem"
 extract_dynamic: all
 	python extract_script.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
 
