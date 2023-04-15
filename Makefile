@@ -190,7 +190,8 @@ run_gups: ./microbenchmarks/gups
 	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
 	${GUPS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} \
 		./microbenchmarks/gups ${APP_THDS} ${GUPS_ITERS} $${log_size} \
-		8 $${log_size} > ${RES}/${PREFIX}_gups.txt;
+		8 $${log_size} > ${RES}/${PREFIX}_gups.txt & \
+	perf stat -e instructions -I 1000 -p $$! -o ${RES}/${PREFIX}_gups_ipc.txt;
 
 run_gups_pebs: ./microbenchmarks/gups-pebs
 	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
@@ -198,21 +199,24 @@ run_gups_pebs: ./microbenchmarks/gups-pebs
 	NVMOFFSET=${NVMOFFSET} DRAMOFFSET=${DRAMOFFSET} \
 	${GUPS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
 		./microbenchmarks/gups-pebs ${APP_THDS} ${GUPS_ITERS} \
-		$${log_size} 8 $${log_size} > ${RES}/${PREFIX}_gups_pebs.txt;
+		$${log_size} 8 $${log_size} > ${RES}/${PREFIX}_gups_pebs.txt & \
+	perf stat -e instructions -I 1000 -p $$! -o ${RES}/${PREFIX}_gups_pebs_ipc.txt;
 
 GAPBS_TRIALS ?= 10
 run_gapbs: ./apps/gapbs/bc
 	NVMSIZE=${NVMSIZE} DRAMSIZE=${DRAMSIZE} NVMOFFSET=${NVMOFFSET} \
 	DRAMOFFSET=${DRAMOFFSET} OMP_THREAD_LIMIT=${APP_THDS} \
 	${GAPBS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
-		./apps/gapbs/bc -n ${GAPBS_TRIALS} -g ${APP_SIZE} > ${RES}/${PREFIX}_gapbs.txt;
+		./apps/gapbs/bc -n ${GAPBS_TRIALS} -g ${APP_SIZE} > ${RES}/${PREFIX}_gapbs.txt & \
+	perf stat -e instructions -I 1000 -p $$! -o ${RES}/${PREFIX}_gapbs_ipc.txt;
 
 # TODO: Command to run BT
 run_bt: 
 	NVMSIZE=${NVMSIZE} DRAMSIZE=${DRAMSIZE} \
 	NVMOFFSET=${NVMOFFSET} DRAMOFFSET=${DRAMOFFSET} OMP_THREAD_LIMIT=${APP_THDS} \
 	${BT_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
-		./apps/nas-bt-c-benchmark/NPB-OMP/bin/bt.${BT_SIZE} > ${RES}/${PREFIX}_bt.txt;
+		./apps/nas-bt-c-benchmark/NPB-OMP/bin/bt.${BT_SIZE} > ${RES}/${PREFIX}_bt.txt & \
+	perf stat -e instructions -I 1000 -p $$! -o ${RES}/${PREFIX}_bt_ipc.txt;
 
 run_bg_dram_base: all
 	PREFIX=bg_dram_base; \
@@ -553,9 +557,5 @@ extract_dynamic: all
 	python scripts/extract_script.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
 
 extract_dynamic_timeline: all
-<<<<<<< HEAD
-	python scripts/extract_timeline.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
-=======
-	python extract_dynamic_timeline.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
->>>>>>> a0f40cf79a1e879b9e7ebebcb234c800dbeb5070
+	python scripts/extract_dynamic_timeline.py ${DYNAMIC_PREFIXES} ${DYNAMIC_APPS} ${RES}
 
