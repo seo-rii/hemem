@@ -9,6 +9,7 @@ default: all
 # NOTE: Reboot is required along with setting appropriate BIOS options
 
 setup_mm:
+	sudo ndctl destroy-namespace all --force
 	sudo ipmctl create -goal MemoryMode=100
 
 setup_hemem_numa_preboot:
