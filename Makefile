@@ -134,6 +134,7 @@ BT_PRTY			?= ${SET_LOW_PRTY}
 SETUP_CMD = export LD_LIBRARY_PATH=./src:./Hoard/src:$LD_LIBRARY_PATH; \
 	echo 1000000 > /proc/sys/vm/max_map_count;
 HEMEM_PRELOAD = env LD_PRELOAD=./src/libhemem.so
+POPULATE_PRELOAD = env LD_PRELOAD=./src/libmmap_populate.so
 
 RUN_MGR = nice -20 ${NUMA_CMD} --physcpubind=${MGR_CPUS} ./src/central-manager > $${file}_mem_usage.txt & \
 	CTRL_MGR=$$!; \
@@ -147,8 +148,8 @@ KILL_PERF = kill $${PERF_CMD}; pkill perf; sleep 5;
 
 FLEXKV_NICE ?= nice -20
 FLEXKV_S_WAIT   ?= 240	
-FLEXKV_WARMUP   ?= 150	
-FLEXKV_RUNTIME  ?= 450
+FLEXKV_WARMUP   ?= 100
+FLEXKV_RUNTIME  ?= 300
 FLEXKV_HOT_FRAC ?= 0.25
 FLEXKV_HOT_FRAC2 ?= 0.25
 
@@ -188,10 +189,14 @@ run_flexkvs_grow: ./apps/flexkvs/flexkvs ./apps/flexkvs/kvsbench
 GUPS_ITERS ?= 4000000000
 run_gups: ./microbenchmarks/gups
 	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
-	${GUPS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} \
+	${GUPS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
 		./microbenchmarks/gups ${APP_THDS} ${GUPS_ITERS} $${log_size} \
 		8 $${log_size} > ${RES}/${PREFIX}_gups.txt & \
-	perf stat -e instructions -I 1000 -p $$! -o ${RES}/${PREFIX}_gups_ipc.txt;
+	GUPS_PID=$$!; \
+	perf stat -e instructions -I 1000 -p $${GUPS_PID} -o ${RES}/${PREFIX}_gups_ipc.txt &\
+	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
+		./scripts/numastat.sh $${GUPS_PID} > ${RES}/$${PREFIX}_gups_mem_usage.txt & \
+	fi; \
 
 run_gups_pebs: ./microbenchmarks/gups-pebs
 	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
@@ -200,7 +205,11 @@ run_gups_pebs: ./microbenchmarks/gups-pebs
 	${GUPS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
 		./microbenchmarks/gups-pebs ${APP_THDS} ${GUPS_ITERS} \
 		$${log_size} 8 $${log_size} > ${RES}/${PREFIX}_gups_pebs.txt & \
-	perf stat -e instructions -I 1000 -p $$! -o ${RES}/${PREFIX}_gups_pebs_ipc.txt;
+	GUPS_PID=$$!;\
+	perf stat -e instructions -I 1000 -p $${GUPS_PID}! -o ${RES}/${PREFIX}_gups_pebs_ipc.txt &\
+	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
+		./scripts/numastat.sh $${GUPS_PID} > ${RES}/$${PREFIX}_gups_pebs_mem_usage.txt & \
+	fi;
 
 GAPBS_TRIALS ?= 10
 run_gapbs: ./apps/gapbs/bc
@@ -208,7 +217,11 @@ run_gapbs: ./apps/gapbs/bc
 	DRAMOFFSET=${DRAMOFFSET} OMP_THREAD_LIMIT=${APP_THDS} \
 	${GAPBS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
 		./apps/gapbs/bc -n ${GAPBS_TRIALS} -g ${APP_SIZE} > ${RES}/${PREFIX}_gapbs.txt & \
-	perf stat -e instructions -I 1000 -p $$! -o ${RES}/${PREFIX}_gapbs_ipc.txt;
+	GAPBS_PID=$$!;\
+	perf stat -e instructions -I 1000 -p $${GAPBS_PID} -o ${RES}/${PREFIX}_gapbs_ipc.txt &\
+	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
+		./scripts/numastat.sh $${GAPBS_PID} > ${RES}/$${PREFIX}_gapbs_mem_usage.txt & \
+	fi;
 
 # TODO: Command to run BT
 run_bt: 
@@ -216,7 +229,11 @@ run_bt:
 	NVMOFFSET=${NVMOFFSET} DRAMOFFSET=${DRAMOFFSET} OMP_THREAD_LIMIT=${APP_THDS} \
 	${BT_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
 		./apps/nas-bt-c-benchmark/NPB-OMP/bin/bt.${BT_SIZE} > ${RES}/${PREFIX}_bt.txt & \
-	perf stat -e instructions -I 1000 -p $$! -o ${RES}/${PREFIX}_bt_ipc.txt;
+	BT_PID=$$!;\
+	perf stat -e instructions -I 1000 -p $${BT_PID} -o ${RES}/${PREFIX}_bt_ipc.txt &\
+	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
+		./scripts/numastat.sh $${GUPS_PID} > ${RES}/$${PREFIX}_bt_mem_usage.txt & \
+	fi;
 
 run_bg_dram_base: all
 	PREFIX=bg_dram_base; \
@@ -270,24 +287,33 @@ run_znuma_tier: all
 	BASE_NODE=1;\
 	NUMA_CMD="numactl -N 1 -m 1,3"; \
 	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
-	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_Isolated; \
+	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX}_Isolated; \
 	wait;\
 	pkill flexkvs;\
-	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gups & \
-	$(MAKE) run_gups BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GUPS_SIZE} PRELOAD="" PREFIX=$${PREFIX} & \
-	./scripts/numastat.sh $$! > ${RES}/$${PREFIX}_gups_mem_usage.txt; \
-	wait; \
+	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX}_gups & \
+	FLEX_PID=$$!;\
+	$(MAKE) run_gups BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GUPS_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX} & \
+	wait $${FLEX_PID}; \
 	pkill flexkvs;\
-	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gapbs & \
-	$(MAKE) run_gapbs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GAPBS_SIZE} PRELOAD="" GAPBS_TRIALS=$$((${GAPBS_TRIALS} * 3)) PREFIX=$${PREFIX} & \
-	./scripts/numastat.sh $$! > ${RES}/$${PREFIX}_gapbs_mem_usage.txt; \
-	wait; \
+	pkill gups;\
+	pkill perf;\
+	pkill numastat.sh;\
+	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX}_gapbs & \
+	FLEX_PID=$$!;\
+	$(MAKE) run_gapbs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GAPBS_SIZE} PRELOAD="${POPULATE_PRELOAD}" GAPBS_TRIALS=$$((${GAPBS_TRIALS} * 3)) PREFIX=$${PREFIX} & \
+	wait $${FLEX_PID}; \
 	pkill flexkvs;\
-	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_bt & \
-	$(MAKE) run_bt BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" BT_SIZE=${BT_SIZE} PPRELOAD="" REFIX=$${PREFIX} & \
-	./scripts/numastat.sh $$! > ${RES}/$${PREFIX}_bt_mem_usage.txt; \
-	wait;\
+	pkill bc;\
+	pkill perf;\
+	pkill numastat.sh;\
+	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX}_bt & \
+	FLEX_PID=$$!;\
+	$(MAKE) run_bt BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" BT_SIZE=${BT_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX} & \
+	wait $${FLEX_PID};\
 	pkill flexkvs;\
+	pkill bt.E;\
+	pkill perf;\
+	pkill numastat.sh;\
 	echo "0" > /proc/sys/kernel/numa_balancing;
 
 # FlexKV occupies first half of DRAM/NVM, and other app the other half
@@ -492,12 +518,12 @@ run_eval_dynamic_znuma: all
 	GAPBS_CPUS=5-10; \
 	GUPS_CPUS=11-16; \
 	PREFIX=dynamic; \
-	$(MAKE) run_flexkvs_grow BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" PRELOAD="" FLEXKV_RUNTIME=$${FLEXKV_RUNTIME} FLEXKV_HOT_FRAC=$${FLEXKV_HOT_FRAC} FLEXKV_HOT_FRAC2=$${FLEXKV_HOT_FRAC2} FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_znuma & \
+	$(MAKE) run_flexkvs_grow BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" PRELOAD="${POPULATE_PRELOAD}" FLEXKV_RUNTIME=$${FLEXKV_RUNTIME} FLEXKV_HOT_FRAC=$${FLEXKV_HOT_FRAC} FLEXKV_HOT_FRAC2=$${FLEXKV_HOT_FRAC2} FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_znuma & \
 	FLEX_PID=$$!; \
-	$(MAKE) run_gapbs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_THDS=$${APP_THREADS} APP_CPUS=$${GAPBS_CPUS} PRELOAD="" APP_SIZE=$${GAPBS_SIZE} PREFIX=$${PREFIX} & \
+	$(MAKE) run_gapbs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_THDS=$${APP_THREADS} APP_CPUS=$${GAPBS_CPUS} PRELOAD="${POPULATE_PRELOAD}" APP_SIZE=$${GAPBS_SIZE} PREFIX=$${PREFIX} & \
 	GUPS_PID=$$!; \
 	sleep 560; \
-	$(MAKE) run_gups_pebs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_THDS=$${APP_THREADS} APP_CPUS=$${GUPS_CPUS} PRELOAD="" APP_SIZE=$${GUPS_SIZE} PREFIX=$${PREFIX} & \
+	$(MAKE) run_gups_pebs BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_THDS=$${APP_THREADS} APP_CPUS=$${GUPS_CPUS} PRELOAD="${POPULATE_PRELOAD}" APP_SIZE=$${GUPS_SIZE} PREFIX=$${PREFIX} & \
 	GAPBS_PID=$$!; \
 	sleep 240; \
 	echo Done; \
