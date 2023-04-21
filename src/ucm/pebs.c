@@ -549,6 +549,7 @@ void handle_ring_requests()
   struct hemem_page* page = NULL;
   uint64_t tmp_accesses[NPBUFTYPES];
   int new_hotness;
+  struct hemem_process *process = NULL;
 
   // free pages using free page ring buffer
   // we take all pages from the free ring rather than until
@@ -593,9 +594,13 @@ void handle_ring_requests()
 
     if (page->in_dram) {
       enqueue_page(&dram_free_list, page);
+      process = find_process(page->pid);
+      process->current_dram -= pt_to_pagesize(page->pt);
     }
     else {
       enqueue_page(&nvm_free_list, page);
+      process = find_process(page->pid);
+      process->current_nvm -= pt_to_pagesize(page->pt);
     }
     free_ring_requests_handled++;
   }
@@ -744,6 +749,7 @@ void *pebs_policy_thread()
   int ret;
   struct timeval start, end;
   double migrate_time;
+  struct hemem_process* process = NULL;
 
   thread = pthread_self();
   CPU_ZERO(&cpuset);
@@ -787,6 +793,12 @@ void *pebs_policy_thread()
 
           old_offset = p->devdax_offset;
           pebs_migrate_up(p, np->devdax_offset);
+
+          process = find_process(p->pid);
+          assert(process != NULL);
+          process->current_dram += pt_to_pagesize(p->pt);
+          process->current_nvm -= pt_to_pagesize(p->pt);
+          
           np->devdax_offset = old_offset;
           np->in_dram = false;
           np->present = false;
@@ -823,6 +835,12 @@ void *pebs_policy_thread()
 
           old_offset = cp->devdax_offset;
           pebs_migrate_down(cp, np->devdax_offset);
+       
+          process = find_process(cp->pid);
+          assert(process != NULL);
+          process->current_dram -= pt_to_pagesize(cp->pt);
+          process->current_nvm += pt_to_pagesize(cp->pt);
+
           np->devdax_offset = old_offset;
           np->in_dram = true;
           np->present = false;
@@ -868,6 +886,7 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
     page->present = true;
     
     enqueue_page(&(dram_lists[COLD]), page);
+    process->current_dram +=  pt_to_pagesize(page->pt);
 
     gettimeofday(&end, NULL);
     LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
@@ -883,6 +902,8 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
 
     page->present = true;
     enqueue_page(&(nvm_lists[COLD]), page);
+
+    process->current_nvm += pt_to_pagesize(page->pt);
 
     gettimeofday(&end, NULL);
     LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
@@ -978,6 +999,25 @@ void pebs_shutdown()
   }
 }
 
+void count_pages()
+{
+    struct hemem_process *process, *tmp;
+    double dram_usage = 0, nvm_usage = 0;
+
+    HASH_ITER(phh, processes, process, tmp) {
+        fprintf(process->logfd, "%ld\t%lu\t%lu", rdtscp(), process->current_dram, process->current_nvm);
+        fprintf(stdout, "p%d: %.0f GB DRAM, %.0f GB NVM,\t", process->pid,
+                ((double)process->current_dram) / (1024.0 * 1024.0 * 1024.0),
+                ((double)process->current_nvm) / (1024.0 * 1024.0 * 1024.0));
+        dram_usage += ((double)process->current_dram) / (1024.0 * 1024.0 * 1024.0);
+        nvm_usage += ((double)process->current_nvm) / (1024.0 * 1024.0 * 1024.0);
+  
+    }
+
+    fprintf(stdout, "total: %.0f GB DRAM, %.0f GB NVM\n", dram_usage, nvm_usage);
+    fflush(stdout);
+}
+
 void pebs_stats()
 {
   /* TODO: change to per-process
@@ -1017,6 +1057,7 @@ void pebs_stats()
         nvm_cools,
         dram_cools_finished,
         nvm_cools_finished);
+
+  count_pages();
   hemem_pages_cnt = total_pages_cnt = other_processes_cnt = throttle_cnt = unthrottle_cnt = 0;
 }
-

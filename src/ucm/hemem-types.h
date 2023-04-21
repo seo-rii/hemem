@@ -61,6 +61,10 @@ struct hemem_process {
 #ifdef HEMEM_GLOBAL
    FILE* logfd;
 #endif
+
+  _Atomic uint64_t volatile current_dram;
+  _Atomic uint64_t volatile current_nvm;
+
   struct hemem_page* pages;
   pthread_mutex_t pages_lock;
   UT_hash_handle phh;

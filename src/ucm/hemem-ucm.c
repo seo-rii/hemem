@@ -53,7 +53,7 @@ pthread_t copy_threads[MAX_COPY_THREADS];
 #endif // USE_PARALLEL_MEMCPY
 #endif // ! USE_DMA
 
-struct hemem_process volatile *processes = NULL;
+struct hemem_process *processes = NULL;
 pthread_mutex_t processes_lock = PTHREAD_MUTEX_INITIALIZER;
 struct hemem_page volatile *pages = NULL;
 pthread_mutex_t pages_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -454,12 +454,16 @@ void add_process(struct hemem_process *process) {
   HASH_FIND(phh, processes, &(process->pid), sizeof(pid_t), p);
   assert(p == NULL);
   HASH_ADD(phh, processes, pid, sizeof(pid_t), process);
+  process->current_nvm = 0;
+  process->current_dram = 0;
   pthread_mutex_unlock(&processes_lock);
 }
 
 void remove_process(struct hemem_process *process) {
   pthread_mutex_lock(&processes_lock);
   HASH_DELETE(phh, processes, process);
+  process->current_dram = 0;
+  process->current_nvm = 0;
   pthread_mutex_unlock(&processes_lock);
 }
 
