@@ -53,7 +53,7 @@ pthread_t copy_threads[MAX_COPY_THREADS];
 #endif // USE_PARALLEL_MEMCPY
 #endif // ! USE_DMA
 
-struct hemem_process *processes = NULL;
+struct hemem_process volatile *processes = NULL;
 pthread_mutex_t processes_lock = PTHREAD_MUTEX_INITIALIZER;
 struct hemem_page volatile *pages = NULL;
 pthread_mutex_t pages_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -231,6 +231,8 @@ struct hemem_process* ucm_add_process(int fd, struct add_process_request* reques
 
   add_process(process);
 
+  pebs_add_process(process);
+
   response->header.status = SUCCESS;
   response->header.pid = pid;
   response->header.operation = ADD_PROCESS;
@@ -257,6 +259,7 @@ int ucm_remove_process(struct remove_process_request* request, struct remove_pro
         ;
     }
     remove_process(process);
+    pebs_remove_process(process);
 
     //free(process);
   }

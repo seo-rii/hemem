@@ -95,6 +95,6 @@ void hemem_stop_timing(void);
 
 bool can_migrate_page(pid_t pid);
 
-extern struct hemem_process *processes;
+extern struct hemem_process volatile *processes;
 extern pthread_mutex_t processes_lock;
 #endif /* HEMEM_UCM_H */

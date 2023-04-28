@@ -939,6 +939,16 @@ void pebs_remove_page(struct hemem_page *page)
 
 }
 
+void pebs_add_process(struct hemem_process *process)
+{
+  enqueue_process(&processes_list, process);
+}
+
+void pebs_remove_process(struct hemem_process *process)
+{
+  process_list_remove(&processes_list, process);
+}
+
 void pebs_init(void)
 {
   pthread_t kswapd_thread;
@@ -1001,10 +1011,12 @@ void pebs_shutdown()
 
 void count_pages()
 {
-    struct hemem_process *process, *tmp;
+    struct hemem_process *process;
     double dram_usage = 0, nvm_usage = 0;
 
-    HASH_ITER(phh, processes, process, tmp) {
+    process = processes_list.first;
+
+    while (process != NULL) {
         fprintf(process->logfd, "%ld\t%lu\t%lu", rdtscp(), process->current_dram, process->current_nvm);
         fprintf(stdout, "p%d: %.0f GB DRAM, %.0f GB NVM,\t", process->pid,
                 ((double)process->current_dram) / (1024.0 * 1024.0 * 1024.0),
