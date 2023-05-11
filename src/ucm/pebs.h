@@ -44,7 +44,7 @@ struct perf_sample {
 void pebs_remove_page(struct hemem_process *process, struct hemem_page *page);
 struct hemem_page* pebs_pagefault(struct hemem_process *process);
 void pebs_init(void);
-void pebs_stats();
+void pebs_stats(FILE *stream);
 void pebs_clear_stats();
 void pebs_shutdown();
 void pebs_add_process(struct hemem_process *process); 

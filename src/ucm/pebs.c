@@ -125,6 +125,13 @@ static inline int access_to_index(uint64_t num) {
   return ret;
 }
 
+int remove_bits(unsigned long long *num, int bits) {
+  for(int i = 0; i < bits; ++i) {
+    int bit = __builtin_clzll(*num);
+    *num = (*num) ^ (1 << bit);
+  }
+}
+
 void *pebs_scan_thread()
 {
   struct perf_event_mmap_page *p;
@@ -152,13 +159,13 @@ void *pebs_scan_thread()
     for (i = LAST_HEMEM_THREAD + 1; i < PEBS_NPROCS; i++) {
       for(j = 0; j < NPBUFTYPES; j++) {
 
-	static struct perf_event_mmap_page *perf_page_shadow[PEBS_NPROCS][NPBUFTYPES];
+        static struct perf_event_mmap_page *perf_page_shadow[PEBS_NPROCS][NPBUFTYPES];
 
-	if(perf_page_shadow[i][j] == NULL) {
-	  perf_page_shadow[i][j] = perf_page[i][j];
-	} else {
-	  assert(perf_page_shadow[i][j] == perf_page[i][j]);
-	}
+        if(perf_page_shadow[i][j] == NULL) {
+          perf_page_shadow[i][j] = perf_page[i][j];
+        } else {
+          assert(perf_page_shadow[i][j] == perf_page[i][j]);
+        }
 
         p = perf_page[i][j];
         pbuf = (char *)p + p->data_offset;
@@ -169,7 +176,7 @@ void *pebs_scan_thread()
           continue;
         }
 
-	assert(p->data_head > p->data_tail);
+        assert(p->data_head > p->data_tail);
 
         ph = (void *)(pbuf + (p->data_tail % p->data_size));
 
@@ -182,27 +189,27 @@ void *pebs_scan_thread()
               __u64 pfn = ps->addr & PFN_MASK;
               process = find_process(ps->pid);
 
-	            if((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) != PERF_RECORD_MISC_USER) {
-	              //fprintf(stderr, "Unknown PEBS sample misc: %x, type: %x, pid: %d\n", ph->misc, ph->type, ps->pid);
-	            }
-	  /* assert((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) == PERF_RECORD_MISC_USER); */
+              if((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) != PERF_RECORD_MISC_USER) {
+                //fprintf(stderr, "Unknown PEBS sample misc: %x, type: %x, pid: %d\n", ph->misc, ph->type, ps->pid);
+              }
+              /* assert((ph->misc & PERF_RECORD_MISC_CPUMODE_MASK) == PERF_RECORD_MISC_USER); */
               if (process != NULL) {
-		process->samples[i]++;
+                process->samples[i]++;
                 page = find_page(process, pfn);
                 if (page != NULL) {
                   if (page->va != 0) {
-		    assert(j == DRAMREAD || j == NVMREAD);
-		    if(j == DRAMREAD) {
-		      if(!page->in_dram) {
-			process->wrong_memtype++;
-		      }
-		      /* assert(page->in_dram); */
-		    } else {
-		      if(page->in_dram) {
-			process->wrong_memtype++;
-		      }
-		      /* assert(!page->in_dram); */
-		    }
+                    assert(j == DRAMREAD || j == NVMREAD);
+                    if(j == DRAMREAD) {
+                      if(!page->in_dram) {
+                        process->wrong_memtype++;
+                      }
+                      /* assert(page->in_dram); */
+                    } else {
+                      if(page->in_dram) {
+                        process->wrong_memtype++;
+                      }
+                      /* assert(!page->in_dram); */
+                    }
 #ifdef HEMEM_QOS
                     process->accessed_pages[j]++;
 #endif
@@ -247,7 +254,7 @@ void *pebs_scan_thread()
                   hemem_pages_cnt++;
                 }
                 else {
-		  /* assert(0); */
+                  /* assert(0); */
                   other_pages_cnt++;
                 }
                 total_pages_cnt++;
@@ -261,8 +268,8 @@ void *pebs_scan_thread()
               zero_pages_cnt++;
             }
 
-	    /* ps->addr = 0; */
-  	      break;
+            /* ps->addr = 0; */
+            break;
         case PERF_RECORD_THROTTLE:
         case PERF_RECORD_UNTHROTTLE:
           if (ph->type == PERF_RECORD_THROTTLE) {
@@ -296,7 +303,9 @@ static void pebs_migrate_down(struct hemem_process *process, struct hemem_page *
   hemem_ucm_wp_page(page, true);
   hemem_ucm_migrate_down(process, page, offset);
   process->current_dram -= pt_to_pagesize(page->pt);
-  page->migrating = false; 
+  page->migrating = false;
+  dram_tot_density -= page->density;
+  nvm_tot_density += page->density;
 
   gettimeofday(&end, NULL);
   LOG_TIME("migrate_down: %f s\n", elapsed(&start, &end));
@@ -313,6 +322,8 @@ static void pebs_migrate_up(struct hemem_process *process, struct hemem_page *pa
   hemem_ucm_migrate_up(process, page, offset);
   process->current_dram += pt_to_pagesize(page->pt);
   page->migrating = false;
+  dram_tot_density += page->density;
+  nvm_tot_density -= page->density;
 
   gettimeofday(&end, NULL);
   LOG_TIME("migrate_up: %f s\n", elapsed(&start, &end));
@@ -345,7 +356,7 @@ void make_hot(struct hemem_process* process, struct hemem_page* page, int new_ho
     assert(page->list == &(process->nvm_lists[page->hot]));
     page_list_remove(&(process->nvm_lists[page->hot]), page);
     page->hot = new_hot;
-    enqueue_page(&(process->nvm_lists[page->hot]), page);
+    enqueue_page_thresh(&(process->nvm_lists[page->hot]), page, Q_HIGHEST_DENSITY, (1 << page->hot));
   }
 }
 
@@ -367,9 +378,12 @@ void make_cold(struct hemem_process* process, struct hemem_page* page, int new_h
   }
 
   // Reset density of page
-  uint64_t page_density = page->density;
-  page->density = 0;
-  memset(page->accessed_map, 0, sizeof(page->accessed_map));
+  uint64_t page_density = 0;
+  if(new_hot == 0) {
+    page_density = page->density;
+    page->density = 0;
+    memset(page->accessed_map, 0, sizeof(page->accessed_map));
+  }
 
   if (page->in_dram) {
     assert(page->list == &(process->dram_lists[page->hot]));
@@ -382,7 +396,7 @@ void make_cold(struct hemem_process* process, struct hemem_page* page, int new_h
     assert(page->list == &(process->nvm_lists[page->hot]));
     page_list_remove(&(process->nvm_lists[page->hot]), page);
     page->hot = new_hot;
-    enqueue_page(&(process->nvm_lists[page->hot]), page);
+    enqueue_page_thresh(&(process->nvm_lists[page->hot]), page, Q_HIGHEST_DENSITY, (1 << page->hot));
     nvm_tot_density -= page_density;
   }
 }
@@ -503,7 +517,7 @@ struct hemem_page* partial_cool(struct hemem_process* process, bool dram)
         goto_next_list = true;
       }
       page_list_remove(p->list, p);
-      enqueue_page(&(cur_bins[new_hotness]), p);
+      enqueue_page_thresh(&(cur_bins[new_hotness]), p, Q_HIGHEST_DENSITY, (1 << new_hotness));
     } else {
       current = p;
       cur_list_index = cool_list;
@@ -649,7 +663,7 @@ void handle_ring_requests(struct hemem_process *process)
   num_ring_reqs = 0;
   // handle hot requests from hot buffer by moving pages to hot list
   while(!ring_buf_empty(process->hot_ring) && num_ring_reqs < HOT_RING_REQS_THRESHOLD) {
-	  page = (struct hemem_page*)ring_buf_get(process->hot_ring);
+    page = (struct hemem_page*)ring_buf_get(process->hot_ring);
     if (page == NULL) {
       // ring buffer was empty
       break;
@@ -752,7 +766,7 @@ struct hemem_page* find_candidate_nvm_page(struct hemem_process *process) {
 //  int tot_accesses;
 
   for(int i = NUM_HOTNESS_LEVELS-1; i >= 0; i--) {
-    p = dequeue_page(&(process->nvm_lists[i]));
+    p = dequeue_page(&(process->nvm_lists[i]), Q_HIGHEST_DENSITY);
 /*
     if (p == NULL) {
       // got null. list empy. move on.
@@ -795,7 +809,7 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
 
     // get the coldest possible dram page
     for(int i = 0; i < NUM_HOTNESS_LEVELS; i++) {
-      cp = dequeue_page(&(process->dram_lists[i]));
+      cp = dequeue_page(&(process->dram_lists[i]), Q_LOWEST_DENSITY);
       if(cp != NULL) {
         break;
       }
@@ -814,7 +828,7 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
       process->cur_cool_in_dram_list = 0;
     }
 
-    np = dequeue_page(&nvm_free_list);
+    np = dequeue_page(&nvm_free_list, Q_NONE);
     if (np != NULL) {
       assert(!(np->present));
 
@@ -829,7 +843,7 @@ void process_migrate_down(struct hemem_process *process, uint64_t migrate_down_b
         np->tot_accesses[i] = 0;
       }
 
-      enqueue_page(&(process->nvm_lists[cp->hot]), cp);
+      enqueue_page_thresh(&(process->nvm_lists[cp->hot]), cp, Q_HIGHEST_DENSITY, (1 << cp->hot));
       
       enqueue_page(&dram_free_list, np);
       migrated_bytes += pt_to_pagesize(cp->pt);
@@ -883,18 +897,18 @@ void process_migrate_up(struct hemem_process *process, uint64_t migrate_up_bytes
     new_hotness = access_to_index(tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD]);
     if (new_hotness == COLD) {
       p->hot = new_hotness;
-      enqueue_page(&(process->nvm_lists[p->hot]), p);
+      enqueue_page_thresh(&(process->nvm_lists[p->hot]), p, Q_HIGHEST_DENSITY, (1 << p->hot));
       continue;
     }
     
     // TODO
     // try to find a page for it. in the free list.
-    np = dequeue_page(&dram_free_list);
+    np = dequeue_page(&dram_free_list, Q_NONE);
     if (np == NULL) {
       gettimeofday(&now, NULL);
       LOG("%f\tpolicy thread found no DRAM free pages\n", elapsed(&startup, &now));
       p->hot = new_hotness;
-      enqueue_page(&(process->nvm_lists[p->hot]), p);
+      enqueue_page_thresh(&(process->nvm_lists[p->hot]), p, Q_HIGHEST_DENSITY, (1 << p->hot));
       break;
       //}
     }
@@ -1393,7 +1407,7 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
   gettimeofday(&start, NULL);
 
   if (process->current_dram < process->max_dram) {
-    page = dequeue_page(&dram_free_list);
+    page = dequeue_page(&dram_free_list, Q_NONE);
     if (page != NULL) {
       assert(page->in_dram);
       assert(!page->present);
@@ -1412,7 +1426,7 @@ static struct hemem_page* pebs_allocate_page(struct hemem_process* process)
   }
 
   // DRAM is full, fall back to NVM
-  page = dequeue_page(&nvm_free_list);
+  page = dequeue_page(&nvm_free_list, Q_NONE);
   if (page != NULL) {
     assert(!page->in_dram);
     assert(!page->present);
@@ -1541,7 +1555,6 @@ void pebs_init(void)
   }
 
   pthread_mutex_init(&(dram_free_list.list_lock), NULL);
-  struct hemem_page *p = calloc(DRAMSIZE / PAGE_SIZE, sizeof(struct hemem_page));
   for (int i = 0; i < DRAMSIZE / PAGE_SIZE; i++) {
     struct hemem_page *p = calloc(1, sizeof(struct hemem_page));
     p->devdax_offset = i * PAGE_SIZE;
@@ -1555,7 +1568,6 @@ void pebs_init(void)
   }
 
   pthread_mutex_init(&(nvm_free_list.list_lock), NULL);
-  p = calloc(NVMSIZE / PAGE_SIZE, sizeof(struct hemem_page));
   for (int i = 0; i < NVMSIZE / PAGE_SIZE; i++) {
     struct hemem_page *p = calloc(1, sizeof(struct hemem_page));
     p->devdax_offset = i * PAGE_SIZE;
@@ -1593,7 +1605,8 @@ void pebs_shutdown()
   }
 }
 
-void count_pages()
+static int time_step = 0;
+void count_pages(FILE *stream)
 {
   struct hemem_process *process;//, *tmp;
   struct timeval now;
@@ -1616,13 +1629,21 @@ void count_pages()
     fprintf(process->logfd, "]\tmigrations_up: %lu\tmigrations_down:%lu\n", process->migrations_up, process->migrations_down);
     fflush(process->logfd);
 #endif
+    // Calculate active pages in DRAM and NVM
+    uint64_t dram_pages = 0;
+    uint64_t nvm_pages = 0;
+
     LOG_STATS("\tprocess [%d]\tdram_lists: [%lu", process->pid, process->dram_lists[COLD].numentries);
+    dram_pages += process->dram_lists[COLD].numentries;
     for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
       LOG_STATS(", %lu", process->dram_lists[i].numentries);
+      dram_pages += process->dram_lists[i].numentries;
     }
     LOG_STATS("]\tnvm_lists: [%lu", process->nvm_lists[COLD].numentries);
+    nvm_pages += process->nvm_lists[COLD].numentries;
     for (i = 1; i < NUM_HOTNESS_LEVELS; i++) {
       LOG_STATS(", %lu", process->nvm_lists[i].numentries);
+      nvm_pages += process->dram_lists[i].numentries;
     }
     LOG_STATS("]\tcurrent_miss_ratio: %f\ttarget_miss_ratio: %f\tallowed_dram: [%ld]\tcurrent_dram: [%ld]\n", process->current_miss_ratio, process->target_miss_ratio, process->allowed_dram, process->current_dram);
 
@@ -1632,16 +1653,32 @@ void count_pages()
     }
     LOG_STATS("]\tmigration_up: [%lu]\tmigrations_down: [%lu]\n", process->migrations_up, process->migrations_down);
 
+    if(dram_pages != 0 && nvm_pages != 0) {
+      ++time_step;
+      dram_running_density += ((double)dram_tot_density) / (double)(dram_pages);
+      nvm_running_density += ((double)nvm_tot_density) / (double)(nvm_pages);
+    }
+
+    hemem_pages_cnt = total_pages_cnt = other_processes_cnt = throttle_cnt = unthrottle_cnt = 0;
+    fprintf(stream, "DRAM density/page:\t%f\tNVM density/page:\t%f\t",
+      ((double)dram_tot_density) / (double)(dram_pages),
+      ((double)nvm_tot_density) / (double)(nvm_pages));
+
+    fprintf(stream, "Avg DRAM density:\t%f\tAvg NVM density:\t%f\n",
+      ((double)dram_running_density) / (double)(time_step),
+      ((double)nvm_running_density) / (double)(time_step));
+
+
     //tmp = process;
-	  for (int xxx = LAST_HEMEM_THREAD + 1; xxx < PEBS_NPROCS; xxx++) {
-	    process->samples[xxx] = 0;
-	  }
+    for (int xxx = LAST_HEMEM_THREAD + 1; xxx < PEBS_NPROCS; xxx++) {
+      process->samples[xxx] = 0;
+    }
     process = process->next;
     //pthread_mutex_unlock(&(tmp->process_lock));
   }
 }
 
-void pebs_stats()
+void pebs_stats(FILE *stream)
 {
   /* TODO: change to per-process
   LOG_STATS("\tdram_hot_list.numentries: [%ld]\tdram_cold_list.numentries: [%ld]\tnvm_hot_list.numentries: [%ld]\tnvm_cold_list.numentries: [%ld]\themem_pages: [%lu]\ttotal_pages: [%lu]\tzero_pages: [%ld]\tthrottle/unthrottle_cnt: [%ld/%ld]\tcools: [%ld]\n",
@@ -1657,16 +1694,6 @@ void pebs_stats()
           cools);
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
   */
-  // Calculate active pages in DRAM and NVM
-  uint64_t dram_pages = dram_hot_pages + dram_cold_pages;
-  uint64_t nvm_pages = nvm_hot_pages + nvm_cold_pages;
-
-  if(dram_pages != 0 && nvm_pages != 0) {
-    ++time_step;
-    dram_running_density += ((double)dram_tot_density) / (double)(dram_pages);
-    nvm_running_density += ((double)nvm_tot_density) / (double)(nvm_pages);
-  }
-
   LOG_STATS("\tnum_processes: [%lu]\tdram_free: [%lu]\tnvm_free: [%lu]\thot_ring: [%lu]\thot_handled: [%ld]\tcold_ring: [%ld]\tcold_handled: [%ld]\tfree_ring: [%ld]\tfree_handled: [%ld]\tstale_candidates: [%ld]\n",
         processes_list.numentries,
         dram_free_list.numentries,
@@ -1690,16 +1717,7 @@ void pebs_stats()
         dram_cools_finished,
         nvm_cools_finished);
 
-  count_pages();
-
-  hemem_pages_cnt = total_pages_cnt = other_processes_cnt = throttle_cnt = unthrottle_cnt = 0;
-  fprintf(stream, "DRAM density/page:\t%f\tNVM density/page:\t%f\t",
-    ((double)dram_tot_density) / (double)(dram_pages),
-    ((double)nvm_tot_density) / (double)(nvm_pages));
-
-  fprintf(stream, "Avg DRAM density:\t%f\tAvg NVM density:\t%f\n",
-    ((double)dram_running_density) / (double)(time_step),
-    ((double)nvm_running_density) / (double)(time_step));
+  count_pages(stream);
 }
 
 void pebs_clear_stats() {
