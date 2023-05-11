@@ -154,6 +154,14 @@ run_gups_pebs: ./microbenchmarks/gups-pebs
 		./microbenchmarks/gups-pebs ${APP_THDS} ${GUPS_ITERS} \
 		$${log_size} 8 $${log_size} > ${RES}/${PREFIX}_gups_pebs.txt;
 
+run_gups_semisparse: ./microbenchmarks/gups-semisparse-huge
+	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
+	NVMSIZE=${NVMSIZE} DRAMSIZE=${DRAMSIZE} \
+	NVMOFFSET=${NVMOFFSET} DRAMOFFSET=${DRAMOFFSET} \
+	${GUPS_PRTY} ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
+		./microbenchmarks/gups-semisparse-huge ${APP_THDS} ${GUPS_ITERS} \
+		$${log_size} 8 $${log_size} > ${RES}/${PREFIX}_gups_semisparse.txt;
+
 GAPBS_TRIALS ?= 25
 run_gapbs: ./apps/gapbs/bc
 	NVMSIZE=${NVMSIZE} DRAMSIZE=${DRAMSIZE} NVMOFFSET=${NVMOFFSET} \
