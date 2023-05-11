@@ -52,6 +52,21 @@ pthread_t copy_threads[MAX_COPY_THREADS];
 #endif // USE_PARALLEL_MEMCPY
 #endif // ! USE_DMA
 
+#ifndef USE_DMA
+#ifdef USE_PARALLEL_MEMCPY
+struct pmemcpy {
+  pthread_mutex_t lock;
+  pthread_barrier_t barrier;
+  _Atomic bool write_zeros;
+  _Atomic void *dst;
+  _Atomic void *src;
+  _Atomic size_t length;
+};
+
+static struct pmemcpy pmemcpy;
+#endif // USE_PARALLEL_MEMCPY
+#endif // USE_DMA
+
 struct hemem_process volatile *processes = NULL;
 pthread_mutex_t processes_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -73,19 +88,162 @@ uint64_t migration_waits = 0;
 void *dram_devdax_mmap;
 void *nvm_devdax_mmap;
 
+void ucm_update_miss_ratio(int signum);
+void *hemem_parallel_memcpy_thread(void *arg);
+
+#ifdef STATS_THREAD
+static void *hemem_stats_thread();
+#endif
+
+void hemem_ucm_init() {
+#ifdef USE_DMA
+  struct uffdio_api uffdio_api;
+  struct uffdio_dma_channs uffdio_dma_channs;
+#endif
+  int ret;
+
+  log_init("ucm");
+
+  LOG("hemem_init: started\n");  
+
+  dramfd = open(DRAMPATH, O_RDWR);
+  if (dramfd < 0) {
+    perror("dram open");
+  }
+  assert(dramfd >= 0);
+
+  nvmfd = open(NVMPATH, O_RDWR);
+  if (nvmfd < 0) {
+    perror("nvm open");
+  }
+  assert(nvmfd >= 0);
+
+  if (signal(SIGUSR2, ucm_update_miss_ratio) == SIG_ERR) {
+    assert(0 && "Failed to map SIGUSR2 to the missratio update.");
+  }
+
+#ifdef USE_DMA  
+  uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
+  if (uffd == -1) {
+    perror("uffd");
+    assert(0);
+  }
+
+  uffdio_api.api = UFFD_API;
+  uffdio_api.features =
+      UFFD_FEATURE_PAGEFAULT_FLAG_WP | UFFD_FEATURE_MISSING_SHMEM |
+      UFFD_FEATURE_MISSING_HUGETLBFS; 
+  uffdio_api.ioctls = 0;
+  if (ioctl(uffd, UFFDIO_API, &uffdio_api) == -1) {
+    perror("ioctl uffdio_api");
+    assert(0);
+  }
+#endif
+
+  request_epoll_fd = epoll_create1(0);
+  if (request_epoll_fd == -1) {
+    perror("epoll_create1");
+    assert(0);
+  }
+
+  fault_epoll_fd = epoll_create1(0);
+  if (fault_epoll_fd == -1) {
+    perror("epoll_create1");
+    assert(0);
+  }
+
+  listen_fd = channel_server_init();
+  if (listen_fd < 0) {
+    perror("channel_server_init");
+    assert(0);
+  }
+
+  ret = pthread_create(&fault_thread, NULL, handle_fault, 0);
+  if (ret != 0) {
+    perror("pthread_create");
+    assert(0);
+  }
+
+  ret = pthread_create(&listen_thread, NULL, accept_new_app, 0);
+  if (ret != 0) {
+    perror("pthread_create");
+    assert(0);
+  }
+
+  ret = pthread_create(&request_thread, NULL, handle_request, 0);
+  if (ret != 0) {
+    perror("pthread_create");
+    assert(0);
+  }
+
+#if DRAMSIZE != 0
+  dram_devdax_mmap = mmap(NULL, DRAMSIZE, PROT_READ | PROT_WRITE,
+                          MAP_SHARED | MAP_POPULATE, dramfd, 0);
+  if (dram_devdax_mmap == MAP_FAILED) {
+    perror("dram devdax mmap");
+    assert(0);
+  }
+#endif
+
+  nvm_devdax_mmap = mmap(NULL, NVMSIZE, PROT_READ | PROT_WRITE,
+                         MAP_SHARED | MAP_POPULATE, nvmfd, 0);
+  if (nvm_devdax_mmap == MAP_FAILED) {
+    perror("nvm devdax mmap");
+    assert(0);
+  }
+
 #ifndef USE_DMA
 #ifdef USE_PARALLEL_MEMCPY
-struct pmemcpy {
-  pthread_mutex_t lock;
-  pthread_barrier_t barrier;
-  _Atomic bool write_zeros;
-  _Atomic void *dst;
-  _Atomic void *src;
-  _Atomic size_t length;
-};
+  uint64_t i;
+  ret = pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1);
+  assert(ret == 0);
 
-static struct pmemcpy pmemcpy;
+  ret = pthread_mutex_init(&pmemcpy.lock, NULL);
+  assert(ret == 0);
 
+  for (i = 0; i < MAX_COPY_THREADS; i++) {
+    ret = pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread,
+                       (void *)i);
+    assert(ret == 0);
+  }
+#endif // USE_PARALLEL_MEMCPY
+#endif // ! USE_DMA
+
+#ifdef STATS_THREAD
+  ret = pthread_create(&stats_thread, NULL, hemem_stats_thread, NULL);
+  assert(ret == 0);
+#endif
+
+#ifdef USE_DMA
+  uffdio_dma_channs.num_channs = NUM_CHANNS;
+  uffdio_dma_channs.size_per_dma_request = SIZE_PER_DMA_REQUEST;
+  if (ioctl(uffd, UFFDIO_DMA_REQUEST_CHANNS, &uffdio_dma_channs) == -1) {
+    perror("ioctl UFFDIO_API\n");
+    assert(0);
+  }
+#endif
+
+  gettimeofday(&startup, NULL);
+
+  LOG("hemem_init: finished\n");
+}
+
+void hemem_ucm_stop() {
+#ifdef USE_DMA
+  struct uffdio_dma_channs uffdio_dma_channs;
+  uffdio_dma_channs.num_channs = NUM_CHANNS;
+  uffdio_dma_channs.size_per_dma_request = SIZE_PER_DMA_REQUEST;
+  if (ioctl(uffd, UFFDIO_DMA_RELEASE_CHANNS, &uffdio_dma_channs) == -1) {
+    perror("ioctl UFFDIO_RELEASE_CHANNS");
+    assert(0);
+  }
+#endif
+
+  pebs_shutdown();
+}
+
+#ifndef USE_DMA
+#ifdef USE_PARALLEL_MEMCPY
 void *hemem_parallel_memcpy_thread(void *arg) {
   uint64_t tid = (uint64_t)arg;
   void *src;
@@ -365,14 +523,14 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
 //  #endif
     memsets++;
 
+    //LOG("allocated page for process %d at va %lx\n", pid, page_boundry);
+
     page->va = page_boundry;
     page->pid = process->pid;
     page->uffd = process->uffd;
     assert(page->va != 0);
     assert(page->va % PAGE_SIZE == 0);
     page->migrating = false;
-    page->in_migrate_up_queue = false;
-    page->in_migrate_down_queue = false;
     page->migrations_up = page->migrations_down = 0;
     memset(page->accessed_map, 0, sizeof(page->accessed_map));
     page->density = 0;
@@ -389,8 +547,9 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
     page_boundry += pagesize;
 
     mem_allocated += pagesize;
+    process->mem_allocated += pagesize;
     pages_allocated++;
-  } 
+  }
   
   response->header.msg_size = sizeof(struct alloc_response) + response->num_pages * sizeof(struct hemem_page_app);
   response->header.status = SUCCESS;
@@ -430,6 +589,7 @@ int ucm_free_space(struct free_request* request, struct free_response* response)
       remove_page(process, page);
       pebs_remove_page(process, page);
       mem_allocated -= pagesize;
+      process->mem_allocated -= pagesize;
       pages_freed += 1;
       page_boundry += pagesize;
     } else {
@@ -567,158 +727,6 @@ struct hemem_page *find_page(struct hemem_process *process, uint64_t va) {
   pthread_mutex_unlock(&(process->pages_lock));
   return page;
 }
-
-void hemem_ucm_init() {
-#ifdef USE_DMA
-  struct uffdio_api uffdio_api;
-  struct uffdio_dma_channs uffdio_dma_channs;
-#endif
-  int ret;
-
-  log_init("ucm");
-
-  LOG("hemem_init: started\n");  
-
-  dramfd = open(DRAMPATH, O_RDWR);
-  if (dramfd < 0) {
-    perror("dram open");
-  }
-  assert(dramfd >= 0);
-
-  nvmfd = open(NVMPATH, O_RDWR);
-  if (nvmfd < 0) {
-    perror("nvm open");
-  }
-  assert(nvmfd >= 0);
-
-  if (signal(SIGUSR2, ucm_update_miss_ratio) == SIG_ERR) {
-    assert(0 && "Failed to map SIGUSR2 to the missratio update.");
-  }
-
-#ifdef USE_DMA  
-  uffd = syscall(__NR_userfaultfd, O_CLOEXEC | O_NONBLOCK);
-  if (uffd == -1) {
-    perror("uffd");
-    assert(0);
-  }
-
-  uffdio_api.api = UFFD_API;
-  uffdio_api.features =
-      UFFD_FEATURE_PAGEFAULT_FLAG_WP | UFFD_FEATURE_MISSING_SHMEM |
-      UFFD_FEATURE_MISSING_HUGETLBFS; 
-  uffdio_api.ioctls = 0;
-  if (ioctl(uffd, UFFDIO_API, &uffdio_api) == -1) {
-    perror("ioctl uffdio_api");
-    assert(0);
-  }
-#endif
-
-  request_epoll_fd = epoll_create1(0);
-  if (request_epoll_fd == -1) {
-    perror("epoll_create1");
-    assert(0);
-  }
-
-  fault_epoll_fd = epoll_create1(0);
-  if (fault_epoll_fd == -1) {
-    perror("epoll_create1");
-    assert(0);
-  }
-
-  listen_fd = channel_server_init();
-  if (listen_fd < 0) {
-    perror("channel_server_init");
-    assert(0);
-  }
-
-  ret = pthread_create(&fault_thread, NULL, handle_fault, 0);
-  if (ret != 0) {
-    perror("pthread_create");
-    assert(0);
-  }
-
-  ret = pthread_create(&listen_thread, NULL, accept_new_app, 0);
-  if (ret != 0) {
-    perror("pthread_create");
-    assert(0);
-  }
-
-  ret = pthread_create(&request_thread, NULL, handle_request, 0);
-  if (ret != 0) {
-    perror("pthread_create");
-    assert(0);
-  }
-
-#if DRAMSIZE != 0
-  dram_devdax_mmap = mmap(NULL, DRAMSIZE, PROT_READ | PROT_WRITE,
-                          MAP_SHARED | MAP_POPULATE, dramfd, 0);
-  if (dram_devdax_mmap == MAP_FAILED) {
-    perror("dram devdax mmap");
-    assert(0);
-  }
-#endif
-
-  nvm_devdax_mmap = mmap(NULL, NVMSIZE, PROT_READ | PROT_WRITE,
-                         MAP_SHARED | MAP_POPULATE, nvmfd, 0);
-  if (nvm_devdax_mmap == MAP_FAILED) {
-    perror("nvm devdax mmap");
-    assert(0);
-  }
-
-#ifndef USE_DMA
-#ifdef USE_PARALLEL_MEMCPY
-  uint64_t i;
-  ret = pthread_barrier_init(&pmemcpy.barrier, NULL, MAX_COPY_THREADS + 1);
-  assert(ret == 0);
-
-  ret = pthread_mutex_init(&pmemcpy.lock, NULL);
-  assert(ret == 0);
-
-  for (i = 0; i < MAX_COPY_THREADS; i++) {
-    ret = pthread_create(&copy_threads[i], NULL, hemem_parallel_memcpy_thread,
-                       (void *)i);
-    assert(ret == 0);
-  }
-#endif // USE_PARALLEL_MEMCPY
-#endif // ! USE_DMA
-
-#ifdef STATS_THREAD
-  ret = pthread_create(&stats_thread, NULL, hemem_stats_thread, NULL);
-  assert(ret == 0);
-#endif
-
-#ifdef USE_PEBS
-  pebs_init();
-#endif
-
-#ifdef USE_DMA
-  uffdio_dma_channs.num_channs = NUM_CHANNS;
-  uffdio_dma_channs.size_per_dma_request = SIZE_PER_DMA_REQUEST;
-  if (ioctl(uffd, UFFDIO_DMA_REQUEST_CHANNS, &uffdio_dma_channs) == -1) {
-    perror("ioctl UFFDIO_API\n");
-    assert(0);
-  }
-#endif
-
-  gettimeofday(&startup, NULL);
-
-  LOG("hemem_init: finished\n");
-}
-
-void hemem_ucm_stop() {
-#ifdef USE_DMA
-  struct uffdio_dma_channs uffdio_dma_channs;
-  uffdio_dma_channs.num_channs = NUM_CHANNS;
-  uffdio_dma_channs.size_per_dma_request = SIZE_PER_DMA_REQUEST;
-  if (ioctl(uffd, UFFDIO_DMA_RELEASE_CHANNS, &uffdio_dma_channs) == -1) {
-    perror("ioctl UFFDIO_RELEASE_CHANNS");
-    assert(0);
-  }
-#endif
-
-  pebs_shutdown();
-}
-
 
 #if 0
 static void hemem_ucm_mmap_populate(struct hemem_page *page) {
@@ -946,7 +954,7 @@ void hemem_ucm_wp_page(struct hemem_page *page, bool protect) {
   ret = ioctl(page->uffd, UFFDIO_WRITEPROTECT, &wp);
 
   if (ret < 0 && !page->in_free_ring) {
-    if (ret == -EBADF || ret == -ENOENT) {
+    if (ret == EBADF || ret == ENOENT) {
       if (!(uffds[page->uffd]->exited)) {
         perror("uffdio writeprotect");
         assert(0);
@@ -1077,6 +1085,8 @@ void handle_missing_fault(struct hemem_process *process,
   in_dram = page->in_dram;
   pagesize = pt_to_pagesize(page->pt);
 
+  //LOG("handled page fault for process %u for va %lx\n", process->pid, page_boundry);
+
   addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
 
 //#ifdef USE_DMA
@@ -1096,9 +1106,11 @@ void handle_missing_fault(struct hemem_process *process,
   memset(page->accessed_map, 0, sizeof(page->accessed_map));
   page->density = 0;
   mem_allocated += pagesize;
+  process->mem_allocated += pagesize;
 
   // place in hemem's page tracking list
   add_page(process, page);
+
 
   missing_faults_handled++;
   pages_allocated++;

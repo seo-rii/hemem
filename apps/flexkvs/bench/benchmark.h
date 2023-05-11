@@ -65,6 +65,8 @@ struct settings {
 
     uint64_t target_size;
     bool keybased;
+
+    bool skip_load;
 };
 
 struct key {

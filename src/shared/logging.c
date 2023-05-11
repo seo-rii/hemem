@@ -31,7 +31,7 @@ void log_init(const char* logname)
   }
 
   char statsbuffer[64];
-  snprintf(statsbuffer, 64, "/tmp/sats_%s.txt", logname);
+  snprintf(statsbuffer, 64, "/tmp/stats_%s.txt", logname);
   statsf = fopen(statsbuffer, "w+");
   if (statsf == NULL) {
     perror("stats file open");

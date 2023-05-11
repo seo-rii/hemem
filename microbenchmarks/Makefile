@@ -10,7 +10,8 @@ BUILD = ./build
 default: ${BUILD} ${BUILD}/gups-sparse-huge ${BUILD}/gups-sparse-base \
 	    ${BUILD}/gups-sparse-oracle ${BUILD}/gups-sparse-oracle-base \
 		${BUILD}/gups-dense-sparse-huge ${BUILD}/gups-dense-sparse-base ${BUILD}/gups-dense-sparse-oracle \
-		${BUILD}/gups-semisparse-huge ${BUILD}/gups-semisparse-oracle
+		${BUILD}/gups-semisparse-huge ${BUILD}/gups-semisparse-oracle \
+		${BUILD}/gups-pebs ${BUILD}/gups-warmset ${BUILD}/gups ${BUILD}/gups-warmset-znuma #gups-random gups-hotset-move
 
 ${BUILD}:
 	mkdir -p ${BUILD};
@@ -29,6 +30,9 @@ ${BUILD}/gups-sparse-huge: ${BUILD}/gups-sparse.o ${BUILD}/zipf.o ../src/timer.o
 
 ${BUILD}/gups-semisparse-huge: ${BUILD}/gups-semisparse.o ${BUILD}/zipf.o ../src/timer.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^ $(LIBS) -lhemem
+
+gups-warmset-znuma: gups-warmset.o
+	$(CC) $(CFLAGS) $(INCLUDES) -o gups-warmset-znuma gups-warmset.o zipf.o ../src/timer.o $(LIBS)
 
 gups-warmset: gups-warmset.o
 	$(CC) $(CFLAGS) $(INCLUDES) -o gups-warmset gups-warmset.o zipf.o ../src/timer.o $(LIBS) -L$(HEMEMDIR) -lhemem

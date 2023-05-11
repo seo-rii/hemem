@@ -240,7 +240,7 @@ static inline void item_ref(struct item *it)
 {
     uint16_t old;
     old = __sync_add_and_fetch(&it->refcount, 1);
-    assert(old != 1);
+    //assert(old != 1);
 }
 
 /**

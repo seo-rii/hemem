@@ -27,6 +27,7 @@
 #include <pthread.h>
 #include <math.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include "iokvs.h"
 
@@ -56,11 +57,12 @@ static struct hash_bucket *buckets;
 void hasht_init(size_t hasht_size)
 {
     size_t i;
-    printf("Target hashtable size %.2f GB\n", (double)(hasht_size / (1024 * 1024 * 1024)));
+    struct timeval start, end;
 
     // Must be a power of 2, so convert to nearest power of 2
     hasht_size = (1ull << ((unsigned long long)round(log2(hasht_size / sizeof(struct hash_bucket)))));
     nbuckets = hasht_size;
+    printf("Hashtable size %.2f GB\n", (double)((double)nbuckets * (double)sizeof(struct hash_bucket) / (1024 * 1024 * 1024)));
     printf("allocing %zu buckets for %zu bytes\n", nbuckets, nbuckets * sizeof(struct hash_bucket));
     buckets = calloc(nbuckets + 1, sizeof(struct hash_bucket));
     memset(buckets, 0, (nbuckets + 1) * sizeof(struct hash_bucket));
@@ -69,6 +71,9 @@ void hasht_init(size_t hasht_size)
         perror("Allocating item hash table failed");
         abort();
     }
+
+    printf("done allocating %zu buckets for %zu bytes\n", nbuckets, nbuckets * sizeof(struct hash_bucket));
+    gettimeofday(&start, NULL);
 
     for (i = 0; i < nbuckets; i++) {
         if (pthread_spin_init(&buckets[i].lock, 0) != 0) {
@@ -83,6 +88,19 @@ void hasht_init(size_t hasht_size)
             }
         }
     }
+
+    gettimeofday(&end, NULL);
+
+    uint64_t sec = end.tv_sec - start.tv_sec;
+    uint64_t usec = end.tv_usec - start.tv_usec;
+    if (usec < 0) {
+      sec -= 1;
+      usec += 1000000;
+    }
+
+    double tv_double = sec + (usec / 1000000.0);
+    printf("hash table init took %f seconds\n", tv_double);
+
 }
 
 

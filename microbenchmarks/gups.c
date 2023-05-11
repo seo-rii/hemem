@@ -117,7 +117,7 @@ char *filename = "indices1.txt";
 
 FILE *hotsetfile = NULL;
 
-volatile bool done_gups = false;
+bool done_gups = false;
 unsigned completed_gups[MAX_THREADS] = {0};
 
 static void *do_gups(void *arguments)

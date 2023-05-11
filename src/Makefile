@@ -93,5 +93,8 @@ logging.o: ${SHARED}/logging.c ${SHARED}/logging.h
 logging-app.o: ${SHARED}/logging.c ${SHARED}/logging.h
 	$(CC) $(APP_CFLAGS) $(SHARED_INCLUDES) -o logging-app.o -c $(SHARED)/logging.c
 
+lib-mmap-populate: lib_mmap_populate.c
+	$(CC) lib_mmap_populate.c -lsyscall_intercept -fpic -shared -o libmmap_populate.so
+
 clean:
 	$(RM) *.o *.so central-manager central-manager-base central-manager-dense central-manager-sparse

@@ -640,6 +640,14 @@ int hemem_munmap(void* addr, size_t length)
   }
   #endif
   
+  struct uffdio_range uffdio_range;
+  uffdio_range.start = (uint64_t)addr;
+  uffdio_range.len = length;
+  if (ioctl(uffd, UFFDIO_UNREGISTER, &uffdio_range) == -1) {
+    perror("ioctl uffdio_unregister");
+    assert(0);
+  }
+
   ret = libc_munmap(addr, length);
   if (ret != 0) {
       perror("libc_mumap");

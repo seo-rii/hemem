@@ -10,7 +10,7 @@
 #include "hemem-types.h"
 
 #define PEBS_POLICY_INTERVAL      (1000000) // in us (1 s)
-#define PEBS_MIGRATE_RATE      (1UL * 1024UL * 1024UL * 1024UL) // 1GB
+#define PEBS_MIGRATE_RATE      (8UL * 1024UL * 1024UL * 1024UL) // 10GB
 //#define HOT_WRITE_THRESHOLD       (4)
 #if PAGE_SIZE == HUGEPAGE_SIZE
 #define HOT_READ_THRESHOLD        (8)

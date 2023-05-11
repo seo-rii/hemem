@@ -32,6 +32,7 @@
 #include <stdint.h>
 #include <inttypes.h>
 #include <sys/un.h>
+#include <signal.h>
 
 #include <protocol_binary.h>
 
@@ -679,6 +680,8 @@ int main(int argc, char *argv[])
     char name[32];
     unsigned num_threads, i;
     pthread_t *pts;
+
+    sigaction(SIGPIPE, &(struct sigaction){SIG_IGN}, NULL);
 
     if (settings_init(argc, argv) != 0) {
       return EXIT_FAILURE;
