@@ -2,6 +2,9 @@
 mkdir -p data/colocate/logs
 mkdir -p data/colocate/gups
 
+rm data/colocate/logs/*
+rm data/colocate/gups/*
+
 debugfile=/tmp/debug.txt
 rm -f $debugfile
 

@@ -21,7 +21,7 @@ LIBS = -lm -lpthread
 HEMEM_LIBS = $(LIBS) -ldl -lsyscall_intercept
 
 default: all
-all:app central-manager
+all:app central-manager lib-mmap-populate
 app: libhemem.so
 
 libhemem.so: hemem-app.o  interpose.o channel-shared-app.o channel-app.o logging-app.o

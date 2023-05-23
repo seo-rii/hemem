@@ -85,6 +85,7 @@ static void *print_instantaneous_gups(void *arg)
   FILE *tot;
   uint64_t tot_gups, tot_last_second_gups = 0;
   fprintf(stderr, "Opening instantaneous gups at %s\n", log_filename);
+  fflush(stderr);
   tot = fopen(log_filename, "w");
   if (tot == NULL) {
     perror("fopen");
@@ -183,7 +184,7 @@ static void *do_gups(void *arguments)
 void signal_handler() 
 {
   received_signal = true;
-  hotsize += hotsize / 2;
+  hotsize += (hotsize / 2);
 }
 
 int main(int argc, char **argv)
@@ -247,6 +248,7 @@ int main(int argc, char **argv)
   fprintf(stderr, "%lu updates per thread (%d threads)\n", updates, threads);
   fprintf(stderr, "field of 2^%lu (%lu) bytes\n", expt, size);
   fprintf(stderr, "%ld byte element size (%ld elements total)\n", elt_size, size / elt_size);
+  fflush(stderr);
 
   p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB | MAP_POPULATE, -1, 0);
   if (p == MAP_FAILED) {
@@ -257,9 +259,11 @@ int main(int argc, char **argv)
   gettimeofday(&stoptime, NULL);
   fprintf(stderr, "Init took %.4f seconds\n", elapsed(&starttime, &stoptime));
   fprintf(stderr, "Region address: %p - %p\t size: %ld\n", p, (p + size), size);
-  
+  fflush(stderr);
+
   nelems = (size / threads) / elt_size; // number of elements per thread
   fprintf(stderr, "Elements per thread: %lu\n", nelems);
+  fflush(stderr);
 
   //memset(thread_gups, 0, sizeof(thread_gups));
 
@@ -271,7 +275,8 @@ int main(int argc, char **argv)
 
   gettimeofday(&stoptime, NULL);
   secs = elapsed(&starttime, &stoptime);
-  fprintf(stderr, "Initialization time: %.4f seconds.\n", secs);
+  printf("Initialization time: %.4f seconds.\n", secs);
+  fflush(stdout);
 
   //hemem_start_timing();
 
@@ -321,6 +326,7 @@ int main(int argc, char **argv)
       gups += completed_gups[i];
     gups /= (secs * 1.0e9);
     printf("GUPS = %.10f\n", gups);
+    fflush(stdout);
   }
   filename = "indices2.txt";
 
