@@ -199,9 +199,10 @@ run_flexkvs_grow: ./apps/flexkvs/flexkvs ./apps/flexkvs/kvsbench
 GUPS_ITERS ?= 0
 run_gups: ./microbenchmarks/gups
 	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
+	hot_size=$$(printf "%.0f" $$(echo "$${log_size} - 2"|bc -l)); \
 	${GUPS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
 		./microbenchmarks/gups ${APP_THDS} ${GUPS_ITERS} $${log_size} \
-		8 $${log_size} > ${RES}/${PREFIX}_gups.txt & \
+		8 $${hot_size} 0 ${RES}/${PREFIX}_persecond_gups.txt > ${RES}/${PREFIX}_gups.txt & \
 	GUPS_PID=$$!; \
 	perf stat -e instructions -I 1000 -p $${GUPS_PID} -o ${RES}/${PREFIX}_gups_ipc.txt &\
 	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
@@ -210,11 +211,12 @@ run_gups: ./microbenchmarks/gups
 
 run_gups_pebs: ./microbenchmarks/gups-pebs
 	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
+	hot_size=$$(printf "%.0f" $$(echo "$${log_size} - 2"|bc -l)); \
 	NVMSIZE=${NVMSIZE} DRAMSIZE=${DRAMSIZE} \
 	NVMOFFSET=${NVMOFFSET} DRAMOFFSET=${DRAMOFFSET} REQ_DRAM=${REQ_DRAM} \
 	${GUPS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
 		./microbenchmarks/gups-pebs ${APP_THDS} ${GUPS_ITERS} \
-		$${log_size} 8 $${log_size} > ${RES}/${PREFIX}_gups_pebs.txt & \
+		$${log_size} 8 $${hot_size} 0 ${RES}/${PREFIX}_persecond_gups.txt > ${RES}/${PREFIX}_gups_pebs.txt & \
 	GUPS_PID=$$!;\
 	perf stat -e instructions -I 1000 -p $${GUPS_PID} -o ${RES}/${PREFIX}_gups_pebs_ipc.txt &\
 	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
@@ -299,9 +301,9 @@ run_znuma_tier: all
 	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX}_Isolated; \
 	wait;\
 	pkill flexkvs;\
-	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX}_gups & \
+	$(MAKE) run_flexkvs  WAIT_BG=1 WAIT_SCRIPT="wait-gups.sh ${RES}/$${PREFIX}_gups.txt" ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX}_gups & \
 	FLEX_PID=$$!;\
-	$(MAKE) run_gups WAIT_BG=1 WAIT_SCRIPT="wait-gups.sh ${RES}/$${PREFIX}_gups.txt" BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GUPS_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX} & \
+	$(MAKE) run_gups BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" APP_SIZE=${GUPS_SIZE} PRELOAD="${POPULATE_PRELOAD}" PREFIX=$${PREFIX} & \
 	wait $${FLEX_PID}; \
 	pkill flexkvs;\
 	pkill gups;\
@@ -430,7 +432,7 @@ run_eval_apps: all
 	${KILL_MGR} \
 	file=${RES}/$${PREFIX}_gups_fkvs; \
 	${RUN_MGR} \
-	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gups & \
+	$(MAKE) run_flexkvs WAIT_BG=1 WAIT_SCRIPT="wait-gups.sh ${RES}/$${PREFIX}_gups_pebs.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gups & \
 	FLEX_PID=$$!; \
 	$(MAKE) run_gups_pebs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GUPS_SIZE} PREFIX=$${PREFIX} & \
 	wait $${FLEX_PID}; \
