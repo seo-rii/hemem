@@ -70,6 +70,9 @@ GAPBS:
 ./microbenchmarks/gups-pebs:
 	$(MAKE) GUPS;
 
+./microbenchmarks/gups-semisparse-huge:
+	$(MAKE) GUPS;
+
 ./apps/flexkvs/flexkvs:
 	$(MAKE) FlexKVS;
 
@@ -123,23 +126,24 @@ endif
 
 FLEXKV_SIZE ?= $$((64*1024*1024*1024))
 GUPS_SIZE   ?= $$((256*1024*1024*1024))
+GUPS_SMALL_SIZE ?= $$((128*1024*1024*1024))
 GAPBS_SIZE  ?= 28
 BT_SIZE     ?= E
 
 FLEXKV_PRTY ?= ${SET_HIGH_PRTY}
 GUPS_PRTY   ?= ${SET_LOW_PRTY}
 GAPBS_PRTY  ?= ${SET_LOW_PRTY}
-BT_PRTY			?= ${SET_LOW_PRTY}
+BT_PRTY		?= ${SET_LOW_PRTY}
 
 # Commands needed by HeMem
 SETUP_CMD = export LD_LIBRARY_PATH=./src:./Hoard/src:$LD_LIBRARY_PATH; \
-	echo 1000000 > /proc/sys/vm/max_map_count;
+	echo 10000000 > /proc/sys/vm/max_map_count;
 HEMEM_PRELOAD = env LD_PRELOAD=./src/libhemem.so
 POPULATE_PRELOAD = env LD_PRELOAD=./src/libmmap_populate.so
 
-RUN_MGR = nice -20 ${NUMA_CMD} --physcpubind=${MGR_CPUS} ./src/central-manager > $${file}_mem_usage.txt & \
+RUN_MGR = nice -20 ${NUMA_CMD} --physcpubind=${MGR_CPUS} gdb -x exec.sh --args ./src/central-manager > $${file}_mem_usage.txt & \
 	CTRL_MGR=$$!; \
-	sleep 20;
+	sleep 15;
 
 KILL_MGR = kill $${CTRL_MGR}; sleep 5;
 
@@ -212,13 +216,38 @@ run_gups_pebs: ./microbenchmarks/gups-pebs
 		./scripts/numastat.sh $${GUPS_PID} > ${RES}/$${PREFIX}_gups_pebs_mem_usage.txt & \
 	fi;
 
-run_gups_semisparse: ./microbenchmarks/gups-semisparse-huge
-	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
+GUPS_SS_ITERS ?= 250000000
+run_gups_semisparse: all ./microbenchmarks/gups-semisparse-huge
+	# HeMem runs	
+	${SETUP_CMD} \
+	PREFIX=semisparse; \
+	log_size=$$(printf "%.0f" $$(echo "l(${GUPS_SMALL_SIZE})/l(2)"|bc -l)); \
+	hot_frac=8; \
+	hot_size=$$((log_size - 2)); \
 	NVMSIZE=${NVMSIZE} DRAMSIZE=${DRAMSIZE} \
 	NVMOFFSET=${NVMOFFSET} DRAMOFFSET=${DRAMOFFSET} \
-	${GUPS_PRTY} ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
-		./microbenchmarks/gups-semisparse-huge ${APP_THDS} ${GUPS_ITERS} \
-		$${log_size} 8 $${log_size} > ${RES}/${PREFIX}_gups_semisparse.txt;
+	APP_THDS=8; \
+	#${NUMA_CMD} -N 0 \
+	#	./microbenchmarks/build/gups-semisparse-oracle $${APP_THDS} ${GUPS_SS_ITERS} \
+	#	$${log_size} 8 $${hot_size} $${hot_frac} 0 > ${RES}/$${PREFIX}_oracle_nvm.txt 2>&1; \
+	#${NUMA_CMD} -N 0 \
+	#	./microbenchmarks/build/gups-semisparse-oracle $${APP_THDS} ${GUPS_SS_ITERS} \
+	#	$${log_size} 8 $${hot_size} $${hot_frac} 1 > ${RES}/$${PREFIX}_oracle_dram.txt 2>&1; \
+	#${NUMA_CMD} -N 0 \
+	#	./microbenchmarks/build/gups-semisparse-oracle $${APP_THDS} ${GUPS_SS_ITERS} \
+	#	$${log_size} 8 $${hot_size} $${hot_frac} 2 > ${RES}/$${PREFIX}_oracle_dense_only.txt 2>&1; \
+	#${NUMA_CMD} -N 0 \
+	#	./microbenchmarks/build/gups-semisparse-oracle $${APP_THDS} ${GUPS_SS_ITERS} \
+	#	$${log_size} 8 $${hot_size} $${hot_frac} 3 > ${RES}/$${PREFIX}_oracle_sparse_only.txt 2>&1; \
+	#${NUMA_CMD} -N 0 \
+	#	./microbenchmarks/build/gups-semisparse-oracle $${APP_THDS} ${GUPS_SS_ITERS} \
+	#	$${log_size} 8 $${hot_size} $${hot_frac} 4 > ${RES}/$${PREFIX}_oracle_hot_only.txt 2>&1; \
+	${RUN_PERF} \
+	${RUN_MGR} \
+	${SET_HIGH_PRTY} ${NUMA_CMD} --physcpubind=${APP_CPUS} ${HEMEM_PRELOAD} \
+		./microbenchmarks/build/gups-semisparse-huge ${APP_THDS} ${GUPS_SS_ITERS} \
+		$${log_size} 8 $${hot_size} $${hot_frac} > ${RES}/$${PREFIX}_gups.txt; \
+	${KILL_MGR} \
 
 GAPBS_TRIALS ?= 10
 run_gapbs: ./apps/gapbs/bc
