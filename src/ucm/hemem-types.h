@@ -37,6 +37,7 @@ struct hemem_page {
   bool in_free_ring;
   uint64_t accesses[NPBUFTYPES];
   uint64_t tot_accesses[NPBUFTYPES];
+  bool access_bit;
 
   UT_hash_handle hh;
   struct hemem_page *next, *prev;
@@ -60,6 +61,9 @@ struct hemem_process {
   uint64_t migrations_up, migrations_down;
   int64_t dram_delta;
   double ratio;
+#endif
+#ifdef TMTS
+  struct timeval timestamp;
 #endif
   volatile uint64_t mem_allocated;
   volatile uint64_t current_dram;

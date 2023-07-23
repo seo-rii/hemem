@@ -145,6 +145,10 @@ RUN_MGR = nice -20 ${NUMA_CMD} --physcpubind=${MGR_CPUS} ./src/central-manager >
 	CTRL_MGR=$$!; \
 	sleep 20;
 
+RUN_TMTS_MGR = nice -20 ${NUMA_CMD} --physcpubind=${MGR_CPUS} ./src/tmts-manager > $${file}_mem_usage.txt & \
+	CTRL_MGR=$$!; \
+	sleep 20;
+
 KILL_MGR = kill $${CTRL_MGR}; sleep 5;
 
 RUN_PERF = ${NUMA_CMD_CLIENT} ./run_perf.sh & PERF_CMD=$$!;
@@ -446,6 +450,40 @@ run_eval_apps: all
 	${KILL_MGR} \
 	file=${RES}/$${PREFIX}_bt_fkvs; \
 	${RUN_MGR} \
+	$(MAKE) run_flexkvs WAIT_BG=1 WAIT_SCRIPT="wait-bt.sh ${RES}/$${PREFIX}_bt.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
+	FLEX_PID=$$!;\
+	$(MAKE) run_bt PRELOAD="${HEMEM_PRELOAD}" BT_SIZE=${BT_SIZE} PREFIX=$${PREFIX} & \
+	wait $${FLEX_PID}; \
+	${KILL_MGR} \
+	${KILL_PERF}
+
+# FlexKV occupies first half of DRAM/NVM, and other app the other half	
+run_tmts_apps: all	
+	# HeMem runs	
+	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	${SETUP_CMD} \
+	PREFIX=eval_tmts; \
+	${RUN_PERF} \
+	file=${RES}/$${PREFIX}_Isolated; \
+	${RUN_TMTS_MGR} \
+	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_Isolated; \
+	${KILL_MGR} \
+	file=${RES}/$${PREFIX}_gups_fkvs; \
+	${RUN_TMTS_MGR} \
+	$(MAKE) run_flexkvs WAIT_BG=1 WAIT_SCRIPT="wait-gups.sh ${RES}/$${PREFIX}_gups_pebs.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gups & \
+	FLEX_PID=$$!; \
+	$(MAKE) run_gups_pebs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GUPS_SIZE} PREFIX=$${PREFIX} & \
+	wait $${FLEX_PID}; \
+	${KILL_MGR} \
+	file=${RES}/$${PREFIX}_gapbs_fkvs; \
+	${RUN_TMTS_MGR} \
+	$(MAKE) run_flexkvs WAIT_BG=1 WAIT_SCRIPT="wait-gapbs.sh ${RES}/$${PREFIX}_gapbs.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs & \
+	FLEX_PID=$$!;\
+	$(MAKE) run_gapbs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GAPBS_SIZE} PREFIX=$${PREFIX} & \
+	wait $${FLEX_PID}; \
+	${KILL_MGR} \
+	file=${RES}/$${PREFIX}_bt_fkvs; \
+	${RUN_TMTS_MGR} \
 	$(MAKE) run_flexkvs WAIT_BG=1 WAIT_SCRIPT="wait-bt.sh ${RES}/$${PREFIX}_bt.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
 	FLEX_PID=$$!;\
 	$(MAKE) run_bt PRELOAD="${HEMEM_PRELOAD}" BT_SIZE=${BT_SIZE} PREFIX=$${PREFIX} & \

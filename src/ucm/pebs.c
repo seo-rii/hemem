@@ -207,6 +207,16 @@ void *pebs_scan_thread()
                     page->accesses[j]++;
                     page->tot_accesses[j]++;
                     
+#ifdef TMTS
+                    pthread_mutex_lock(&(process->process_lock));
+                    page->access_bit = true;
+                    // Access on NVM caught by PEBS. Request upgrade to DRAM.
+                    if(!page->in_dram)
+                      tmts_request_upgrade(process, page);
+                    // Done with TMTS-related activities. Leave this function
+                    pthread_mutex_unlock(&(process->process_lock));
+                    break;
+#endif
                     total_accesses = page->accesses[DRAMREAD] + page->accesses[NVMREAD];
                     new_hotness = access_to_index(total_accesses);
                     // check for hotness change and add to ring
@@ -307,6 +317,114 @@ static void pebs_migrate_up(struct hemem_process *process, struct hemem_page *pa
   gettimeofday(&end, NULL);
   LOG_TIME("migrate_up: %f s\n", elapsed(&start, &end));
 }
+
+#ifdef TMTS
+void tmts_request_upgrade(struct hemem_process *process, struct hemem_page *page)
+{
+  assert(!page->in_dram);
+  struct hemem_page *np = dequeue_page(&dram_free_list);
+  if (np == NULL)
+    return;
+  assert(!np->present);
+  assert(np->pid == -1);
+
+  page_list_remove(&process->nvm_lists[COLD], page);
+
+  uint64_t old_offset = page->devdax_offset;
+  pebs_migrate_up(process, page, np->devdax_offset);
+  np->devdax_offset = old_offset;
+  np->in_dram = false;
+  np->present = false;
+  assert(np->hot == COLD);
+  for (int i = 0; i < NPBUFTYPES; i++) {
+    assert(np->accesses[i] == 0);
+    assert(np->tot_accesses[i] == 0);
+  }
+
+  enqueue_page(&(process->dram_lists[COLD]), page);
+  enqueue_page(&nvm_free_list, np);
+}
+
+void tmts_request_downgrade(struct hemem_process *process, struct hemem_page *page)
+{
+  assert(page->in_dram);
+  struct hemem_page *np = dequeue_page(&nvm_free_list);
+  if (np == NULL)
+    return;
+  assert(!np->present);
+  assert(np->pid == -1);
+
+  page_list_remove(&process->dram_lists[COLD], page);
+
+  uint64_t old_offset = page->devdax_offset;
+  pebs_migrate_down(process, page, np->devdax_offset);
+  np->devdax_offset = old_offset;
+  np->in_dram = true;
+  np->present = false;
+  assert(np->hot == COLD);
+  for (int i = 0; i < NPBUFTYPES; i++) {
+    assert(np->accesses[i] == 0);
+    assert(np->tot_accesses[i] == 0);
+  }
+
+  enqueue_page(&(process->nvm_lists[COLD]), page);
+  enqueue_page(&dram_free_list, np);
+}
+
+#include <linux/userfaultfd.h>
+
+void hemem_clear_accessed_bit(uint64_t va, long uffd)
+{
+  uint64_t ret;
+  struct uffdio_page_flags page_flags;
+
+  page_flags.va = va;
+  page_flags.flag1 = HEMEM_ACCESSED_FLAG;
+
+  if (ioctl(uffd, UFFDIO_CLEAR_FLAG, &page_flags) < 0) {
+    fprintf(stderr, "userfaultfd_clear_flag returned < 0\n");
+    assert(0);
+  }
+
+  ret = page_flags.res1;
+  if (ret == 0) {
+    LOG("hemem_clear_accessed_bit: accessed bit not cleared\n");
+  }
+}
+
+int hemem_get_accessed_bit(uint64_t va, long uffd)
+{
+  uint64_t ret;
+  struct uffdio_page_flags page_flags;
+
+  page_flags.va = va;
+  page_flags.flag1 = HEMEM_ACCESSED_FLAG;
+
+  if (ioctl(uffd, UFFDIO_GET_FLAG, &page_flags) < 0) {
+    fprintf(stderr, "userfaultfd_get_flag returned < 0\n");
+    assert(0);
+  }
+
+  ret = page_flags.res1;
+  return (ret & HEMEM_ACCESSED_FLAG) == HEMEM_ACCESSED_FLAG;
+}
+
+void tmts_scan_dram(struct hemem_process *process) 
+{
+  struct hemem_page *page = prev_page(&process->dram_lists[COLD], NULL);
+  while(page != NULL) {
+    if(!page->access_bit && !hemem_get_accessed_bit(page->va, process->uffd)) {
+      struct hemem_page *npage = prev_page(&process->dram_lists[COLD], page);
+      tmts_request_downgrade(process, page);
+      page = npage;
+      continue;
+    }
+    hemem_clear_accessed_bit(page->va, process->uffd);
+    page->access_bit = false;
+    page = prev_page(&process->dram_lists[COLD], page);
+  }
+}
+#endif
 
 // moves page to hot list -- called by migrate thread
 void make_hot(struct hemem_process* process, struct hemem_page* page, int new_hot)
@@ -1135,6 +1253,30 @@ void *pebs_policy_thread()
 
   for (;;) {
    gettimeofday(&start, NULL);
+#ifdef TMTS
+    process = peek_process(&processes_list);
+    struct timeval time_now;
+    gettimeofday(&time_now, NULL);
+    while (process != NULL) {
+      pthread_mutex_lock(&(process->process_lock));
+      // Determine whether process is high or low priority, and adjust interval
+      uint64_t interval;
+      if(process->target_miss_ratio >= 0.5)
+        interval = TMTS_CHECK_DRAM_LOWPRTY;
+      else
+        interval = TMTS_CHECK_DRAM_HIGHPRTY;
+      // If interval done, scan the DRAM to downgrade untouched pages
+      if(TO_MICROSEC(process->timestamp) + interval <= TO_MICROSEC(time_now)) {
+        tmts_scan_dram(process);
+        process->timestamp = time_now;
+      }
+      pthread_mutex_unlock(&(process->process_lock));
+      // Move onto next process
+      process = process->next;
+    }
+    // Sleep for a delta
+    usleep(TMTS_SLEEP_DELTA);
+#endif
 #ifdef HEMEM_QOS
     num_need_memory = 0;
     num_take_memory = 0;
