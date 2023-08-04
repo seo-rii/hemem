@@ -618,7 +618,7 @@ extract_bg: all
 extract_bg_timeline: all
 	python scripts/extract_timeline.py ${BG_PREFIXES} ${BG_APPS} ${RES}
 
-EVAL_PREFIXES = "eval_qtmem"
+EVAL_PREFIXES = "eval_qtmem,eval_tmts"
 EVAL_APPS = "Isolated,gups,gapbs,bt"
 extract_eval: all
 	python scripts/extract_script.py ${EVAL_PREFIXES} ${EVAL_APPS} ${RES}
