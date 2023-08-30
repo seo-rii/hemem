@@ -162,6 +162,7 @@ FLEXKV_RUNTIME  ?= 300
 FLEXKV_HOT_FRAC ?= 0.25
 FLEXKV_HOT_FRAC2 ?= 0.25
 
+MAXMEM_MEASURE ?= 0
 ZNUMA_MEASURE ?= 0
 WAIT_BG ?= 0
 NUMASTAT ?= ${NUMA_CMD_CLIENT} ./scripts/numastat.sh
@@ -185,7 +186,10 @@ run_flexkvs: ./apps/flexkvs/flexkvs ./apps/flexkvs/kvsbench
 	./wait-kvs.sh ${RES}/${PREFIX}_server.txt; \
 	${FLEXKV_NICE} ${NUMA_CMD_CLIENT} \
 		./apps/flexkvs/kvsbench -t ${FLEXKV_THDS} -T ${FLEXKV_RUNTIME} -w ${FLEXKV_WARMUP} \
-		-h ${FLEXKV_HOT_FRAC} 127.0.0.1:11211 -S $$((15*${FLEXKV_SIZE}/16)) > ${RES}/${PREFIX}_flexkv.txt;
+		-h ${FLEXKV_HOT_FRAC} 127.0.0.1:11211 -S $$((15*${FLEXKV_SIZE}/16)) > ${RES}/${PREFIX}_flexkv.txt; \
+	if [ ${MAXMEM_MEASURE} -gt 0 ]; then \
+		cp /tmp/log-$${FLEXKVS_SERVER}.txt ${RES}/${PREFIX}_flexkv_miss_ratio.txt; \
+	fi;
 
 run_flexkvs_grow: ./apps/flexkvs/flexkvs ./apps/flexkvs/kvsbench
 	-./apps/flexkvs/unlink_socks.sh; # Cleanup
@@ -466,25 +470,25 @@ run_tmts_apps: all
 	${RUN_PERF} \
 	file=${RES}/$${PREFIX}_Isolated; \
 	${RUN_TMTS_MGR} \
-	$(MAKE) run_flexkvs PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_Isolated; \
+	$(MAKE) run_flexkvs MAXMEM_MEASURE=1 PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_Isolated; \
 	${KILL_MGR} \
 	file=${RES}/$${PREFIX}_gups_fkvs; \
 	${RUN_TMTS_MGR} \
-	$(MAKE) run_flexkvs WAIT_BG=1 WAIT_SCRIPT="wait-gups.sh ${RES}/$${PREFIX}_gups_pebs.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gups & \
+	$(MAKE) run_flexkvs MAXMEM_MEASURE=1 WAIT_BG=1 WAIT_SCRIPT="wait-gups.sh ${RES}/$${PREFIX}_gups_pebs.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gups & \
 	FLEX_PID=$$!; \
 	$(MAKE) run_gups_pebs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GUPS_SIZE} PREFIX=$${PREFIX} & \
 	wait $${FLEX_PID}; \
 	${KILL_MGR} \
 	file=${RES}/$${PREFIX}_gapbs_fkvs; \
 	${RUN_TMTS_MGR} \
-	$(MAKE) run_flexkvs WAIT_BG=1 WAIT_SCRIPT="wait-gapbs.sh ${RES}/$${PREFIX}_gapbs.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs & \
+	$(MAKE) run_flexkvs MAXMEM_MEASURE=1 WAIT_BG=1 WAIT_SCRIPT="wait-gapbs.sh ${RES}/$${PREFIX}_gapbs.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_gapbs & \
 	FLEX_PID=$$!;\
 	$(MAKE) run_gapbs PRELOAD="${HEMEM_PRELOAD}" APP_SIZE=${GAPBS_SIZE} PREFIX=$${PREFIX} & \
 	wait $${FLEX_PID}; \
 	${KILL_MGR} \
 	file=${RES}/$${PREFIX}_bt_fkvs; \
 	${RUN_TMTS_MGR} \
-	$(MAKE) run_flexkvs WAIT_BG=1 WAIT_SCRIPT="wait-bt.sh ${RES}/$${PREFIX}_bt.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
+	$(MAKE) run_flexkvs MAXMEM_MEASURE=1 WAIT_BG=1 WAIT_SCRIPT="wait-bt.sh ${RES}/$${PREFIX}_bt.txt" PRELOAD="${HEMEM_PRELOAD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PREFIX=$${PREFIX}_bt & \
 	FLEX_PID=$$!;\
 	$(MAKE) run_bt PRELOAD="${HEMEM_PRELOAD}" BT_SIZE=${BT_SIZE} PREFIX=$${PREFIX} & \
 	wait $${FLEX_PID}; \
