@@ -519,7 +519,7 @@ int ucm_alloc_space(struct alloc_request* request, struct alloc_response* respon
 //  #ifndef USE_DMA
 //    hemem_parallel_memset(ucm_addr, 0, pagesize);
 //  #else
-//    memset(ucm_addr, 0, pagesize);
+      memset(ucm_addr, 0, pagesize);
 //  #endif
     memsets++;
 
@@ -1059,7 +1059,7 @@ void handle_missing_fault(struct hemem_process *process,
   addr = (in_dram ? dram_devdax_mmap + offset : nvm_devdax_mmap + offset);
 
 //#ifdef USE_DMA
-//  memset(addr, 0, pagesize);
+    memset(addr, 0, pagesize);
 //#else
 //  hemem_parallel_memset(addr, 0, pagesize);
 //#endif
