@@ -20,15 +20,18 @@
 #define CAPACITY                  (128*1024*1024)
 #define COOLING_PAGES             (8192)
 
-#define PEBS_NPROCS 24
+#define PEBS_NPROCS 8
 #define PERF_PAGES	(1 + (1 << 16))	// Has to be == 1+2^n, here 1MB
 #define SAMPLE_PERIOD	10007
-//#define SAMPLE_PERIOD 5003
+// #define SAMPLE_PERIOD	107
+// #define SAMPLE_PERIOD 5003
 //#define SAMPLE_FREQ	100
 
 
-#define SCANNING_THREAD_CPU (FAULT_THREAD_CPU + 1)
-#define MIGRATION_THREAD_CPU (SCANNING_THREAD_CPU + 1)
+// #define SCANNING_THREAD_CPU (FAULT_THREAD_CPU + 1)
+// #define MIGRATION_THREAD_CPU (SCANNING_THREAD_CPU + 1)
+#define SCANNING_THREAD_CPU (27)
+#define MIGRATION_THREAD_CPU (31)
 
 
 #define COOL_IN_PLACE

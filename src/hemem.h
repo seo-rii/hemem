@@ -50,11 +50,13 @@ extern uint64_t dramsize;
 extern char* drampath;
 extern char* nvmpath;
 
-#define NVMSIZE_DEFAULT   (480L * (1024L * 1024L * 1024L))
-#define DRAMSIZE_DEFAULT  (128L * (1024L * 1024L * 1024L))
+// #define NVMSIZE_DEFAULT   (480L * (1024L * 1024L * 1024L))
+// #define DRAMSIZE_DEFAULT  (128L * (1024L * 1024L * 1024L))
+#define NVMSIZE_DEFAULT (90L * (1024L * 1024L * 1024L))
+#define DRAMSIZE_DEFAULT  (27L * (1024L * 1024L * 1024L))
 
-#define DRAMPATH_DEFAULT  "/dev/dax0.0"
-#define NVMPATH_DEFAULT   "/dev/dax1.0"
+#define DRAMPATH_DEFAULT  "/dev/dax1.0"
+#define NVMPATH_DEFAULT   "/dev/dax0.0"
 
 //#define PAGE_SIZE (1024 * 1024 * 1024)
 //#define PAGE_SIZE (2 * (1024 * 1024))
@@ -71,8 +73,8 @@ extern char* nvmpath;
 #define HUGE_PFN_MASK	(HUGEPAGE_MASK ^ UINT64_MAX)
 #define GIGA_PFN_MASK   (GIGAPAGE_MASK ^ UINT64_MAX)
 
-#define FAULT_THREAD_CPU  (0)
-#define STATS_THREAD_CPU  (23)
+#define FAULT_THREAD_CPU  (23)
+#define STATS_THREAD_CPU  (0)
 
 extern FILE *hememlogf;
 //#define LOG(...) fprintf(stderr, __VA_ARGS__)
