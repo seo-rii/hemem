@@ -226,8 +226,8 @@ void hemem_init()
   else
     start_cpu = START_THREAD_DEFAULT;
 
-  stats_thread_cpu = start_cpu;
-  fault_thread_cpu = start_cpu;
+  stats_thread_cpu = 0;
+  fault_thread_cpu = 23;
 
   char* num_cores_string = getenv("HEMEM_NUM_CORES");
   if(num_cores_string != NULL)

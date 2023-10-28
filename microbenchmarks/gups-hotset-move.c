@@ -116,6 +116,7 @@ static void *print_instantaneous_gups()
       tot_gups += thread_gups[i];
     }
     fprintf(tot, "%.10f\n", (1.0 * (abs(tot_gups - tot_last_second_gups))) / (1.0e9));
+    fflush(tot);
     tot_updates += abs(tot_gups - tot_last_second_gups);
     tot_last_second_gups = tot_gups;
     sleep(1);
@@ -342,7 +343,7 @@ int main(int argc, char **argv)
   //hemem_clear_stats();
   // spawn gups worker threads
   for (i = 0; i < threads; i++) {
-    ga[i]->iters = updates * 2;
+    ga[i]->iters = updates * 8;
     int r = pthread_create(&t[i], NULL, do_gups, (void*)ga[i]);
     assert(r == 0);
   }

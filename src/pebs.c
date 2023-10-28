@@ -51,6 +51,7 @@ FILE *miss_ratio_f = NULL;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
+int pebs_core_list[] = {3,7,11,15,19,23,27,31}; // should contain PEBS_NPROCS entries
 
 volatile bool need_cool_dram = false;
 volatile bool need_cool_nvm = false;
@@ -87,7 +88,7 @@ static struct perf_event_mmap_page* perf_setup(__u64 config, __u64 config1, __u6
   attr.exclude_callchain_user = 1;
   attr.precise_ip = 1;
 
-  pfd[cpu][type] = perf_event_open(&attr, -1, cpu, -1, 0);
+  pfd[cpu][type] = perf_event_open(&attr, -1, pebs_core_list[cpu], -1, 0);
   if(pfd[cpu][type] == -1) {
     perror("perf_event_open");
   }
@@ -762,14 +763,15 @@ void pebs_init(void)
   else
     hemem_cpu_start = START_THREAD_DEFAULT;
   
-  scanning_thread_cpu = hemem_cpu_start;
-  migration_thread_cpu = scanning_thread_cpu + 1;
+  scanning_thread_cpu = 31;
+  migration_thread_cpu = 27;
 
   for (int i = start_cpu; i < start_cpu + num_cores; i++) {
     //perf_page[i][READ] = perf_setup(0x1cd, 0x4, i);  // MEM_TRANS_RETIRED.LOAD_LATENCY_GT_4
     //perf_page[i][READ] = perf_setup(0x81d0, 0, i);   // MEM_INST_RETIRED.ALL_LOADS
     perf_page[i][DRAMREAD] = perf_setup(0x1d3, 0, i, DRAMREAD);      // MEM_LOAD_L3_MISS_RETIRED.LOCAL_DRAM
-    perf_page[i][NVMREAD] = perf_setup(0x80d1, 0, i, NVMREAD);     // MEM_LOAD_RETIRED.LOCAL_PMM
+    // perf_page[i][NVMREAD] = perf_setup(0x80d1, 0, i, NVMREAD);     // MEM_LOAD_RETIRED.LOCAL_PMM
+    perf_page[i][NVMREAD] = perf_setup(0x2d3, 0, i, NVMREAD);         // MEM_LOAD_L3_MISS_RETIRED.REMOTE_DRAM
     //perf_page[i][WRITE] = perf_setup(0x82d0, 0, i, WRITE);    // MEM_INST_RETIRED.ALL_STORES
     //perf_page[i][WRITE] = perf_setup(0x12d0, 0, i);   // MEM_INST_RETIRED.STLB_MISS_STORES
   }
