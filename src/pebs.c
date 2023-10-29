@@ -14,11 +14,28 @@
 #include <sys/mman.h>
 #include <sched.h>
 #include <sys/ioctl.h>
+#include <fcntl.h>
 
 #include "hemem.h"
 #include "pebs.h"
 #include "timer.h"
 #include "spsc-ring.h"
+
+#define LOCAL_NUMA 3
+#define CHA_MSR_PMON_BASE 0x0E00L
+#define CHA_MSR_PMON_CTL_BASE 0x0E01L
+#define CHA_MSR_PMON_FILTER0_BASE 0x0E05L
+#define CHA_MSR_PMON_FILTER1_BASE 0x0E06L
+#define CHA_MSR_PMON_STATUS_BASE 0x0E07L
+#define CHA_MSR_PMON_CTR_BASE 0x0E08L
+#define NUM_CHA_BOXES 18
+#define NUM_CHA_COUNTERS 4
+
+int colloid_msr_fd;
+double smoothed_occ_local;
+double smoothed_occ_remote;
+uint64_t cur_ctr_tsc[NUM_CHA_BOXES][NUM_CHA_COUNTERS], prev_ctr_tsc[NUM_CHA_BOXES][NUM_CHA_COUNTERS];
+uint64_t cur_ctr_val[NUM_CHA_BOXES][NUM_CHA_COUNTERS], prev_ctr_val[NUM_CHA_BOXES][NUM_CHA_COUNTERS];
 
 uint64_t hemem_cpu_start;
 uint64_t migration_thread_cpu;
@@ -103,6 +120,106 @@ static struct perf_event_mmap_page* perf_setup(__u64 config, __u64 config1, __u6
   assert(p != MAP_FAILED);
 
   return p;
+}
+
+static inline void sample_cha_ctr(int cha, int ctr) {
+    uint32_t msr_num;
+    uint64_t msr_val;
+    int ret;
+
+    msr_num = CHA_MSR_PMON_CTR_BASE + (0x10 * cha) + ctr;
+    ret = pread(colloid_msr_fd, &msr_val, sizeof(msr_val), msr_num);
+    if (ret != sizeof(msr_val)) {
+        perror("ERROR: failed to read MSR");
+    }
+    prev_ctr_val[cha][ctr] = cur_ctr_val[cha][ctr];
+    cur_ctr_val[cha][ctr] = msr_val;
+    prev_ctr_tsc[cha][ctr] = cur_ctr_tsc[cha][ctr];
+    cur_ctr_tsc[cha][ctr] = rdtscp();
+}
+
+static void colloid_setup(int cpu) {
+  // Open msr file
+  char filename[100];
+  sprintf(filename, "/dev/cpu/%d/msr", cpu);
+  colloid_msr_fd = open(filename, O_RDWR);
+  if(colloid_msr_fd == -1) {
+    perror("Failed to open msr file");
+  }
+
+  // Setup counters
+  int cha, ctr, ret;
+  uint32_t msr_num;
+  uint64_t msr_val;
+  for(cha = 0; cha < NUM_CHA_BOXES; cha++) {
+      msr_num = CHA_MSR_PMON_FILTER0_BASE + (0x10 * cha); // Filter0
+      msr_val = 0x00000000; // default; no filtering
+      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
+      if (ret != 8) {
+          perror("wrmsr FILTER0 failed");
+      }
+
+      msr_num = CHA_MSR_PMON_FILTER1_BASE + (0x10 * cha); // Filter1
+      msr_val = (cha%2 == 0)?(0x40432):(0x40431); // Filter DRd of local/remote on even/odd CHA boxes
+      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
+      if (ret != 8) {
+          perror("wrmsr FILTER1 failed");
+      }
+
+      msr_num = CHA_MSR_PMON_CTL_BASE + (0x10 * cha) + 0; // counter 0
+      msr_val = 0x403136; // TOR Occupancy
+      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
+      if (ret != 8) {
+          perror("wrmsr COUNTER0 failed");
+      }
+
+      msr_num = CHA_MSR_PMON_CTL_BASE + (0x10 * cha) + 1; // counter 1
+      msr_val = 0x403135; // TOR Inserts
+      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
+      if (ret != 8) {
+          perror("wrmsr COUNTER1 failed");
+      }
+
+      msr_num = CHA_MSR_PMON_CTL_BASE + (0x10 * cha) + 2; // counter 2
+      msr_val = 0x400000; // CLOCKTICKS
+      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
+      if (ret != 8) {
+          perror("wrmsr COUNTER2 failed");
+      }
+  }
+
+  // Initialize stats
+  for(cha = 0; cha < NUM_CHA_BOXES; cha++) {
+        for(ctr = 0; ctr < NUM_CHA_COUNTERS; ctr++) {
+            cur_ctr_tsc[cha][ctr] = 0;
+            cur_ctr_val[cha][ctr] = 0;
+            sample_cha_ctr(cha, ctr);
+        }
+    }
+
+  smoothed_occ_local = 0.0;
+  smoothed_occ_remote = 0.0;
+}
+
+static void colloid_update_stats() {
+  uint64_t cum_occ, delta_tsc;
+  double cur_occ;
+  // Sample counters and update state
+  // TODO: For starters using CHA0 for local and CHA1 for remote
+  sample_cha_ctr(0, 0); // CHA0 occupancy
+  sample_cha_ctr(0, 1); // CHA0 inserts
+  sample_cha_ctr(1, 0);
+  sample_cha_ctr(1, 1);
+
+  cum_occ = cur_ctr_val[0][0] - prev_ctr_val[0][0];
+  delta_tsc = cur_ctr_tsc[0][0] - prev_ctr_tsc[0][0];
+  cur_occ = ((double)cum_occ)/((double)delta_tsc);
+  smoothed_occ_local = cur_occ;
+
+  cum_occ = cur_ctr_val[1][0] - prev_ctr_val[1][0];
+  delta_tsc = cur_ctr_tsc[1][0] - prev_ctr_tsc[1][0];
+  cur_occ = ((double)cum_occ)/((double)delta_tsc);
+  smoothed_occ_remote = cur_occ;
 }
 
 void make_hot_request(struct hemem_page* page)
@@ -498,7 +615,7 @@ void *pebs_policy_thread()
   struct hemem_page* cur_cool_in_dram  = NULL;
   struct hemem_page* cur_cool_in_nvm = NULL;
   #endif
-
+  
   thread = pthread_self();
   CPU_ZERO(&cpuset);
   CPU_SET(migration_thread_cpu, &cpuset);
@@ -507,6 +624,8 @@ void *pebs_policy_thread()
     perror("pthread_setaffinity_np");
     assert(0);
   }
+
+  colloid_setup(migration_thread_cpu);
 
   for (;;) {
     gettimeofday(&start, NULL);
@@ -565,90 +684,99 @@ void *pebs_policy_thread()
         make_cold(page);
         //printf("cold ring, cold pages:%llu\n", num_ring_reqs);
     }
-    
-    // move each hot NVM page to DRAM
-    for (migrated_bytes = 0; migrated_bytes < PEBS_KSWAPD_MIGRATE_RATE;) {
-      p = dequeue_fifo(&nvm_hot_list);
-      if (p == NULL) {
-        // nothing in NVM is currently hot -- bail out
-        break;
-      }
 
-#ifdef COOL_IN_PLACE
-      if (p == cur_cool_in_nvm) {
-        cur_cool_in_nvm = nvm_hot_list.first;
-      }
-#endif
+    colloid_update_stats();
 
-      if (/*(p->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (p->accesses[DRAMREAD] + p->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
-        // it has been cooled, need to move it into the cold list
-        p->hot = false;
-        enqueue_fifo(&nvm_cold_list, p); 
-        continue;
-      }
-
-      for (tries = 0; tries < 2; tries++) {
-        // find a free DRAM page
-        np = dequeue_fifo(&dram_free_list);
-
-        if (np != NULL) {
-          assert(!(np->present));
-
-          LOG("%lx: cold %lu -> hot %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
-                p->va, p->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
-
-          old_offset = p->devdax_offset;
-          pebs_migrate_up(p, np->devdax_offset);
-          np->devdax_offset = old_offset;
-          np->in_dram = false;
-          np->present = false;
-          np->hot = false;
-          for (int i = 0; i < NPBUFTYPES; i++) {
-            np->accesses[i] = 0;
-            np->tot_accesses[i] = 0;
-          }
-
-          enqueue_fifo(&dram_hot_list, p);
-          enqueue_fifo(&nvm_free_list, np);
-
-          migrated_bytes += pt_to_pagesize(p->pt);
+    if(smoothed_occ_local <= smoothed_occ_remote) {
+      // move each hot NVM page to DRAM
+      for (migrated_bytes = 0; migrated_bytes < PEBS_KSWAPD_MIGRATE_RATE;) {
+        p = dequeue_fifo(&nvm_hot_list);
+        if (p == NULL) {
+          // nothing in NVM is currently hot -- bail out
           break;
         }
 
-        // no free dram page, try to find a cold dram page to move down
-        cp = dequeue_fifo(&dram_cold_list);
-        if (cp == NULL) {
-          // all dram pages are hot, so put it back in list we got it from
-          enqueue_fifo(&nvm_hot_list, p);
-          goto out;
+  #ifdef COOL_IN_PLACE
+        if (p == cur_cool_in_nvm) {
+          cur_cool_in_nvm = nvm_hot_list.first;
         }
-        assert(cp != NULL);
+  #endif
 
-        // find a free nvm page to move the cold dram page to
-        np = dequeue_fifo(&nvm_free_list);
-        if (np != NULL) {
-          assert(!(np->present));
+        if (/*(p->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (p->accesses[DRAMREAD] + p->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+          // it has been cooled, need to move it into the cold list
+          p->hot = false;
+          enqueue_fifo(&nvm_cold_list, p); 
+          continue;
+        }
 
-          LOG("%lx: hot %lu -> cold %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
-                cp->va, cp->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
+        for (tries = 0; tries < 2; tries++) {
+          // find a free DRAM page
+          np = dequeue_fifo(&dram_free_list);
 
-          old_offset = cp->devdax_offset;
-          pebs_migrate_down(cp, np->devdax_offset);
-          np->devdax_offset = old_offset;
-          np->in_dram = true;
-          np->present = false;
-          np->hot = false;
-          for (int i = 0; i < NPBUFTYPES; i++) {
-            np->accesses[i] = 0;
-            np->tot_accesses[i] = 0;
+          if (np != NULL) {
+            assert(!(np->present));
+
+            LOG("%lx: cold %lu -> hot %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
+                  p->va, p->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
+
+            old_offset = p->devdax_offset;
+            pebs_migrate_up(p, np->devdax_offset);
+            np->devdax_offset = old_offset;
+            np->in_dram = false;
+            np->present = false;
+            np->hot = false;
+            for (int i = 0; i < NPBUFTYPES; i++) {
+              np->accesses[i] = 0;
+              np->tot_accesses[i] = 0;
+            }
+
+            enqueue_fifo(&dram_hot_list, p);
+            enqueue_fifo(&nvm_free_list, np);
+
+            migrated_bytes += pt_to_pagesize(p->pt);
+            break;
           }
 
-          enqueue_fifo(&nvm_cold_list, cp);
-          enqueue_fifo(&dram_free_list, np);
+          // no free dram page, try to find a cold dram page to move down
+          cp = dequeue_fifo(&dram_cold_list);
+          if (cp == NULL) {
+            // all dram pages are hot, so put it back in list we got it from
+            enqueue_fifo(&nvm_hot_list, p);
+            goto out;
+          }
+          assert(cp != NULL);
+
+          // find a free nvm page to move the cold dram page to
+          np = dequeue_fifo(&nvm_free_list);
+          if (np != NULL) {
+            assert(!(np->present));
+
+            LOG("%lx: hot %lu -> cold %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
+                  cp->va, cp->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
+
+            old_offset = cp->devdax_offset;
+            pebs_migrate_down(cp, np->devdax_offset);
+            np->devdax_offset = old_offset;
+            np->in_dram = true;
+            np->present = false;
+            np->hot = false;
+            for (int i = 0; i < NPBUFTYPES; i++) {
+              np->accesses[i] = 0;
+              np->tot_accesses[i] = 0;
+            }
+
+            enqueue_fifo(&nvm_cold_list, cp);
+            enqueue_fifo(&dram_free_list, np);
+          }
+          assert(np != NULL);
         }
-        assert(np != NULL);
       }
+    } else {
+      // Move hot pages from DRAM into slower tier
+      // TODO: Implement this; Need to decide how many hot pages to move
     }
+    
+    
 
     #ifdef COOL_IN_PLACE
     cur_cool_in_dram = partial_cool(&dram_hot_list, &dram_cold_list, true, cur_cool_in_dram);
