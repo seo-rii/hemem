@@ -65,6 +65,7 @@ uint64_t cools = 0;
 
 _Atomic volatile double miss_ratio = -1.0;
 FILE *miss_ratio_f = NULL;
+FILE *colloid_log_f = NULL;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
@@ -606,11 +607,12 @@ void *pebs_policy_thread()
   struct hemem_page *p;
   struct hemem_page *cp;
   struct hemem_page *np;
-  uint64_t migrated_bytes;
+  uint64_t migrated_bytes, migrate_limit;
   uint64_t old_offset;
   int num_ring_reqs;
   struct hemem_page* page = NULL;
   double migrate_time;
+  double delta_occ;
   #ifdef COOL_IN_PLACE
   struct hemem_page* cur_cool_in_dram  = NULL;
   struct hemem_page* cur_cool_in_nvm = NULL;
@@ -626,6 +628,11 @@ void *pebs_policy_thread()
   }
 
   colloid_setup(migration_thread_cpu);
+  colloid_log_f = fopen("/tmp/hemem-colloid.log", "w");
+  if(colloid_log_f == NULL) {
+    perror("open colloid log file failed");
+  }
+  
 
   for (;;) {
     gettimeofday(&start, NULL);
@@ -688,8 +695,16 @@ void *pebs_policy_thread()
     colloid_update_stats();
 
     if(smoothed_occ_local <= smoothed_occ_remote) {
-      // move each hot NVM page to DRAM
-      for (migrated_bytes = 0; migrated_bytes < PEBS_KSWAPD_MIGRATE_RATE;) {
+      // move hot NVM pages to DRAM
+      delta_occ = (smoothed_occ_remote - smoothed_occ_local)/(smoothed_occ_remote);
+      // TODO: Take frequency into account while determining number of pages to move
+      //migrate_limit = (uint64_t)(delta_occ * nvm_hot_list.numentries * PAGE_SIZE);
+      migrate_limit = PAGE_SIZE;
+      if(migrate_limit > PEBS_KSWAPD_MIGRATE_RATE) {
+        migrate_limit = PEBS_KSWAPD_MIGRATE_RATE;
+      }
+      fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, nvm_hot_size: %lu, migrate_limit: %lu\n", smoothed_occ_local, smoothed_occ_remote, nvm_hot_list.numentries, migrate_limit);
+      for (migrated_bytes = 0; migrated_bytes < migrate_limit;) {
         p = dequeue_fifo(&nvm_hot_list);
         if (p == NULL) {
           // nothing in NVM is currently hot -- bail out
@@ -773,11 +788,68 @@ void *pebs_policy_thread()
       }
     } else {
       // Move hot pages from DRAM into slower tier
-      // TODO: Implement this; Need to decide how many hot pages to move
+      delta_occ = (smoothed_occ_local - smoothed_occ_remote)/(smoothed_occ_local);
+      // TODO: Take frequency into account while determining number of pages to move
+      // migrate_limit = (uint64_t)(delta_occ * dram_hot_list.numentries * PAGE_SIZE);
+      migrate_limit = PAGE_SIZE;
+      if(migrate_limit > PEBS_KSWAPD_MIGRATE_RATE) {
+        migrate_limit = PEBS_KSWAPD_MIGRATE_RATE;
+      }
+      fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, dram_hot_size: %lu, migrate_limit: %lu\n", smoothed_occ_local, smoothed_occ_remote, dram_hot_list.numentries, migrate_limit);
+
+      for (migrated_bytes = 0; migrated_bytes < migrate_limit;) {
+        p = dequeue_fifo(&dram_hot_list);
+        if (p == NULL) {
+          // nothing in DRAM is currently hot -- bail out
+          break;
+        }
+
+  #ifdef COOL_IN_PLACE
+        if (p == cur_cool_in_dram) {
+          cur_cool_in_dram = dram_hot_list.first;
+        }
+  #endif
+
+        if (/*(p->accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (p->accesses[DRAMREAD] + p->accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
+          // it has been cooled, need to move it into the cold list
+          p->hot = false;
+          enqueue_fifo(&dram_cold_list, p); 
+          continue;
+        }
+
+        // Find free NVM page
+        np = dequeue_fifo(&nvm_free_list);
+
+        if (np != NULL) {
+          assert(!(np->present));
+
+          LOG("%lx: cold %lu -> hot %lu\t slowmem.hot: %lu, slowmem.cold: %lu\t fastmem.hot: %lu, fastmem.cold: %lu\n",
+                p->va, p->devdax_offset, np->devdax_offset, nvm_hot_list.numentries, nvm_cold_list.numentries, dram_hot_list.numentries, dram_cold_list.numentries);
+
+          old_offset = p->devdax_offset;
+          pebs_migrate_down(p, np->devdax_offset);
+          np->devdax_offset = old_offset;
+          np->in_dram = true;
+          np->present = false;
+          np->hot = false;
+          for (int i = 0; i < NPBUFTYPES; i++) {
+            np->accesses[i] = 0;
+            np->tot_accesses[i] = 0;
+          }
+
+          enqueue_fifo(&nvm_hot_list, p);
+          enqueue_fifo(&dram_free_list, np);
+
+          migrated_bytes += pt_to_pagesize(p->pt);
+        } else {
+          // No free NVM page; put page back in list and bail out
+          enqueue_fifo(&dram_hot_list, p);
+          goto out;
+        }
+      }
+
     }
     
-    
-
     #ifdef COOL_IN_PLACE
     cur_cool_in_dram = partial_cool(&dram_hot_list, &dram_cold_list, true, cur_cool_in_dram);
     cur_cool_in_nvm = partial_cool(&nvm_hot_list, &nvm_cold_list, false, cur_cool_in_nvm);
@@ -975,6 +1047,7 @@ static inline double calc_miss_ratio()
 void pebs_stats()
 {
   uint64_t total_samples = 0;
+  LOG_STATS("\tocc_local: [%lf]\t occ_remote: [%lf]\n", smoothed_occ_local, smoothed_occ_remote);
   LOG_STATS("\tdram_hot_list.numentries: [%ld]\tdram_cold_list.numentries: [%ld]\tnvm_hot_list.numentries: [%ld]\tnvm_cold_list.numentries: [%ld]\themem_pages: [%lu]\ttotal_pages: [%lu]\tzero_pages: [%ld]\tthrottle/unthrottle_cnt: [%ld/%ld]\tcools: [%ld]\n",
           dram_hot_list.numentries,
           dram_cold_list.numentries,
