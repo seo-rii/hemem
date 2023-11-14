@@ -41,14 +41,24 @@ uint64_t hemem_cpu_start;
 uint64_t migration_thread_cpu;
 uint64_t scanning_thread_cpu;
 
+#ifdef HISTOGRAM
+static struct fifo_list dram_histogram_list[MAX_HISTOGRAM_BINS];
+static struct fifo_list nvm_histogram_list[MAX_HISTOGRAM_BINS];
+uint64_t histogram_clock = 0;
+#else
 static struct fifo_list dram_hot_list;
 static struct fifo_list dram_cold_list;
 static struct fifo_list nvm_hot_list;
 static struct fifo_list nvm_cold_list;
+#endif
 static struct fifo_list dram_free_list;
 static struct fifo_list nvm_free_list;
+#ifndef HISTOGRAM
 static ring_handle_t hot_ring;
 static ring_handle_t cold_ring;
+#else
+static ring_handle_t update_ring;
+#endif
 static ring_handle_t free_page_ring;
 static pthread_mutex_t free_page_ring_lock = PTHREAD_MUTEX_INITIALIZER;
 uint64_t global_clock = 0;
@@ -223,6 +233,7 @@ static void colloid_update_stats() {
   smoothed_occ_remote = cur_occ;
 }
 
+#ifndef HISTOGRAM
 void make_hot_request(struct hemem_page* page)
 {
    page->ring_present = true;
@@ -234,6 +245,13 @@ void make_cold_request(struct hemem_page* page)
     page->ring_present = true;
     ring_buf_put(cold_ring, (uint64_t*)page);
 }
+#else
+void histogram_update_request(struct hemem_page* page) 
+{
+  page->ring_present = true;
+  ring_buf_put(update_ring, (uint64_t*)page); 
+}
+#endif
 
 void *pebs_scan_thread()
 {
@@ -281,6 +299,11 @@ void *pebs_scan_thread()
                 if (page->va != 0) {
                   page->accesses[j]++;
                   page->tot_accesses[j]++;
+                  #ifdef HISTOGRAM
+                  if(!page->ring_present){
+                    histogram_update_request(page);
+                  }
+                  #else 
                   //if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
                   //  if (!page->hot && !page->ring_present) {
                   //      make_hot_request(page);
@@ -296,6 +319,7 @@ void *pebs_scan_thread()
                         make_cold_request(page);
                     }
                  }
+                 #endif
 
                   accesses_cnt[j]++;
                   core_accesses_cnt[i]++;
@@ -391,6 +415,80 @@ static void pebs_migrate_up(struct hemem_page *page, uint64_t offset)
   LOG_TIME("migrate_up: %f s\n", elapsed(&start, &end));
 }
 
+#ifdef HISTOGRAM
+// Should be called before doing any list operations
+// void histogram_sync_page(struct hemem_page* page) {
+//   int old_bin, new_bin;
+//   struct fifo_list *base_ptr;
+//   assert(page != NULL);
+
+//   if(page->list == NULL) {
+//     return;
+//   }
+
+//   // Make sure page->list back pointer is up-to-date
+//   if(page->local_histogram_clock != histogram_clock) {
+//     assert(histogram_clock > page->local_histogram_clock);
+//     base_ptr = (page->in_dram)?(&dram_histogram_list[0]):(&nvm_histogram_list[0]);
+//     old_bin = (int)(page->list - base_ptr);
+//     assert(old_bin >= 0 && old_bin < MAX_HISTOGRAM_BINS);
+//     new_bin = (old_bin >> (histogram_clock - page->local_histogram_clock));
+//     page->list = base_ptr + new_bin;
+//     page->local_histogram_clock = histogram_clock;
+//   }
+// }
+bool histogram_update(struct hemem_page* page, uint64_t accesses)
+{
+  struct fifo_list *cur_list;
+  struct fifo_list *new_list;
+  bool ret = false;
+  int bin;
+  assert(page != NULL);
+  assert(page->va != 0);
+
+  // histogram_sync_page(page);
+  cur_list = page->list;
+  bin = accesses;
+  if(bin >= MAX_HISTOGRAM_BINS) {
+    bin = MAX_HISTOGRAM_BINS - 1;
+  }
+  new_list = (page->in_dram)?(&dram_histogram_list[bin]):(&nvm_histogram_list[bin]);
+  
+  if(cur_list != new_list) {
+    if(cur_list != NULL) {
+      page_list_remove_page(cur_list, page);
+      ret = true;
+      if(page->prev != NULL) {
+        printf("page->prev not NULL after list remove");
+        fflush(stdout);
+      }
+    }
+    // page->local_histogram_clock = histogram_clock;
+    if(page->prev != NULL) {
+      printf("page->prev not NULL before enqueue\n");
+      fflush(stdout);
+    }
+    enqueue_fifo(new_list, page);
+  }
+
+  return ret;
+}
+
+// Left shift all bins in histogram by a factor
+// NOTE: individual page->list pointers are not updated
+// void histogram_shift(struct fifo_list *hist, unsigned int factor) {
+//   int shifted_bin;
+//   if(factor == 0) {
+//     return;
+//   }
+//   for(int i = 0; i < MAX_HISTOGRAM_BINS; i++) {
+//     shifted_bin = (i >> factor);
+//     if(shifted_bin != i) {
+//       merge_page_list(hist + shifted_bin, hist + i);
+//     }
+//   }
+// }
+#else
 // moves page to hot list -- called by migrate thread
 void make_hot(struct hemem_page* page)
 {
@@ -452,6 +550,7 @@ void make_cold(struct hemem_page* page)
     enqueue_fifo(&nvm_cold_list, page);
   }
 }
+#endif
 
 static struct hemem_page* start_dram_page = NULL;
 static struct hemem_page* start_nvm_page = NULL;
@@ -460,6 +559,9 @@ static struct hemem_page* start_nvm_page = NULL;
 struct hemem_page* partial_cool(struct fifo_list *hot, struct fifo_list *cold, bool dram, struct hemem_page* current)
 {
   struct hemem_page *p;
+  #ifdef HISTOGRAM
+  struct hemem_page *prev_p;
+  #endif
   uint64_t tmp_accesses[NPBUFTYPES];
 
   if (dram && !need_cool_dram) {
@@ -470,11 +572,19 @@ struct hemem_page* partial_cool(struct fifo_list *hot, struct fifo_list *cold, b
   }
 
   if (start_dram_page == NULL && dram) {
+      #ifdef HISTOGRAM
+      next_page(hot, NULL, &start_dram_page);
+      #else
       start_dram_page = hot->last;
+      #endif
   }
 
   if (start_nvm_page == NULL && !dram) {
+      #ifdef HISTOGRAM
+      next_page(hot, NULL, &start_nvm_page);
+      #else
       start_nvm_page = hot->last;
+      #endif
   }
 
   for (int i = 0; i < COOLING_PAGES; i++) {
@@ -507,6 +617,14 @@ struct hemem_page* partial_cool(struct fifo_list *hot, struct fifo_list *cold, b
         need_cool_nvm = false;
     } 
 
+    #ifdef HISTOGRAM
+    prev_page(hot, p, &prev_p);
+    if(histogram_update(p, tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD])) {
+      current = prev_p;      
+    } else {
+      current = p;
+    }
+    #else
     if (!p->hot) {
         current = p->next;
         page_list_remove_page(hot, p);
@@ -515,8 +633,9 @@ struct hemem_page* partial_cool(struct fifo_list *hot, struct fifo_list *cold, b
     else {
         current = p;
     }
+    #endif
   }
-
+  
   return current;
 }
 #else
@@ -588,12 +707,22 @@ void update_current_cool_page(struct hemem_page** cur_cool_in_dram, struct hemem
     }
 
     if (page == *cur_cool_in_dram) {
+        #ifdef HISTOGRAM
+        assert(page->in_dram);
+        next_page(&dram_histogram_list[0], page, cur_cool_in_dram);
+        #else
         assert(page->list == &dram_hot_list);
         next_page(page->list, page, cur_cool_in_dram);
+        #endif
     }
     if (page == *cur_cool_in_nvm) {
+        #ifdef HISTOGRAM
+        assert(!page->in_dram);
+        next_page(&nvm_histogram_list[0], page, cur_cool_in_nvm);
+        #else
         assert(page->list == &nvm_hot_list);
         next_page(page->list, page, cur_cool_in_nvm);
+        #endif
     }
 }
 #endif
@@ -644,6 +773,9 @@ void *pebs_policy_thread()
             continue;
         }
         
+        // #ifdef HISTOGRAM
+        // histogram_sync_page(page);
+        // #endif
         list = page->list;
         assert(list != NULL);
         #ifdef COOL_IN_PLACE
@@ -658,6 +790,30 @@ void *pebs_policy_thread()
         }
     }
 
+    // Cool the histograms
+    // #ifdef HISTOGRAM
+    // histogram_shift(&dram_histogram_list[0], global_clock - histogram_clock);
+    // histogram_shift(&nvm_histogram_list[0], global_clock - histogram_clock);
+    // histogram_clock = global_clock;
+    // #endif
+
+    #ifdef HISTOGRAM
+    num_ring_reqs = 0;
+    // handle requests from the update buffer
+    while(!ring_buf_empty(update_ring) && num_ring_reqs < HOT_RING_REQS_THRESHOLD) {
+		    page = (struct hemem_page*)ring_buf_get(update_ring);
+        if (page == NULL) {
+            continue;
+        }
+        
+        #ifdef COOL_IN_PLACE
+        update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, page);
+        #endif
+        page->ring_present = false;
+        num_ring_reqs++;
+        histogram_update(page, page->accesses[DRAMREAD] + page->accesses[NVMREAD]);
+	  }
+    #else
     num_ring_reqs = 0;
     // handle hot requests from hot buffer by moving pages to hot list
     while(!ring_buf_empty(hot_ring) && num_ring_reqs < HOT_RING_REQS_THRESHOLD) {
@@ -691,9 +847,14 @@ void *pebs_policy_thread()
         make_cold(page);
         //printf("cold ring, cold pages:%llu\n", num_ring_reqs);
     }
+    #endif
 
     colloid_update_stats();
 
+    // TODO: Implement pair finding algorithm
+    // TODO: Swap page pair
+
+    #ifndef HISTOGRAM
     if(smoothed_occ_local <= smoothed_occ_remote) {
       // move hot NVM pages to DRAM
       delta_occ = (smoothed_occ_remote - smoothed_occ_local)/(smoothed_occ_remote);
@@ -849,10 +1010,16 @@ void *pebs_policy_thread()
       }
 
     }
+    #endif
     
     #ifdef COOL_IN_PLACE
+    #ifdef HISTOGRAM
+    cur_cool_in_dram = partial_cool(&dram_histogram_list[0], NULL, true, cur_cool_in_dram);
+    cur_cool_in_nvm = partial_cool(&nvm_histogram_list[0], NULL, false, cur_cool_in_nvm);
+    #else
     cur_cool_in_dram = partial_cool(&dram_hot_list, &dram_cold_list, true, cur_cool_in_dram);
     cur_cool_in_nvm = partial_cool(&nvm_hot_list, &nvm_cold_list, false, cur_cool_in_nvm);
+    #endif
     #else
     partial_cool(&dram_hot_list, &dram_cold_list, true);
     partial_cool(&nvm_hot_list, &nvm_cold_list, false);
@@ -884,7 +1051,13 @@ static struct hemem_page* pebs_allocate_page()
     assert(!page->present);
 
     page->present = true;
+    #ifdef HISTOGRAM
+    // TODO: what happens if histogram cooling happens concurrently?
+    enqueue_fifo(&dram_histogram_list[0], page);
+    // page->local_histogram_clock = histogram_clock;
+    #else
     enqueue_fifo(&dram_cold_list, page);
+    #endif
 
     gettimeofday(&end, NULL);
     LOG_TIME("mem_policy_allocate_page: %f s\n", elapsed(&start, &end));
@@ -899,7 +1072,13 @@ static struct hemem_page* pebs_allocate_page()
     assert(!page->present);
 
     page->present = true;
+    #ifdef HISTOGRAM
+    // TODO: what happens if histogram cooling happens concurrently?
+    enqueue_fifo(&nvm_histogram_list[0], page);
+    // page->local_histogram_clock = histogram_clock;
+    #else
     enqueue_fifo(&nvm_cold_list, page);
+    #endif
 
 
     gettimeofday(&end, NULL);
@@ -1002,17 +1181,30 @@ void pebs_init(void)
     enqueue_fifo(&nvm_free_list, p);
   }
 
+  #ifdef HISTOGRAM
+  for(int i = 0; i < MAX_HISTOGRAM_BINS; i++) {
+    pthread_mutex_init(&(dram_histogram_list[i].list_lock), NULL);
+    pthread_mutex_init(&(nvm_histogram_list[i].list_lock), NULL);
+  }
+  #else
   pthread_mutex_init(&(dram_hot_list.list_lock), NULL);
   pthread_mutex_init(&(dram_cold_list.list_lock), NULL);
   pthread_mutex_init(&(nvm_hot_list.list_lock), NULL);
   pthread_mutex_init(&(nvm_cold_list.list_lock), NULL);
+  #endif
 
+  #ifndef HISTOGRAM
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
   hot_ring = ring_buf_init(buffer, CAPACITY);
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
   cold_ring = ring_buf_init(buffer, CAPACITY);
+  #else
+  buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
+  assert(buffer); 
+  update_ring = ring_buf_init(buffer, CAPACITY);
+  #endif
   buffer = (uint64_t**)malloc(sizeof(uint64_t*) * CAPACITY);
   assert(buffer); 
   free_page_ring = ring_buf_init(buffer, CAPACITY);
@@ -1049,10 +1241,26 @@ void pebs_stats()
   uint64_t total_samples = 0;
   LOG_STATS("\tocc_local: [%lf]\t occ_remote: [%lf]\n", smoothed_occ_local, smoothed_occ_remote);
   LOG_STATS("\tdram_hot_list.numentries: [%ld]\tdram_cold_list.numentries: [%ld]\tnvm_hot_list.numentries: [%ld]\tnvm_cold_list.numentries: [%ld]\themem_pages: [%lu]\ttotal_pages: [%lu]\tzero_pages: [%ld]\tthrottle/unthrottle_cnt: [%ld/%ld]\tcools: [%ld]\n",
-          dram_hot_list.numentries,
+          #ifndef HISTOGRAM 
+          dram_hot_list.numentries, 
+          #else 
+          0UL,
+          #endif
+          #ifndef HISTOGRAM 
           dram_cold_list.numentries,
+          #else
+          0UL,
+          #endif
+          #ifndef HISTOGRAM
           nvm_hot_list.numentries,
+          #else
+          0UL,
+          #endif
+          #ifndef HISTOGRAM
           nvm_cold_list.numentries,
+          #else
+          0UL,
+          #endif
           hemem_pages_cnt,
           total_pages_cnt,
           zero_pages_cnt,
@@ -1066,9 +1274,23 @@ void pebs_stats()
     core_accesses_cnt[i] = 0;
   }
   LOG_STATS("]\ttotal_samples: [%lu]\n", total_samples);
+  #ifndef HISTOGRAM
   fprintf(stdout, "Total: %.2f GB DRAM, %.2f GB NVM\n",
     (double)(dram_hot_list.numentries + dram_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0), 
     (double)(nvm_hot_list.numentries + nvm_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0));
+  #endif
+  #ifdef HISTOGRAM
+  LOG_STATS("\t%ddram_histogram: [", 0);
+  for(int i = 0; i < MAX_HISTOGRAM_BINS; i++) {
+    LOG_STATS("%lu ", dram_histogram_list[i].numentries);
+  }
+  LOG_STATS("]%d\n", 0);
+  LOG_STATS("\t%dnvm_histogram: [", 0);
+  for(int i = 0; i < MAX_HISTOGRAM_BINS; i++) {
+    LOG_STATS("%lu ", nvm_histogram_list[i].numentries);
+  }
+  LOG_STATS("]%d\n", 0);
+  #endif
   fflush(stdout);
   hemem_pages_cnt = total_pages_cnt =  throttle_cnt = unthrottle_cnt = 0;
 

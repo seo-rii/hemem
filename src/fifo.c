@@ -86,6 +86,33 @@ void page_list_remove_page(struct fifo_list *list, struct hemem_page *page)
   pthread_mutex_unlock(&(list->list_lock));
 }
 
+void merge_page_list(struct fifo_list *src, struct fifo_list *target) {
+  pthread_mutex_lock(&(src->list_lock));
+  pthread_mutex_lock(&(target->list_lock));
+
+  if(src->last != NULL) {
+    src->last->next = target->first;
+  }
+  if(target->first != NULL) {
+    target->first->prev = src->last;
+  }
+
+  if(src->first == NULL) {
+    src->first = target->first;
+  }
+  if(target->last != NULL) {
+    src->last = target->last;
+  }
+  
+  src->numentries += target->numentries;
+  target->numentries = 0;
+  target->first = NULL;
+  target->last = NULL;
+
+  pthread_mutex_unlock(&(target->list_lock));
+  pthread_mutex_unlock(&(src->list_lock));
+}
+#ifndef HISTOGRAM
 void next_page(struct fifo_list *list, struct hemem_page *page, struct hemem_page **next_page)
 {
     pthread_mutex_lock(&(list->list_lock));
@@ -98,3 +125,60 @@ void next_page(struct fifo_list *list, struct hemem_page *page, struct hemem_pag
     }
     pthread_mutex_unlock(&(list->list_lock));
 }
+#else
+void next_page(struct fifo_list *base, struct hemem_page *page, struct hemem_page **next_page)
+{
+    struct fifo_list *list;
+    struct hemem_page *p = NULL;
+
+    if(page == NULL) {
+      list = base + MAX_HISTOGRAM_BINS - 1;
+    } else {
+      assert(page->list != NULL);
+      list = page->list;
+    }
+
+    while(p == NULL && list >= base) {
+      pthread_mutex_lock(&(list->list_lock));
+      if (page == NULL || list != page->list) {
+          p = list->last;
+      }
+      else {
+          p = page->prev;
+      }
+      pthread_mutex_unlock(&(list->list_lock));
+      list--;
+    }
+
+    *next_page = p;
+}
+#endif
+
+#ifdef HISTOGRAM
+void prev_page(struct fifo_list *base, struct hemem_page *page, struct hemem_page **prev_page)
+{
+    struct fifo_list *list;
+    struct hemem_page *p = NULL;
+
+    if(page == NULL) {
+      list = base;
+    } else {
+      assert(page->list != NULL);
+      list = page->list;
+    }
+
+    while(p == NULL && list < base + MAX_HISTOGRAM_BINS) {
+      pthread_mutex_lock(&(list->list_lock));
+      if (page == NULL || list != page->list) {
+          p = list->first;
+      }
+      else {
+          p = page->next;
+      }
+      pthread_mutex_unlock(&(list->list_lock));
+      list++;
+    }
+
+    *prev_page = p;
+}
+#endif
