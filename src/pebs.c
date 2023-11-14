@@ -15,6 +15,7 @@
 #include <sched.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
+#include <math.h>
 
 #include "hemem.h"
 #include "pebs.h"
@@ -635,7 +636,7 @@ struct hemem_page* partial_cool(struct fifo_list *hot, struct fifo_list *cold, b
     }
     #endif
   }
-  
+
   return current;
 }
 #else
@@ -746,6 +747,11 @@ void *pebs_policy_thread()
   struct hemem_page* cur_cool_in_dram  = NULL;
   struct hemem_page* cur_cool_in_nvm = NULL;
   #endif
+  #ifdef HISTOGRAM
+  uint64_t total_accesses = 0;
+  double pi, pj, target_delta, best_delta;
+  int best_i, best_j;
+  #endif
   
   thread = pthread_self();
   CPU_ZERO(&cpuset);
@@ -851,8 +857,137 @@ void *pebs_policy_thread()
 
     colloid_update_stats();
 
-    // TODO: Implement pair finding algorithm
-    // TODO: Swap page pair
+    // Pair finding algorithm
+    #ifdef HISTOGRAM
+    // TODO: Compare based on some precision threshold
+    if(smoothed_occ_local == smoothed_occ_remote) {
+      // nothing to do
+      fprintf(colloid_log_f, "equal occupancy exit\n");
+      goto out;
+    }
+    target_delta = fabs(smoothed_occ_local-smoothed_occ_remote);
+    target_delta /= (smoothed_occ_local+smoothed_occ_remote);
+    total_accesses = 0;
+    for(int i = 0; i < MAX_HISTOGRAM_BINS; i++) {
+      total_accesses += (i * dram_histogram_list[i].numentries);
+      total_accesses += (i * nvm_histogram_list[i].numentries);
+    }
+    if(total_accesses == 0) {
+      fprintf(colloid_log_f, "total_accesses=0 exit\n");
+      goto out;
+    }
+    best_i = -1;
+    best_j = -1;
+    best_delta = 0.0;
+    for(int i = 0; i < MAX_HISTOGRAM_BINS; i++) {
+      if(i > 0 && dram_histogram_list[i].numentries == 0) {
+        continue;
+      }
+      for(int j = 0; j < MAX_HISTOGRAM_BINS; j++) {
+        if(j > 0 && nvm_histogram_list[j].numentries == 0) {
+          continue;
+        }
+        if(smoothed_occ_local > smoothed_occ_remote && i <= j) {
+          continue;
+        }
+        if(smoothed_occ_local < smoothed_occ_remote && i >= j) {
+          continue;
+        }
+        pi = ((double)i)/((double)total_accesses);
+        pj = ((double)j)/((double)total_accesses);
+        if(fabs(pi - pj) <= target_delta && fabs(pi-pj) > best_delta) {
+          best_i = i;
+          best_j = j;
+          best_delta = fabs(pi - pj);
+        }
+      }
+    }
+    if(best_i == -1 || best_j == -1) {
+      // No suitable pair found; bail out;
+      fprintf(colloid_log_f, "no suitable pair exit\n");
+      goto out;
+    }
+    assert(best_i >= 0 && best_j >= 0);
+    
+    // Swap page pair
+    migrated_bytes = 0;
+    // Move local page to remote
+    np = NULL;
+    if(best_i == 0) {
+      // No point in swapping 0 freq page if there are free pages
+      np = dequeue_fifo(&dram_free_list);
+    }
+    if(np == NULL) {
+      p = dequeue_fifo(&dram_histogram_list[best_i]);
+      if(p == NULL) {
+        // should ideally not happen
+        fprintf(colloid_log_f, "best_i empty exit\n");
+        goto out;
+      }
+      #ifdef COOL_IN_PLACE
+      if(p == cur_cool_in_dram) {
+        // TODO: this seems a bit iffy; might cause background cooling to stall
+        prev_page(&dram_histogram_list[0], NULL, &cur_cool_in_dram);
+      }
+      #endif
+      np = dequeue_fifo(&nvm_free_list);
+      assert(np != NULL);
+      assert(!(np->present));
+      old_offset = p->devdax_offset;
+      pebs_migrate_down(p, np->devdax_offset);
+      np->devdax_offset = old_offset;
+      np->in_dram = true;
+      np->present = false;
+      np->hot = false;
+      for (int i = 0; i < NPBUFTYPES; i++) {
+        np->accesses[i] = 0;
+        np->tot_accesses[i] = 0;
+      }
+
+      // Place the migated page into right nvm histogram bin
+      histogram_update(p, p->accesses[DRAMREAD] + p->accesses[NVMREAD]);
+      migrated_bytes += pt_to_pagesize(p->pt);
+    }
+    // np is now a free dram page
+    assert(np != NULL);
+    
+    // Move remote page to local
+    if(best_j > 0) {
+      p = dequeue_fifo(&nvm_histogram_list[best_j]);
+      if(p == NULL) {
+        // should ideally not happen
+        enqueue_fifo(&dram_free_list, np);
+        fprintf(colloid_log_f, "best_j empty exit\n");
+        goto out;
+      }
+      #ifdef COOL_IN_PLACE
+      if(p == cur_cool_in_nvm) {
+        // TODO: this seems a bit iffy; might cause background cooling to stall
+        prev_page(&nvm_histogram_list[0], NULL, &cur_cool_in_nvm);
+      }
+      #endif
+      assert(!(np->present));
+      old_offset = p->devdax_offset;
+      pebs_migrate_up(p, np->devdax_offset);
+      np->devdax_offset = old_offset;
+      np->in_dram = false;
+      np->present = false;
+      np->hot = false;
+      for (int i = 0; i < NPBUFTYPES; i++) {
+        np->accesses[i] = 0;
+        np->tot_accesses[i] = 0;
+      }
+
+      // Place the migated page into rigth nvm histogram bin
+      histogram_update(p, p->accesses[DRAMREAD] + p->accesses[NVMREAD]);
+      enqueue_fifo(&nvm_free_list, np);
+      migrated_bytes += pt_to_pagesize(p->pt);
+    } else {
+      // No point in moving 0 freq page; just return np to dram free list
+      enqueue_fifo(&dram_free_list, np);
+    }
+    fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu\n", smoothed_occ_local, smoothed_occ_remote, best_i, best_j, migrated_bytes);
+    #endif
 
     #ifndef HISTOGRAM
     if(smoothed_occ_local <= smoothed_occ_remote) {
