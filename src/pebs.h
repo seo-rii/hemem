@@ -14,6 +14,7 @@
 #define HOT_READ_THRESHOLD        (8)
 #define HOT_WRITE_THRESHOLD       (4)
 #define PEBS_COOLING_THRESHOLD    (18)
+// #define PEBS_COOLING_THRESHOLD    (1000)
 #define MAX_HISTOGRAM_BINS        (20) // when HISTOGRAM is enabled
 
 #define HOT_RING_REQS_THRESHOLD   (1024*1024)
@@ -38,9 +39,10 @@ extern uint64_t scanning_thread_cpu;
 extern uint64_t migration_thread_cpu;
 
 #define COOL_IN_PLACE
-#define HISTOGRAM // Make sure COOL_IN_PLACE is also set
-//#define SAMPLE_BASED_COOLING
-//#define SAMPLE_COOLING_THRESHOLD 10000
+// #define COLLOID
+// #define HISTOGRAM // Make sure COOL_IN_PLACE is also set
+// #define SAMPLE_BASED_COOLING
+#define SAMPLE_COOLING_THRESHOLD 1000
 
 struct perf_sample {
   struct perf_event_header header;

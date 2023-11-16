@@ -986,14 +986,15 @@ void *pebs_policy_thread()
       // No point in moving 0 freq page; just return np to dram free list
       enqueue_fifo(&dram_free_list, np);
     }
-    fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu\n", smoothed_occ_local, smoothed_occ_remote, best_i, best_j, migrated_bytes);
+    fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu\n", smoothed_occ_local, smoothed_occ_remote, best_i, best_j, migrated_bytes, total_accesses);
     #endif
 
     #ifndef HISTOGRAM
+    #ifdef COLLOID
     if(smoothed_occ_local <= smoothed_occ_remote) {
+    #endif
       // move hot NVM pages to DRAM
-      delta_occ = (smoothed_occ_remote - smoothed_occ_local)/(smoothed_occ_remote);
-      // TODO: Take frequency into account while determining number of pages to move
+      // delta_occ = (smoothed_occ_remote - smoothed_occ_local)/(smoothed_occ_remote);
       //migrate_limit = (uint64_t)(delta_occ * nvm_hot_list.numentries * PAGE_SIZE);
       migrate_limit = PAGE_SIZE;
       if(migrate_limit > PEBS_KSWAPD_MIGRATE_RATE) {
@@ -1082,10 +1083,10 @@ void *pebs_policy_thread()
           assert(np != NULL);
         }
       }
+    #ifdef COLLOID  
     } else {
       // Move hot pages from DRAM into slower tier
-      delta_occ = (smoothed_occ_local - smoothed_occ_remote)/(smoothed_occ_local);
-      // TODO: Take frequency into account while determining number of pages to move
+      // delta_occ = (smoothed_occ_local - smoothed_occ_remote)/(smoothed_occ_local);
       // migrate_limit = (uint64_t)(delta_occ * dram_hot_list.numentries * PAGE_SIZE);
       migrate_limit = PAGE_SIZE;
       if(migrate_limit > PEBS_KSWAPD_MIGRATE_RATE) {
@@ -1145,6 +1146,7 @@ void *pebs_policy_thread()
       }
 
     }
+    #endif
     #endif
     
     #ifdef COOL_IN_PLACE
