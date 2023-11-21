@@ -16,6 +16,7 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <math.h>
+#include <signal.h>
 
 #include "hemem.h"
 #include "pebs.h"
@@ -41,6 +42,10 @@ uint64_t cur_ctr_val[NUM_CHA_BOXES][NUM_CHA_COUNTERS], prev_ctr_val[NUM_CHA_BOXE
 uint64_t hemem_cpu_start;
 uint64_t migration_thread_cpu;
 uint64_t scanning_thread_cpu;
+
+#ifdef DUMP_FREQ
+volatile bool end_pebs_sampling = false;
+#endif
 
 #ifdef HISTOGRAM
 static struct fifo_list dram_histogram_list[MAX_HISTOGRAM_BINS];
@@ -273,6 +278,11 @@ void *pebs_scan_thread()
   }
 
   for(;;) {
+    #ifdef DUMP_FREQ
+    if(end_pebs_sampling) {
+      return NULL;
+    }
+    #endif
     for (int i = start_cpu; i < start_cpu + num_cores; i++) {
       for(int j = 0; j < NPBUFTYPES; j++) {
         struct perf_event_mmap_page *p = perf_page[i][j];
@@ -770,6 +780,11 @@ void *pebs_policy_thread()
   
 
   for (;;) {
+    #ifdef DUMP_FREQ
+    if(end_pebs_sampling) {
+      return NULL;
+    }
+    #endif
     gettimeofday(&start, NULL);
     // free pages using free page ring buffer
     while(!ring_buf_empty(free_page_ring)) {
@@ -860,12 +875,12 @@ void *pebs_policy_thread()
     // Pair finding algorithm
     #ifdef HISTOGRAM
     // TODO: Compare based on some precision threshold
-    if(smoothed_occ_local == smoothed_occ_remote) {
+    if(smoothed_occ_local == COLLOID_BETA * smoothed_occ_remote) {
       // nothing to do
       fprintf(colloid_log_f, "equal occupancy exit\n");
       goto out;
     }
-    target_delta = fabs(smoothed_occ_local-smoothed_occ_remote);
+    target_delta = fabs(smoothed_occ_local - COLLOID_BETA * smoothed_occ_remote);
     target_delta /= (smoothed_occ_local+smoothed_occ_remote);
     total_accesses = 0;
     for(int i = 0; i < MAX_HISTOGRAM_BINS; i++) {
@@ -887,10 +902,10 @@ void *pebs_policy_thread()
         if(j > 0 && nvm_histogram_list[j].numentries == 0) {
           continue;
         }
-        if(smoothed_occ_local > smoothed_occ_remote && i <= j) {
+        if(smoothed_occ_local > COLLOID_BETA * smoothed_occ_remote && i <= j) {
           continue;
         }
-        if(smoothed_occ_local < smoothed_occ_remote && i >= j) {
+        if(smoothed_occ_local < COLLOID_BETA * smoothed_occ_remote && i >= j) {
           continue;
         }
         pi = ((double)i)/((double)total_accesses);
@@ -991,7 +1006,7 @@ void *pebs_policy_thread()
 
     #ifndef HISTOGRAM
     #ifdef COLLOID
-    if(smoothed_occ_local <= smoothed_occ_remote) {
+    if(smoothed_occ_local <= COLLOID_BETA * smoothed_occ_remote) {
     #endif
       // move hot NVM pages to DRAM
       // delta_occ = (smoothed_occ_remote - smoothed_occ_local)/(smoothed_occ_remote);
@@ -1257,12 +1272,59 @@ void pebs_remove_page(struct hemem_page *page)
   }
 }
 
+#ifdef DUMP_FREQ
+void pebs_sigint_handler(int dummy) {
+
+  struct hemem_page *p;
+  FILE *dump_freq_f = NULL; 
+
+  // Stop pebs monitoring thread and migration thread
+  end_pebs_sampling = true;
+  sleep(5);
+
+  // Scan pages and log access frequency to file
+  dump_freq_f = fopen("/tmp/hemem-dump-freq.log", "w");
+  if(dump_freq_f == NULL) {
+    fprintf(stderr, "open freq dump log file failed\n");
+    exit(-1);
+  }
+
+  #ifdef HISTOGRAM
+  for(int i = 0; i < MAX_HISTOGRAM_BINS; i++) {
+    while((p = dequeue_fifo(&dram_histogram_list[i])) != NULL) {
+      fprintf(dump_freq_f, "%lu %lu\n", p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD], (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock)));
+    }
+    while((p = dequeue_fifo(&nvm_histogram_list[i])) != NULL) {
+      fprintf(dump_freq_f, "%lu %lu\n", p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD], (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock)));
+    }
+  }
+  #else
+  while((p = dequeue_fifo(&dram_hot_list)) != NULL) {
+    fprintf(dump_freq_f, "%lu %lu\n", p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD], (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock)));
+  }
+  while((p = dequeue_fifo(&nvm_hot_list)) != NULL) {
+    fprintf(dump_freq_f, "%lu %lu\n", p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD], (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock)));
+  }
+  #endif
+
+  fclose(dump_freq_f);
+  printf("dumped freq log\n");
+  fflush(stdout);
+
+  exit(-1);
+}
+#endif
+
 void pebs_init(void)
 {
   pthread_t kswapd_thread;
   pthread_t scan_thread;
   uint64_t** buffer;
   char logpath[32];
+  
+  #ifdef DUMP_FREQ
+  signal(SIGINT, pebs_sigint_handler);
+  #endif
 
   LOG("pebs_init: started\n");
 
@@ -1366,6 +1428,8 @@ void pebs_shutdown()
       //munmap(perf_page[i][j], sysconf(_SC_PAGESIZE) * PERF_PAGES);
     }
   }
+  // printf("PEBS shutdown\n");
+  // fflush(stdout);
 }
 
 static inline double calc_miss_ratio()

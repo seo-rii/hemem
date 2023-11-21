@@ -39,8 +39,10 @@ extern uint64_t scanning_thread_cpu;
 extern uint64_t migration_thread_cpu;
 
 #define COOL_IN_PLACE
-// #define COLLOID
-// #define HISTOGRAM // Make sure COOL_IN_PLACE is also set
+#define COLLOID
+#define HISTOGRAM // Make sure COOL_IN_PLACE is also set
+#define COLLOID_BETA (1.2) // colloid \beta parameter
+#define DUMP_FREQ // Scan and dump page access frequencies on exit
 // #define SAMPLE_BASED_COOLING
 #define SAMPLE_COOLING_THRESHOLD 1000
 
