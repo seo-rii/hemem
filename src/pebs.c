@@ -43,6 +43,13 @@ uint64_t hemem_cpu_start;
 uint64_t migration_thread_cpu;
 uint64_t scanning_thread_cpu;
 
+#ifdef SCAN_AND_SORT
+struct page_freq {
+  uint64_t accesses;
+  struct hemem_page *page;
+};
+#endif
+
 #ifdef DUMP_FREQ
 volatile bool end_pebs_sampling = false;
 #endif
@@ -738,6 +745,28 @@ void update_current_cool_page(struct hemem_page** cur_cool_in_dram, struct hemem
 }
 #endif
 
+#ifdef SCAN_AND_SORT
+int scan_page_list(struct fifo_list *page_list, struct page_freq *page_freqs, size_t freqs_size, uint64_t *total_accesses) {
+  int idx = 0;
+  struct hemem_page *p;
+  struct hemem_page *np;
+  next_page(page_list, NULL, &p);
+  while(p != NULL) {
+    assert(idx < freqs_size);
+    page_freqs[idx].accesses = p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD];
+    page_freqs[idx].page = p;
+    *total_accesses += page_freqs[idx].accesses;
+    next_page(page_list, p, &np);
+    p = np;
+    idx += 1;
+  }
+  return idx;
+}
+int cmp_page_freq (const void * a, const void * b) {
+   return ( ((struct page_freq*)a)->accesses - ((struct page_freq*)b)->accesses );
+}
+#endif
+
 void *pebs_policy_thread()
 {
   cpu_set_t cpuset;
@@ -757,10 +786,24 @@ void *pebs_policy_thread()
   struct hemem_page* cur_cool_in_dram  = NULL;
   struct hemem_page* cur_cool_in_nvm = NULL;
   #endif
-  #ifdef HISTOGRAM
+  #if defined HISTOGRAM || defined SCAN_AND_SORT
   uint64_t total_accesses = 0;
   double pi, pj, target_delta, best_delta;
   int best_i, best_j;
+  #endif
+  #ifdef SCAN_AND_SORT
+  struct page_freq* dram_page_freqs = NULL;
+  int dram_freqs_count = 0;
+  struct page_freq* nvm_page_freqs = NULL;
+  int nvm_freqs_count = 0;
+  int cur_j;
+  struct page_freq* top;
+  int top_count;
+  struct page_freq* bottom;
+  int bottom_count;
+  int dram_i, nvm_j;
+  struct hemem_page *tmp_dram_page = NULL;
+  struct hemem_page *tmp_nvm_page = NULL;
   #endif
   
   thread = pthread_self();
@@ -777,6 +820,19 @@ void *pebs_policy_thread()
   if(colloid_log_f == NULL) {
     perror("open colloid log file failed");
   }
+
+  #ifdef SCAN_AND_SORT
+  dram_page_freqs = calloc(dramsize/PAGE_SIZE, sizeof(struct page_freq));
+  if(dram_page_freqs == NULL) {
+    perror("failed to allocate dram_page_freqs");
+    assert(0);
+  }
+  nvm_page_freqs = calloc(nvmsize/PAGE_SIZE, sizeof(struct page_freq));
+  if(nvm_page_freqs == NULL) {
+    perror("failed to allocate nvm_page_freqs");
+    assert(0);
+  }
+  #endif
   
 
   for (;;) {
@@ -1002,9 +1058,186 @@ void *pebs_policy_thread()
       enqueue_fifo(&dram_free_list, np);
     }
     fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu\n", smoothed_occ_local, smoothed_occ_remote, best_i, best_j, migrated_bytes, total_accesses);
+    #elif defined SCAN_AND_SORT
+    // TODO: Compare based on some precision threshold
+    if(smoothed_occ_local == COLLOID_BETA * smoothed_occ_remote) {
+      // nothing to do
+      fprintf(colloid_log_f, "equal occupancy exit\n");
+      goto out;
+    }
+    target_delta = fabs(smoothed_occ_local - COLLOID_BETA * smoothed_occ_remote);
+    target_delta /= (smoothed_occ_local+smoothed_occ_remote);
+    total_accesses = 0;
+    // Scan page lists and build frequency arrays
+    dram_freqs_count = 0;
+    nvm_freqs_count = 0;
+    dram_freqs_count += scan_page_list(&dram_hot_list, dram_page_freqs+dram_freqs_count, dramsize/PAGE_SIZE-dram_freqs_count, &total_accesses);
+    dram_freqs_count += scan_page_list(&dram_cold_list, dram_page_freqs+dram_freqs_count, dramsize/PAGE_SIZE-dram_freqs_count, &total_accesses);
+    nvm_freqs_count += scan_page_list(&nvm_hot_list, nvm_page_freqs+nvm_freqs_count, nvmsize/PAGE_SIZE-nvm_freqs_count, &total_accesses);
+    nvm_freqs_count += scan_page_list(&nvm_cold_list, nvm_page_freqs+nvm_freqs_count, nvmsize/PAGE_SIZE-nvm_freqs_count, &total_accesses);
+
+    if(total_accesses == 0) {
+      fprintf(colloid_log_f, "total_accesses=0 exit\n");
+      goto out;
+    }
+
+    // Try to add temp pages with 0 access frequency
+    tmp_dram_page = dequeue_fifo(&dram_free_list);
+    if(tmp_dram_page != NULL) {
+      dram_page_freqs[dram_freqs_count].accesses = 0;
+      dram_page_freqs[dram_freqs_count].page = tmp_dram_page;
+      dram_freqs_count++;
+    }
+    tmp_nvm_page = dequeue_fifo(&nvm_free_list);
+    if(tmp_nvm_page != NULL) {
+      nvm_page_freqs[nvm_freqs_count].accesses = 0;
+      nvm_page_freqs[nvm_freqs_count].page = tmp_nvm_page;
+      nvm_freqs_count++;
+    }
+
+
+    // Sort frequency arrays in increasing order
+    qsort(dram_page_freqs, dram_freqs_count, sizeof(struct page_freq), cmp_page_freq);
+    qsort(nvm_page_freqs, nvm_freqs_count, sizeof(struct page_freq), cmp_page_freq);
+
+    // Find best pair of pages using two pointers
+    best_i = -1;
+    best_j = -1;
+    best_delta = 0.0;
+    if(smoothed_occ_local > COLLOID_BETA * smoothed_occ_remote) {
+      top = dram_page_freqs;
+      top_count = dram_freqs_count;
+      bottom = nvm_page_freqs;
+      bottom_count = nvm_freqs_count;
+    } else {
+      top = nvm_page_freqs;
+      top_count = nvm_freqs_count;
+      bottom = dram_page_freqs;
+      bottom_count = dram_freqs_count;
+    }
+
+    cur_j = 0;
+    for(int i = 0; i < top_count; i++) {
+      pi = ((double)top[i].accesses)/((double)total_accesses);
+      while(cur_j < bottom_count) {
+        pj = ((double)bottom[cur_j].accesses)/((double)total_accesses);
+        if(pi - pj <= target_delta) {
+          if(pi - pj > best_delta) {
+            best_i = i;
+            best_j = cur_j;
+            best_delta = pi - pj;
+          }
+          break;
+        }
+        cur_j++;
+      }
+    }
+
+    if(best_i == -1 || best_j == -1 || best_delta <= 0.0) {
+      // No suitable pair found; bail out;
+      fprintf(colloid_log_f, "no suitable pair exit\n");
+      if(tmp_dram_page != NULL) {
+        enqueue_fifo(&dram_free_list, tmp_dram_page);
+        tmp_dram_page = NULL;
+      }
+      if(tmp_nvm_page != NULL) {
+        enqueue_fifo(&nvm_free_list, tmp_nvm_page);
+        tmp_nvm_page = NULL;
+      }
+      goto out;
+    }
+    assert(best_i >= 0 && best_j >= 0 && best_delta > 0.0);
+    dram_i = (top == dram_page_freqs)?(best_i):(best_j);
+    nvm_j = (top == nvm_page_freqs)?(best_i):(best_j);
+
+    // Swap page pair
+    migrated_bytes = 0;
+    // Move local page to remote
+    np = NULL;
+    if(dram_page_freqs[dram_i].accesses == 0) {
+      // No point in swapping 0 freq page if there are free pages
+      if(tmp_dram_page != NULL) {
+        np = tmp_dram_page;
+        tmp_dram_page = NULL;
+      } else {
+        np = dequeue_fifo(&dram_free_list);
+      }
+    }
+    if(np == NULL) {
+      p = dram_page_freqs[dram_i].page;
+      assert(p != NULL);
+      assert(p->list != NULL);
+      page_list_remove_page(p->list, p);
+      #ifdef COOL_IN_PLACE
+      if(p == cur_cool_in_dram) {
+        cur_cool_in_dram = dram_hot_list.first;
+      }
+      #endif
+      if(tmp_nvm_page != NULL) {
+        np = tmp_nvm_page;
+        tmp_nvm_page = NULL;
+      } else {
+        np = dequeue_fifo(&nvm_free_list);
+      }
+      assert(np != NULL);
+      assert(!(np->present));
+      old_offset = p->devdax_offset;
+      pebs_migrate_down(p, np->devdax_offset);
+      np->devdax_offset = old_offset;
+      np->in_dram = true;
+      np->present = false;
+      np->hot = false;
+      for (int i = 0; i < NPBUFTYPES; i++) {
+        np->accesses[i] = 0;
+        np->tot_accesses[i] = 0;
+      }
+
+      migrated_bytes += pt_to_pagesize(p->pt);
+    }
+    // np is now a free dram page
+    assert(np != NULL);
+    
+    // Move remote page to local
+    if(nvm_page_freqs[nvm_j].accesses > 0) {
+      p = nvm_page_freqs[nvm_j].page;
+      assert(p != NULL);
+      assert(p->list != NULL);
+      page_list_remove_page(p->list, p);
+      #ifdef COOL_IN_PLACE
+      if(p == cur_cool_in_nvm) {
+        cur_cool_in_nvm = nvm_hot_list.first;
+      }
+      #endif
+      assert(!(np->present));
+      old_offset = p->devdax_offset;
+      pebs_migrate_up(p, np->devdax_offset);
+      np->devdax_offset = old_offset;
+      np->in_dram = false;
+      np->present = false;
+      np->hot = false;
+      for (int i = 0; i < NPBUFTYPES; i++) {
+        np->accesses[i] = 0;
+        np->tot_accesses[i] = 0;
+      }
+
+      enqueue_fifo(&nvm_free_list, np);
+      migrated_bytes += pt_to_pagesize(p->pt);
+    } else {
+      // No point in moving 0 freq page; just return np to dram free list
+      enqueue_fifo(&dram_free_list, np);
+    }
+    if(tmp_dram_page != NULL) {
+      enqueue_fifo(&dram_free_list, tmp_dram_page);
+      tmp_dram_page = NULL;
+    }
+    if(tmp_nvm_page != NULL) {
+      enqueue_fifo(&nvm_free_list, tmp_nvm_page);
+      tmp_nvm_page = NULL;
+    }
+    fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu\n", smoothed_occ_local, smoothed_occ_remote, dram_i, nvm_j, migrated_bytes, total_accesses);
     #endif
 
-    #ifndef HISTOGRAM
+    #if !defined(HISTOGRAM) && !defined(SCAN_AND_SORT)
     #ifdef COLLOID
     if(smoothed_occ_local <= COLLOID_BETA * smoothed_occ_remote) {
     #endif
