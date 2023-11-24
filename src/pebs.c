@@ -771,7 +771,7 @@ void *pebs_policy_thread()
 {
   cpu_set_t cpuset;
   pthread_t thread;
-  struct timeval start, end;
+  struct timeval start, end, begin;
   int tries;
   struct hemem_page *p;
   struct hemem_page *cp;
@@ -834,6 +834,7 @@ void *pebs_policy_thread()
   }
   #endif
   
+  gettimeofday(&begin, NULL);
 
   for (;;) {
     #ifdef DUMP_FREQ
@@ -927,6 +928,12 @@ void *pebs_policy_thread()
     #endif
 
     colloid_update_stats();
+    
+    // if(elapsed(&begin, &start) > 200.0) {
+    //   // stop migrations
+    //   fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf\n", smoothed_occ_local, smoothed_occ_remote);
+    //   goto out;
+    // }
 
     // Pair finding algorithm
     #ifdef HISTOGRAM
@@ -1192,6 +1199,7 @@ void *pebs_policy_thread()
         np->tot_accesses[i] = 0;
       }
 
+      enqueue_fifo((p->hot)?(&nvm_hot_list):(&nvm_cold_list), p);
       migrated_bytes += pt_to_pagesize(p->pt);
     }
     // np is now a free dram page
@@ -1220,6 +1228,7 @@ void *pebs_policy_thread()
         np->tot_accesses[i] = 0;
       }
 
+      enqueue_fifo((p->hot)?(&dram_hot_list):(&dram_cold_list), p);
       enqueue_fifo(&nvm_free_list, np);
       migrated_bytes += pt_to_pagesize(p->pt);
     } else {
@@ -1234,7 +1243,7 @@ void *pebs_policy_thread()
       enqueue_fifo(&nvm_free_list, tmp_nvm_page);
       tmp_nvm_page = NULL;
     }
-    fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu\n", smoothed_occ_local, smoothed_occ_remote, dram_i, nvm_j, migrated_bytes, total_accesses);
+    fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu, freq_i=%lu, freq_j=%lu, top_freq_i=%lu, top_freq_j=%lu\n", smoothed_occ_local, smoothed_occ_remote, dram_i, nvm_j, migrated_bytes, total_accesses, dram_page_freqs[dram_i].accesses, nvm_page_freqs[nvm_j].accesses, dram_page_freqs[dram_freqs_count-1].accesses, nvm_page_freqs[nvm_freqs_count-1].accesses);
     #endif
 
     #if !defined(HISTOGRAM) && !defined(SCAN_AND_SORT)
@@ -1535,7 +1544,13 @@ void pebs_sigint_handler(int dummy) {
   while((p = dequeue_fifo(&dram_hot_list)) != NULL) {
     fprintf(dump_freq_f, "%lu %lu\n", p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD], (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock)));
   }
+  while((p = dequeue_fifo(&dram_cold_list)) != NULL) {
+    fprintf(dump_freq_f, "%lu %lu\n", p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD], (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock)));
+  }
   while((p = dequeue_fifo(&nvm_hot_list)) != NULL) {
+    fprintf(dump_freq_f, "%lu %lu\n", p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD], (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock)));
+  }
+  while((p = dequeue_fifo(&nvm_cold_list)) != NULL) {
     fprintf(dump_freq_f, "%lu %lu\n", p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD], (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock)));
   }
   #endif
