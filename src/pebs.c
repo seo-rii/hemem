@@ -34,8 +34,10 @@
 #define NUM_CHA_COUNTERS 4
 
 int colloid_msr_fd;
-double smoothed_occ_local;
-double smoothed_occ_remote;
+double smoothed_occ_local, occ_local;
+double smoothed_occ_remote, occ_remote;
+double smoothed_inserts_local, inserts_local;
+double smoothed_inserts_remote, inserts_remote;
 uint64_t cur_ctr_tsc[NUM_CHA_BOXES][NUM_CHA_COUNTERS], prev_ctr_tsc[NUM_CHA_BOXES][NUM_CHA_COUNTERS];
 uint64_t cur_ctr_val[NUM_CHA_BOXES][NUM_CHA_COUNTERS], prev_ctr_val[NUM_CHA_BOXES][NUM_CHA_COUNTERS];
 
@@ -222,12 +224,18 @@ static void colloid_setup(int cpu) {
     }
 
   smoothed_occ_local = 0.0;
+  occ_local = 0.0;
   smoothed_occ_remote = 0.0;
+  occ_remote = 0.0;
+  smoothed_inserts_local = 0.0;
+  inserts_local = 0.0;
+  smoothed_inserts_remote = 0.0;
+  inserts_remote = 0.0;
 }
 
 static void colloid_update_stats() {
-  uint64_t cum_occ, delta_tsc;
-  double cur_occ;
+  uint64_t cum_occ, delta_tsc, cum_inserts;
+  double cur_occ, cur_rate;
   // Sample counters and update state
   // TODO: For starters using CHA0 for local and CHA1 for remote
   sample_cha_ctr(0, 0); // CHA0 occupancy
@@ -238,12 +246,26 @@ static void colloid_update_stats() {
   cum_occ = cur_ctr_val[0][0] - prev_ctr_val[0][0];
   delta_tsc = cur_ctr_tsc[0][0] - prev_ctr_tsc[0][0];
   cur_occ = ((double)cum_occ)/((double)delta_tsc);
-  smoothed_occ_local = cur_occ;
+  occ_local = cur_occ;
+  smoothed_occ_local = COLLOID_EWMA*cur_occ + (1-COLLOID_EWMA)*smoothed_occ_local;
+
+  cum_inserts = cur_ctr_val[0][1] - prev_ctr_val[0][1];
+  // delta_tsc = cur_ctr_tsc[0][1] - prev_ctr_tsc[0][1];
+  // cur_rate = ((double)cum_inserts)/((double)delta_tsc);
+  inserts_local = (double)cum_inserts;
+  smoothed_inserts_local = COLLOID_EWMA*((double)cum_inserts) + (1-COLLOID_EWMA)*smoothed_inserts_local;
 
   cum_occ = cur_ctr_val[1][0] - prev_ctr_val[1][0];
   delta_tsc = cur_ctr_tsc[1][0] - prev_ctr_tsc[1][0];
   cur_occ = ((double)cum_occ)/((double)delta_tsc);
-  smoothed_occ_remote = cur_occ;
+  occ_remote = cur_occ;
+  smoothed_occ_remote = COLLOID_EWMA*cur_occ + (1-COLLOID_EWMA)*smoothed_occ_remote;
+
+  cum_inserts = cur_ctr_val[1][1] - prev_ctr_val[1][1];
+  // delta_tsc = cur_ctr_tsc[1][1] - prev_ctr_tsc[1][1];
+  // cur_rate = ((double)cum_inserts)/((double)delta_tsc);
+  inserts_remote = (double)cum_inserts;
+  smoothed_inserts_remote = COLLOID_EWMA*((double)cum_inserts) + (1-COLLOID_EWMA)*smoothed_inserts_remote;
 }
 
 #ifndef HISTOGRAM
@@ -931,7 +953,8 @@ void *pebs_policy_thread()
     
     // if(elapsed(&begin, &start) > 200.0) {
     //   // stop migrations
-    //   fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf\n", smoothed_occ_local, smoothed_occ_remote);
+    //   // fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf\n", smoothed_occ_local, smoothed_occ_remote);
+    //   fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu, freq_i=%lu, freq_j=%lu, top_freq_i=%lu, top_freq_j=%lu, inserts_local=%lf, inserts_remote=%lf, inst_occ_local=%lf, inst_occ_remote=%lf, inst_inserts_local=%lf, inst_inserts_remote=%lf\n", smoothed_occ_local, smoothed_occ_remote, 0, 0, 0UL, 0UL, 0UL, 0UL, 0UL, 0UL, smoothed_inserts_local, smoothed_inserts_remote, occ_local, occ_remote, inserts_local, inserts_remote);
     //   goto out;
     // }
 
@@ -1073,7 +1096,13 @@ void *pebs_policy_thread()
       goto out;
     }
     target_delta = fabs(smoothed_occ_local - COLLOID_BETA * smoothed_occ_remote);
-    target_delta /= (smoothed_occ_local+smoothed_occ_remote);
+    #ifdef COLLOID_EXPR2
+    target_delta /= ((1.0+COLLOID_BETA)*(smoothed_occ_local+smoothed_occ_remote));
+    #elif defined COLLOID_EXPR3
+    target_delta /= ((smoothed_inserts_local+smoothed_inserts_remote)*(COLLOID_BETA*smoothed_occ_remote/smoothed_inserts_remote + smoothed_occ_local/smoothed_inserts_local));
+    #else
+    target_delta /= ((smoothed_occ_local+smoothed_occ_remote));
+    #endif
     total_accesses = 0;
     // Scan page lists and build frequency arrays
     dram_freqs_count = 0;
@@ -1243,7 +1272,7 @@ void *pebs_policy_thread()
       enqueue_fifo(&nvm_free_list, tmp_nvm_page);
       tmp_nvm_page = NULL;
     }
-    fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu, freq_i=%lu, freq_j=%lu, top_freq_i=%lu, top_freq_j=%lu\n", smoothed_occ_local, smoothed_occ_remote, dram_i, nvm_j, migrated_bytes, total_accesses, dram_page_freqs[dram_i].accesses, nvm_page_freqs[nvm_j].accesses, dram_page_freqs[dram_freqs_count-1].accesses, nvm_page_freqs[nvm_freqs_count-1].accesses);
+    fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu, freq_i=%lu, freq_j=%lu, top_freq_i=%lu, top_freq_j=%lu, inserts_local=%lf, inserts_remote=%lf, inst_occ_local=%lf, inst_occ_remote=%lf, inst_inserts_local=%lf, inst_inserts_remote=%lf\n", smoothed_occ_local, smoothed_occ_remote, dram_i, nvm_j, migrated_bytes, total_accesses, dram_page_freqs[dram_i].accesses, nvm_page_freqs[nvm_j].accesses, dram_page_freqs[dram_freqs_count-1].accesses, nvm_page_freqs[nvm_freqs_count-1].accesses, smoothed_inserts_local, smoothed_inserts_remote, occ_local, occ_remote, inserts_local, inserts_remote);
     #endif
 
     #if !defined(HISTOGRAM) && !defined(SCAN_AND_SORT)

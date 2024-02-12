@@ -9,7 +9,7 @@
 
 #include "hemem.h"
 
-#define PEBS_KSWAPD_INTERVAL      (100000) // in us (10ms)
+#define PEBS_KSWAPD_INTERVAL      (10000) // in us (10ms)
 #define PEBS_KSWAPD_MIGRATE_RATE  (10UL * 1024UL * 1024UL * 1024UL) // 10GB
 #define HOT_READ_THRESHOLD        (8)
 #define HOT_WRITE_THRESHOLD       (4)
@@ -41,9 +41,12 @@ extern uint64_t migration_thread_cpu;
 #define COOL_IN_PLACE
 #define COLLOID
 // #define HISTOGRAM // Make sure COOL_IN_PLACE is also set
-#define COLLOID_BETA (1.2) // colloid \beta parameter
-#define DUMP_FREQ // Scan and dump page access frequencies on exit
+#define COLLOID_BETA (1.0) // colloid \beta parameter
+// #define DUMP_FREQ // Scan and dump page access frequencies on exit
 #define SCAN_AND_SORT // PFA implementation using scan and sort
+#define COLLOID_EWMA (0.0625)
+//#define COLLOID_EXPR1
+#define COLLOID_EXPR3
 // #define SAMPLE_BASED_COOLING
 #define SAMPLE_COOLING_THRESHOLD 1000
 
