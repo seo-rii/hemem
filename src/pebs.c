@@ -824,8 +824,8 @@ void *pebs_policy_thread()
   struct page_freq* bottom;
   int bottom_count;
   int dram_i, nvm_j;
-  struct hemem_page *tmp_dram_page = NULL;
-  struct hemem_page *tmp_nvm_page = NULL;
+  // struct hemem_page *tmp_dram_page = NULL;
+  // struct hemem_page *tmp_nvm_page = NULL;
   #endif
   
   thread = pthread_self();
@@ -1118,18 +1118,18 @@ void *pebs_policy_thread()
     }
 
     // Try to add temp pages with 0 access frequency
-    tmp_dram_page = dequeue_fifo(&dram_free_list);
-    if(tmp_dram_page != NULL) {
-      dram_page_freqs[dram_freqs_count].accesses = 0;
-      dram_page_freqs[dram_freqs_count].page = tmp_dram_page;
-      dram_freqs_count++;
-    }
-    tmp_nvm_page = dequeue_fifo(&nvm_free_list);
-    if(tmp_nvm_page != NULL) {
-      nvm_page_freqs[nvm_freqs_count].accesses = 0;
-      nvm_page_freqs[nvm_freqs_count].page = tmp_nvm_page;
-      nvm_freqs_count++;
-    }
+    // tmp_dram_page = dequeue_fifo(&dram_free_list);
+    // if(tmp_dram_page != NULL) {
+    //   dram_page_freqs[dram_freqs_count].accesses = 0;
+    //   dram_page_freqs[dram_freqs_count].page = tmp_dram_page;
+    //   dram_freqs_count++;
+    // }
+    // tmp_nvm_page = dequeue_fifo(&nvm_free_list);
+    // if(tmp_nvm_page != NULL) {
+    //   nvm_page_freqs[nvm_freqs_count].accesses = 0;
+    //   nvm_page_freqs[nvm_freqs_count].page = tmp_nvm_page;
+    //   nvm_freqs_count++;
+    // }
 
 
     // Sort frequency arrays in increasing order
@@ -1172,14 +1172,14 @@ void *pebs_policy_thread()
     if(best_i == -1 || best_j == -1 || best_delta <= 0.0) {
       // No suitable pair found; bail out;
       fprintf(colloid_log_f, "no suitable pair exit\n");
-      if(tmp_dram_page != NULL) {
-        enqueue_fifo(&dram_free_list, tmp_dram_page);
-        tmp_dram_page = NULL;
-      }
-      if(tmp_nvm_page != NULL) {
-        enqueue_fifo(&nvm_free_list, tmp_nvm_page);
-        tmp_nvm_page = NULL;
-      }
+      // if(tmp_dram_page != NULL) {
+      //   enqueue_fifo(&dram_free_list, tmp_dram_page);
+      //   tmp_dram_page = NULL;
+      // }
+      // if(tmp_nvm_page != NULL) {
+      //   enqueue_fifo(&nvm_free_list, tmp_nvm_page);
+      //   tmp_nvm_page = NULL;
+      // }
       goto out;
     }
     assert(best_i >= 0 && best_j >= 0 && best_delta > 0.0);
@@ -1192,12 +1192,12 @@ void *pebs_policy_thread()
     np = NULL;
     if(dram_page_freqs[dram_i].accesses == 0) {
       // No point in swapping 0 freq page if there are free pages
-      if(tmp_dram_page != NULL) {
-        np = tmp_dram_page;
-        tmp_dram_page = NULL;
-      } else {
+      // if(tmp_dram_page != NULL) {
+      //   np = tmp_dram_page;
+      //   tmp_dram_page = NULL;
+      // } else {
         np = dequeue_fifo(&dram_free_list);
-      }
+      // }
     }
     if(np == NULL) {
       p = dram_page_freqs[dram_i].page;
@@ -1209,12 +1209,12 @@ void *pebs_policy_thread()
         cur_cool_in_dram = dram_hot_list.first;
       }
       #endif
-      if(tmp_nvm_page != NULL) {
-        np = tmp_nvm_page;
-        tmp_nvm_page = NULL;
-      } else {
+      // if(tmp_nvm_page != NULL) {
+      //   np = tmp_nvm_page;
+      //   tmp_nvm_page = NULL;
+      // } else {
         np = dequeue_fifo(&nvm_free_list);
-      }
+      // }
       assert(np != NULL);
       assert(!(np->present));
       old_offset = p->devdax_offset;
@@ -1264,14 +1264,14 @@ void *pebs_policy_thread()
       // No point in moving 0 freq page; just return np to dram free list
       enqueue_fifo(&dram_free_list, np);
     }
-    if(tmp_dram_page != NULL) {
-      enqueue_fifo(&dram_free_list, tmp_dram_page);
-      tmp_dram_page = NULL;
-    }
-    if(tmp_nvm_page != NULL) {
-      enqueue_fifo(&nvm_free_list, tmp_nvm_page);
-      tmp_nvm_page = NULL;
-    }
+    // if(tmp_dram_page != NULL) {
+    //   enqueue_fifo(&dram_free_list, tmp_dram_page);
+    //   tmp_dram_page = NULL;
+    // }
+    // if(tmp_nvm_page != NULL) {
+    //   enqueue_fifo(&nvm_free_list, tmp_nvm_page);
+    //   tmp_nvm_page = NULL;
+    // }
     fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu, freq_i=%lu, freq_j=%lu, top_freq_i=%lu, top_freq_j=%lu, inserts_local=%lf, inserts_remote=%lf, inst_occ_local=%lf, inst_occ_remote=%lf, inst_inserts_local=%lf, inst_inserts_remote=%lf\n", smoothed_occ_local, smoothed_occ_remote, dram_i, nvm_j, migrated_bytes, total_accesses, dram_page_freqs[dram_i].accesses, nvm_page_freqs[nvm_j].accesses, dram_page_freqs[dram_freqs_count-1].accesses, nvm_page_freqs[nvm_freqs_count-1].accesses, smoothed_inserts_local, smoothed_inserts_remote, occ_local, occ_remote, inserts_local, inserts_remote);
     #endif
 
