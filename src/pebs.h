@@ -49,6 +49,8 @@ extern uint64_t migration_thread_cpu;
 #define COLLOID_EXPR3
 // #define SAMPLE_BASED_COOLING
 #define SAMPLE_COOLING_THRESHOLD 1000
+#define COLLOID_DYNAMIC_LIMIT
+#define COLLOID_COOLING
 
 struct perf_sample {
   struct perf_event_header header;
