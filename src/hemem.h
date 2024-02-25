@@ -83,7 +83,7 @@ extern uint64_t num_cores;
 #define GIGA_PFN_MASK   (GIGAPAGE_MASK ^ UINT64_MAX)
 
 #define START_THREAD_DEFAULT 0
-#define FAULT_THREAD_CPU_DEFAULT  (23)
+#define FAULT_THREAD_CPU_DEFAULT  (59)
 #define STATS_THREAD_CPU_DEFAULT  (0)
 
 extern uint64_t fault_thread_cpu;
