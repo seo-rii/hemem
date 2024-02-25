@@ -23,14 +23,14 @@
 #include "timer.h"
 #include "spsc-ring.h"
 
-#define LOCAL_NUMA 3
+#define LOCAL_NUMA 1
 #define CHA_MSR_PMON_BASE 0x0E00L
 #define CHA_MSR_PMON_CTL_BASE 0x0E01L
 #define CHA_MSR_PMON_FILTER0_BASE 0x0E05L
-#define CHA_MSR_PMON_FILTER1_BASE 0x0E06L
+//#define CHA_MSR_PMON_FILTER1_BASE 0x0E06L // No FULERT1 on Icelake
 #define CHA_MSR_PMON_STATUS_BASE 0x0E07L
 #define CHA_MSR_PMON_CTR_BASE 0x0E08L
-#define NUM_CHA_BOXES 18
+#define NUM_CHA_BOXES 18 // There are 32 CHA boxes in icelake server. After the first 18 boxes, the couter offsets change.
 #define NUM_CHA_COUNTERS 4
 
 int colloid_msr_fd;
@@ -153,7 +153,7 @@ static inline void sample_cha_ctr(int cha, int ctr) {
     uint64_t msr_val;
     int ret;
 
-    msr_num = CHA_MSR_PMON_CTR_BASE + (0x10 * cha) + ctr;
+    msr_num = CHA_MSR_PMON_CTR_BASE + (0xE * cha) + ctr;
     ret = pread(colloid_msr_fd, &msr_val, sizeof(msr_val), msr_num);
     if (ret != sizeof(msr_val)) {
         perror("ERROR: failed to read MSR");
@@ -178,35 +178,37 @@ static void colloid_setup(int cpu) {
   uint32_t msr_num;
   uint64_t msr_val;
   for(cha = 0; cha < NUM_CHA_BOXES; cha++) {
-      msr_num = CHA_MSR_PMON_FILTER0_BASE + (0x10 * cha); // Filter0
+	// Icelake offset multiplier is 0xE
+      msr_num = CHA_MSR_PMON_FILTER0_BASE + (0xE * cha); // Filter0
       msr_val = 0x00000000; // default; no filtering
       ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
       if (ret != 8) {
+	  printf("wrmsr FILTER0 failed for cha: %d\n", cha);
           perror("wrmsr FILTER0 failed");
       }
 
-      msr_num = CHA_MSR_PMON_FILTER1_BASE + (0x10 * cha); // Filter1
-      msr_val = (cha%2 == 0)?(0x40432):(0x40431); // Filter DRd of local/remote on even/odd CHA boxes
-      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
-      if (ret != 8) {
-          perror("wrmsr FILTER1 failed");
-      }
+      //msr_num = CHA_MSR_PMON_FILTER1_BASE + (0xE * cha); // Filter1
+      //msr_val = (cha%2 == 0)?(0x40432):(0x40431); // Filter DRd of local/remote on even/odd CHA boxes
+      //ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
+      //if (ret != 8) {
+      //    perror("wrmsr FILTER1 failed");
+      //}
 
-      msr_num = CHA_MSR_PMON_CTL_BASE + (0x10 * cha) + 0; // counter 0
-      msr_val = 0x403136; // TOR Occupancy
+      msr_num = CHA_MSR_PMON_CTL_BASE + (0xE * cha) + 0; // counter 0
+      msr_val = (cha%2==0)?(0x00c8168600400136):(0x00c8170600400136); // TOR Occupancy, DRd, Miss, local/remote on even/odd CHA boxes
       ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
       if (ret != 8) {
           perror("wrmsr COUNTER0 failed");
       }
 
-      msr_num = CHA_MSR_PMON_CTL_BASE + (0x10 * cha) + 1; // counter 1
-      msr_val = 0x403135; // TOR Inserts
+      msr_num = CHA_MSR_PMON_CTL_BASE + (0xE * cha) + 1; // counter 1
+      msr_val = (cha%2==0)?(0x00c8168600400135):(0x00c8170600400135); // TOR Inserts, DRd, Miss, local/remote on even/odd CHA boxes
       ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
       if (ret != 8) {
           perror("wrmsr COUNTER1 failed");
       }
 
-      msr_num = CHA_MSR_PMON_CTL_BASE + (0x10 * cha) + 2; // counter 2
+      msr_num = CHA_MSR_PMON_CTL_BASE + (0xE * cha) + 2; // counter 2
       msr_val = 0x400000; // CLOCKTICKS
       ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
       if (ret != 8) {
