@@ -22,7 +22,7 @@
 #define CAPACITY                  (128*1024*1024)
 #define COOLING_PAGES             (8192)
 
-#define PEBS_NPROCS 8
+#define PEBS_NPROCS 32
 #define PERF_PAGES	(1 + (1 << 16))	// Has to be == 1+2^n, here 1MB
 // #define SAMPLE_PERIOD	101
 #define SAMPLE_PERIOD 5003
@@ -31,8 +31,8 @@
 
 #define EWMA_FRAC (0.5)
 
-#define SCANNING_THREAD_CPU_DEFAULT (31)
-#define MIGRATION_THREAD_CPU_DEFAULT (27)
+#define SCANNING_THREAD_CPU_DEFAULT (63)
+#define MIGRATION_THREAD_CPU_DEFAULT (61)
 
 extern uint64_t hemem_cpu_start;
 extern uint64_t scanning_thread_cpu;
