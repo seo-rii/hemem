@@ -51,6 +51,7 @@ extern uint64_t migration_thread_cpu;
 #define SAMPLE_COOLING_THRESHOLD 1000
 #define COLLOID_DYNAMIC_LIMIT
 #define COLLOID_COOLING
+#define RATE_BETA
 
 struct perf_sample {
   struct perf_event_header header;

@@ -814,6 +814,7 @@ void *pebs_policy_thread()
   struct hemem_page* cur_cool_in_dram  = NULL;
   struct hemem_page* cur_cool_in_nvm = NULL;
   #endif
+  double beta;
   #if defined HISTOGRAM || defined SCAN_AND_SORT
   uint64_t total_accesses = 0;
   double pi, pj, target_delta, best_delta;
@@ -965,15 +966,21 @@ void *pebs_policy_thread()
     //   goto out;
     // }
 
+    #ifdef RATE_BETA
+    beta = smoothed_inserts_local/smoothed_inserts_remote;
+    #else
+    beta = COLLOID_BETA;
+    #endif
+
     // Pair finding algorithm
     #ifdef HISTOGRAM
     // TODO: Compare based on some precision threshold
-    if(smoothed_occ_local == COLLOID_BETA * smoothed_occ_remote) {
+    if(smoothed_occ_local == beta * smoothed_occ_remote) {
       // nothing to do
       fprintf(colloid_log_f, "equal occupancy exit\n");
       goto out;
     }
-    target_delta = fabs(smoothed_occ_local - COLLOID_BETA * smoothed_occ_remote);
+    target_delta = fabs(smoothed_occ_local - beta * smoothed_occ_remote);
     target_delta /= (smoothed_occ_local+smoothed_occ_remote);
     total_accesses = 0;
     for(int i = 0; i < MAX_HISTOGRAM_BINS; i++) {
@@ -995,10 +1002,10 @@ void *pebs_policy_thread()
         if(j > 0 && nvm_histogram_list[j].numentries == 0) {
           continue;
         }
-        if(smoothed_occ_local > COLLOID_BETA * smoothed_occ_remote && i <= j) {
+        if(smoothed_occ_local > beta * smoothed_occ_remote && i <= j) {
           continue;
         }
-        if(smoothed_occ_local < COLLOID_BETA * smoothed_occ_remote && i >= j) {
+        if(smoothed_occ_local < beta * smoothed_occ_remote && i >= j) {
           continue;
         }
         pi = ((double)i)/((double)total_accesses);
@@ -1097,16 +1104,16 @@ void *pebs_policy_thread()
     fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu\n", smoothed_occ_local, smoothed_occ_remote, best_i, best_j, migrated_bytes, total_accesses);
     #elif defined SCAN_AND_SORT
     // TODO: Compare based on some precision threshold
-    if(smoothed_occ_local == COLLOID_BETA * smoothed_occ_remote) {
+    if(smoothed_occ_local == beta * smoothed_occ_remote) {
       // nothing to do
       fprintf(colloid_log_f, "equal occupancy exit\n");
       goto out;
     }
-    target_delta = fabs(smoothed_occ_local - COLLOID_BETA * smoothed_occ_remote);
+    target_delta = fabs(smoothed_occ_local - beta * smoothed_occ_remote);
     #ifdef COLLOID_EXPR2
-    target_delta /= ((1.0+COLLOID_BETA)*(smoothed_occ_local+smoothed_occ_remote));
+    target_delta /= ((1.0+beta)*(smoothed_occ_local+smoothed_occ_remote));
     #elif defined COLLOID_EXPR3
-    target_delta /= ((smoothed_inserts_local+smoothed_inserts_remote)*(COLLOID_BETA*smoothed_occ_remote/smoothed_inserts_remote + smoothed_occ_local/smoothed_inserts_local));
+    target_delta /= ((smoothed_inserts_local+smoothed_inserts_remote)*(beta*smoothed_occ_remote/smoothed_inserts_remote + smoothed_occ_local/smoothed_inserts_local));
     #else
     target_delta /= ((smoothed_occ_local+smoothed_occ_remote));
     #endif
@@ -1185,7 +1192,7 @@ void *pebs_policy_thread()
       best_i = -1;
       best_j = -1;
       best_delta = 0.0;
-      if(smoothed_occ_local > COLLOID_BETA * smoothed_occ_remote) {
+      if(smoothed_occ_local > beta * smoothed_occ_remote) {
         top = dram_page_freqs;
         top_count = dram_freqs_count;
         bottom = nvm_page_freqs;
@@ -1334,7 +1341,7 @@ void *pebs_policy_thread()
 
     #if !defined(HISTOGRAM) && !defined(SCAN_AND_SORT)
     #ifdef COLLOID
-    if(smoothed_occ_local <= COLLOID_BETA * smoothed_occ_remote) {
+    if(smoothed_occ_local <= beta * smoothed_occ_remote) {
     #endif
       // move hot NVM pages to DRAM
       // delta_occ = (smoothed_occ_remote - smoothed_occ_local)/(smoothed_occ_remote);
