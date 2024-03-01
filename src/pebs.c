@@ -135,6 +135,8 @@ void *pebs_scan_thread()
     assert(0);
   }
 
+  uint32_t my_pid = getpid();
+
   for(;;) {
     for (int i = start_cpu; i < start_cpu + num_cores; i++) {
       for(int j = 0; j < NPBUFTYPES; j++) {
@@ -155,12 +157,13 @@ void *pebs_scan_thread()
         case PERF_RECORD_SAMPLE:
             ps = (struct perf_sample*)ph;
             assert(ps != NULL);
-            if(ps->addr != 0) {
+            if(ps->addr != 0 && ps->pid == my_pid) {
               __u64 pfn = ps->addr & HUGE_PFN_MASK;
             
               page = get_hemem_page(pfn);
               if (page != NULL) {
                 if (page->va != 0) {
+                  assert(ps->pid == my_pid);
                   page->accesses[j]++;
                   page->tot_accesses[j]++;
                   //if (page->accesses[WRITE] >= HOT_WRITE_THRESHOLD) {
@@ -215,7 +218,12 @@ void *pebs_scan_thread()
               total_pages_cnt++;
             }
             else {
-              zero_pages_cnt++;
+              if(ps->addr == 0) {
+                zero_pages_cnt++;
+              } else {
+                other_pages_cnt++;
+                total_pages_cnt++;
+              }
             }
   	      break;
         case PERF_RECORD_THROTTLE:
@@ -328,6 +336,9 @@ void make_cold(struct hemem_page* page)
     enqueue_fifo(&dram_cold_list, page);
   }
   else {
+    if(page->list != &nvm_hot_list) {
+      printf("hot nvm page not in nvm hot list. page->present: %d, page->va=%lu, page->list=%p, dram_hot_list=%p, dram_cold_list=%p, nvm_hot_list=%p, nvm_cold_list=%p, page->devdax_offset=%lu, page->migrating=%d, page->naccesses=%lu, page->accesses_dram=%lu, page->accesses_nvm=%lu, page->tot_accesses_dram=%lu, page->tot_accesses_nvm=%lu, page->migrations_up=%lu, page->migrations_down=%lu\n", page->present, page->va, page->list, &dram_hot_list, &dram_cold_list, &nvm_hot_list, &nvm_cold_list, page->devdax_offset, page->migrating, page->naccesses, page->accesses[DRAMREAD], page->accesses[NVMREAD], page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD], page->migrations_up, page->migrations_down);
+    }
     assert(page->list == &nvm_hot_list);
     page_list_remove_page(&nvm_hot_list, page);
     page->hot = false;
