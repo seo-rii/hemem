@@ -299,6 +299,9 @@ void make_hot(struct hemem_page* page)
   }
 
   if (page->in_dram) {
+    if(page->list != &dram_cold_list) {
+	          printf("cold dram page not in dram cold list. page->present: %d, page->va=%lu, page->list=%p, dram_hot_list=%p, dram_cold_list=%p, nvm_hot_list=%p, nvm_cold_list=%p, dram_free_list=%p, nvm_free_list=%p, page->devdax_offset=%lu, page->migrating=%d, page->naccesses=%lu, page->accesses_dram=%lu, page->accesses_nvm=%lu, page->tot_accesses_dram=%lu, page->tot_accesses_nvm=%lu, page->migrations_up=%lu, page->migrations_down=%lu\n", page->present, page->va, page->list, &dram_hot_list, &dram_cold_list, &nvm_hot_list, &nvm_cold_list, &dram_free_list, &nvm_free_list, page->devdax_offset, page->migrating, page->naccesses, page->accesses[DRAMREAD], page->accesses[NVMREAD], page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD], page->migrations_up, page->migrations_down);
+	}
     assert(page->list == &dram_cold_list);
     page_list_remove_page(&dram_cold_list, page);
     page->hot = true;
@@ -550,6 +553,11 @@ void *pebs_policy_thread()
         if (page == NULL) {
             continue;
         }
+
+        // Ignore requests to pages that have been freed
+        if(page->list == &dram_free_list || page->list == &nvm_free_list) {
+            continue;
+        }
         
         #ifdef COOL_IN_PLACE
         update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, page);
@@ -565,6 +573,11 @@ void *pebs_policy_thread()
     while(!ring_buf_empty(cold_ring) && num_ring_reqs < COLD_RING_REQS_THRESHOLD) {
         page = (struct hemem_page*)ring_buf_get(cold_ring);
         if (page == NULL) {
+            continue;
+        }
+
+        // Ignore requests to pages that have been freed
+        if(page->list == &dram_free_list || page->list == &nvm_free_list) {
             continue;
         }
 
