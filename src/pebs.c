@@ -441,6 +441,14 @@ static void pebs_migrate_down(struct hemem_page *page, uint64_t offset)
 
   gettimeofday(&start, NULL);
 
+  if(page->list == &dram_free_list || page->list == &nvm_free_list) {
+    printf("BUG: attempting to migrate freed page\n");
+  }
+
+  if(page->present == false) {
+    printf("BUG: attempting to migrate un-processed free page\n"); 
+  }
+
   page->migrating = true;
   hemem_wp_page(page, true);
   hemem_migrate_down(page, offset);
@@ -455,6 +463,14 @@ static void pebs_migrate_up(struct hemem_page *page, uint64_t offset)
   struct timeval start, end;
 
   gettimeofday(&start, NULL);
+
+  if(page->list == &dram_free_list || page->list == &nvm_free_list) {
+    printf("BUG: attempting to migrate freed page\n");
+  }
+
+  if(page->present == false) {
+    printf("BUG: attempting to migrate un-processed free page\n"); 
+  }
 
   page->migrating = true;
   hemem_wp_page(page, true);
@@ -581,9 +597,15 @@ void make_cold(struct hemem_page* page)
 
   if (!page->hot) {
     if (page->in_dram) {
+      if(page->list != &dram_cold_list) {
+        printf("cold dram page not in dram cold list. page->present: %d, page->va=%lu, page->list=%p, dram_hot_list=%p, dram_cold_list=%p, nvm_hot_list=%p, nvm_cold_list=%p, page->devdax_offset=%lu, page->migrating=%d, page->naccesses=%lu, page->accesses_dram=%lu, page->accesses_nvm=%lu, page->tot_accesses_dram=%lu, page->tot_accesses_nvm=%lu, page->migrations_up=%lu, page->migrations_down=%lu\n", page->present, page->va, page->list, &dram_hot_list, &dram_cold_list, &nvm_hot_list, &nvm_cold_list, page->devdax_offset, page->migrating, page->naccesses, page->accesses[DRAMREAD], page->accesses[NVMREAD], page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD], page->migrations_up, page->migrations_down);
+      }
       assert(page->list == &dram_cold_list);
     }
     else {
+      if(page->list != &nvm_cold_list) {
+        printf("cold nvm page not in nvm cold list. page->present: %d, page->va=%lu, page->list=%p, dram_hot_list=%p, dram_cold_list=%p, nvm_hot_list=%p, nvm_cold_list=%p, page->devdax_offset=%lu, page->migrating=%d, page->naccesses=%lu, page->accesses_dram=%lu, page->accesses_nvm=%lu, page->tot_accesses_dram=%lu, page->tot_accesses_nvm=%lu, page->migrations_up=%lu, page->migrations_down=%lu\n", page->present, page->va, page->list, &dram_hot_list, &dram_cold_list, &nvm_hot_list, &nvm_cold_list, page->devdax_offset, page->migrating, page->naccesses, page->accesses[DRAMREAD], page->accesses[NVMREAD], page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD], page->migrations_up, page->migrations_down);
+      }
       assert(page->list == &nvm_cold_list);
     }
 
@@ -943,17 +965,16 @@ void *pebs_policy_thread()
         if (page == NULL) {
             continue;
         }
-
-        // Ignore requests to pages that have been freed
-        if(page->list == &dram_free_list || page->list == &nvm_free_list) {
-            continue;
-        }
         
         #ifdef COOL_IN_PLACE
         update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, page);
         #endif
         page->ring_present = false;
         num_ring_reqs++;
+        // Ignore requests to pages that have been freed
+        if(page->list == &dram_free_list || page->list == &nvm_free_list) {
+            continue;
+        }
         make_hot(page);
         //printf("hot ring, hot pages:%llu\n", num_ring_reqs);
 	  }
@@ -966,16 +987,15 @@ void *pebs_policy_thread()
             continue;
         }
 
-        // Ignore requests to pages that have been freed
-        if(page->list == &dram_free_list || page->list == &nvm_free_list) {
-            continue;
-        }
-
         #ifdef COOL_IN_PLACE
         update_current_cool_page(&cur_cool_in_dram, &cur_cool_in_nvm, page);
         #endif
         page->ring_present = false;
         num_ring_reqs++;
+        // Ignore requests to pages that have been freed
+        if(page->list == &dram_free_list || page->list == &nvm_free_list) {
+            continue;
+        }
         make_cold(page);
         //printf("cold ring, cold pages:%llu\n", num_ring_reqs);
     }
