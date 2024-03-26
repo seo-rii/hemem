@@ -812,17 +812,21 @@ int scan_page_list(struct fifo_list *page_list, struct page_freq *page_freqs, si
   struct hemem_page *np;
   next_page(page_list, NULL, &p);
   while(p != NULL) {
-    assert(idx < freqs_size);
-    #ifdef COLLOID_COOLING
-    page_freqs[idx].accesses = (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock));
-    #else
-    page_freqs[idx].accesses = p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD];
-    #endif
-    page_freqs[idx].page = p;
-    *total_accesses += page_freqs[idx].accesses;
+    // There could be pages that were unmapped, but not yet moved to free list
+    // Don't want to consider these for migration
+    if(p->present) {
+      assert(idx < freqs_size);
+      #ifdef COLLOID_COOLING
+      page_freqs[idx].accesses = (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock));
+      #else
+      page_freqs[idx].accesses = p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD];
+      #endif
+      page_freqs[idx].page = p;
+      *total_accesses += page_freqs[idx].accesses;
+      idx += 1;
+    }
     next_page(page_list, p, &np);
     p = np;
-    idx += 1;
   }
   return idx;
 }
@@ -971,8 +975,8 @@ void *pebs_policy_thread()
         #endif
         page->ring_present = false;
         num_ring_reqs++;
-        // Ignore requests to pages that have been freed
-        if(page->list == &dram_free_list || page->list == &nvm_free_list) {
+        // Ignore requests to pages that have been unmapped/freed
+        if(page->present == false || page->list == &dram_free_list || page->list == &nvm_free_list) {
             continue;
         }
         make_hot(page);
@@ -992,8 +996,8 @@ void *pebs_policy_thread()
         #endif
         page->ring_present = false;
         num_ring_reqs++;
-        // Ignore requests to pages that have been freed
-        if(page->list == &dram_free_list || page->list == &nvm_free_list) {
+        // Ignore requests to pages that have been unmapped/freed
+        if(page->present ==false || page->list == &dram_free_list || page->list == &nvm_free_list) {
             continue;
         }
         make_cold(page);
@@ -1288,6 +1292,20 @@ void *pebs_policy_thread()
       nvm_j = (top == nvm_page_freqs)?(best_i):(best_j);
       fprintf(colloid_log_f, "|best_i:%d;best_j:%d;best_delta:%lf", dram_i, nvm_j, best_delta);
 
+      pthread_mutex_lock(&(dram_page_freqs[dram_i].page->page_lock));
+      pthread_mutex_lock(&(nvm_page_freqs[nvm_j].page->page_lock));
+      // the selected pair of pages could have been unmapped while we were scanning
+      // if so, just bail out
+      if(dram_page_freqs[dram_i].page->present == false || nvm_page_freqs[nvm_j].page->present == false) {
+        pthread_mutex_unlock(&(nvm_page_freqs[nvm_j].page->page_lock));
+        pthread_mutex_unlock(&(dram_page_freqs[dram_i].page->page_lock));
+       fprintf(colloid_log_f, ",page-freed-exit,migrated_bytes=%ld,remaining_delta=%lf\n", migrated_bytes, target_delta);
+       goto out;
+      }
+
+      // Both pages are present, and guaranteed to be so until we release their locks
+      // This in-turn guarantees that they will not be unmapped during migration
+
       target_delta -= best_delta;
 
       // Swap page pair
@@ -1303,7 +1321,10 @@ void *pebs_policy_thread()
           np = dequeue_fifo(&dram_free_list);
         // }
       }
-      if(np == NULL) {
+      if(np != NULL) {
+        // Page not going to be migrated; just release lock
+        pthread_mutex_unlock(&(dram_page_freqs[dram_i].page->page_lock));
+      } else {
         p = dram_page_freqs[dram_i].page;
         dram_page_freqs[dram_i].page = NULL;
         assert(p != NULL);
@@ -1335,6 +1356,8 @@ void *pebs_policy_thread()
 
         enqueue_fifo((p->hot)?(&nvm_hot_list):(&nvm_cold_list), p);
         migrated_bytes += pt_to_pagesize(p->pt);
+        // migration done; release page lock
+        pthread_mutex_unlock(&(p->page_lock));
       }
       // np is now a free dram page
       assert(np != NULL);
@@ -1366,8 +1389,11 @@ void *pebs_policy_thread()
         enqueue_fifo((p->hot)?(&dram_hot_list):(&dram_cold_list), p);
         enqueue_fifo(&nvm_free_list, np);
         migrated_bytes += pt_to_pagesize(p->pt);
+        // migration done; release page lock
+        pthread_mutex_unlock(&(p->page_lock));
       } else {
-        // No point in moving 0 freq page; just return np to dram free list
+        // No point in moving 0 freq page; release page lock and just return np to dram free list
+        pthread_mutex_unlock(&(nvm_page_freqs[nvm_j].page->page_lock));
         enqueue_fifo(&dram_free_list, np);
       }
       // if(tmp_dram_page != NULL) {
@@ -1643,7 +1669,10 @@ void pebs_remove_page(struct hemem_page *page)
   ring_buf_put(free_page_ring, (uint64_t*)page); 
   pthread_mutex_unlock(&free_page_ring_lock);
 
+  // Take page lock to prevent pages that are currently being migrated from being unmapped
+  pthread_mutex_lock(&(page->page_lock));
   page->present = false;
+  pthread_mutex_unlock(&(page->page_lock));
   page->hot = false;
   for (int i = 0; i < NPBUFTYPES; i++) {
     page->accesses[i] = 0;

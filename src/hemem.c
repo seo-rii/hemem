@@ -463,6 +463,8 @@ static void hemem_mmap_populate(void* addr, size_t length)
     uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
     uffdio_register.ioctls = 0;
     if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
+      fprintf(stderr, "uffdio_register failed, range.start=%llu, range.len=%llu, newptr=%p, pagsize=%lu\n", uffdio_register.range.start, uffdio_register.range.len, newptr, pagesize);
+      fprintf(stderr, "page->present=%d\n", page->present);
       perror("ioctl uffdio_register");
       assert(0);
     }
@@ -728,6 +730,8 @@ void hemem_migrate_up(struct hemem_page *page, uint64_t dram_offset)
   uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
   uffdio_register.ioctls = 0;
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
+    fprintf(stderr, "uffdio_register failed, range.start=%llu, range.len=%llu, newptr=%p, pagsize=%lu\n", uffdio_register.range.start, uffdio_register.range.len, newptr, pagesize);
+    fprintf(stderr, "page->present=%d\n", page->present);
     perror("ioctl uffdio_register");
     assert(0);
   }
@@ -842,6 +846,8 @@ void hemem_migrate_down(struct hemem_page *page, uint64_t nvm_offset)
   uffdio_register.mode = UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP;
   uffdio_register.ioctls = 0;
   if (ioctl(uffd, UFFDIO_REGISTER, &uffdio_register) == -1) {
+    fprintf(stderr, "uffdio_register failed, range.start=%llu, range.len=%llu, newptr=%p, pagsize=%lu\n", uffdio_register.range.start, uffdio_register.range.len, newptr, pagesize);
+    fprintf(stderr, "page->present=%d\n", page->present);
     perror("ioctl uffdio_register");
     assert(0);
   }
