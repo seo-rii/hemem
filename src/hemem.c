@@ -491,6 +491,7 @@ static void hemem_mmap_populate(void* addr, size_t length)
 
 void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 {
+  // printf("hemem_mmap: addr: %p, length: %lu, prot: %d, flags: %d, fd: %d, offset: %lu\n", addr, length, prot, flags, fd, offset);
   void *p;
   struct uffdio_cr3 uffdio_cr3;
 
@@ -544,9 +545,9 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
   }
 
    
-//  if ((flags & MAP_POPULATE) == MAP_POPULATE) {
+ if ((flags & MAP_POPULATE) == MAP_POPULATE) {
     hemem_mmap_populate(p, length);
-//  }
+ }
 
   mem_mmaped = length;
   
@@ -558,6 +559,7 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
 
 int hemem_munmap(void* addr, size_t length)
 {
+  // printf("hemem_munmap: addr=%p, length=%lu\n", addr, length);
   uint64_t page_boundry;
   struct hemem_page *page;
   int ret;
