@@ -46,7 +46,10 @@ extern uint64_t migration_thread_cpu;
 #define SCAN_AND_SORT // PFA implementation using scan and sort
 #define COLLOID_EWMA (0.0625)
 //#define COLLOID_EXPR1
-#define COLLOID_EXPR3
+//#define COLLOID_EXPR3
+#define COLLOID_BINSEARCH
+#define COLLOID_DELTA 0.05
+#define COLLOID_EPSILON 0.01
 // #define SAMPLE_BASED_COOLING
 #define SAMPLE_COOLING_THRESHOLD 1000
 #define COLLOID_DYNAMIC_LIMIT

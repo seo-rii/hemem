@@ -38,6 +38,7 @@ double smoothed_occ_local, occ_local;
 double smoothed_occ_remote, occ_remote;
 double smoothed_inserts_local, inserts_local;
 double smoothed_inserts_remote, inserts_remote;
+double p_lo, p_hi;
 uint64_t cur_ctr_tsc[NUM_CHA_BOXES][NUM_CHA_COUNTERS], prev_ctr_tsc[NUM_CHA_BOXES][NUM_CHA_COUNTERS];
 uint64_t cur_ctr_val[NUM_CHA_BOXES][NUM_CHA_COUNTERS], prev_ctr_val[NUM_CHA_BOXES][NUM_CHA_COUNTERS];
 
@@ -233,6 +234,8 @@ static void colloid_setup(int cpu) {
   inserts_local = 0.0;
   smoothed_inserts_remote = 0.0;
   inserts_remote = 0.0;
+  p_lo = 0.0;
+  p_hi = 1.0;
 }
 
 static void colloid_update_stats() {
@@ -874,6 +877,7 @@ void *pebs_policy_thread()
   // struct hemem_page *tmp_dram_page = NULL;
   // struct hemem_page *tmp_nvm_page = NULL;
   uint64_t dlimit;
+  double cur_p;
   #endif
   
   thread = pthread_self();
@@ -1157,14 +1161,7 @@ void *pebs_policy_thread()
       fprintf(colloid_log_f, "equal occupancy exit\n");
       goto out;
     }
-    target_delta = fabs(smoothed_occ_local - beta * smoothed_occ_remote);
-    #ifdef COLLOID_EXPR2
-    target_delta /= ((1.0+beta)*(smoothed_occ_local+smoothed_occ_remote));
-    #elif defined COLLOID_EXPR3
-    target_delta /= ((smoothed_inserts_local+smoothed_inserts_remote)*(beta*smoothed_occ_remote/smoothed_inserts_remote + smoothed_occ_local/smoothed_inserts_local));
-    #else
-    target_delta /= ((smoothed_occ_local+smoothed_occ_remote));
-    #endif
+
     total_accesses = 0;
     // Scan page lists and build frequency arrays
     dram_freqs_count = 0;
@@ -1179,6 +1176,49 @@ void *pebs_policy_thread()
       goto out;
     }
 
+    // Sort frequency arrays in increasing order
+    qsort(dram_page_freqs, dram_freqs_count, sizeof(struct page_freq), cmp_page_freq);
+    qsort(nvm_page_freqs, nvm_freqs_count, sizeof(struct page_freq), cmp_page_freq);
+  
+    #ifdef COLLOID_EXPR2
+    target_delta = fabs(smoothed_occ_local - beta * smoothed_occ_remote);
+    target_delta /= ((1.0+beta)*(smoothed_occ_local+smoothed_occ_remote));
+    #elif defined COLLOID_EXPR3
+    target_delta = fabs(smoothed_occ_local - beta * smoothed_occ_remote);
+    target_delta /= ((smoothed_inserts_local+smoothed_inserts_remote)*(beta*smoothed_occ_remote/smoothed_inserts_remote + smoothed_occ_local/smoothed_inserts_local));
+    #elif defined COLLOID_BINSEARCH
+    if(fabs(smoothed_occ_local - beta * smoothed_occ_remote) < COLLOID_DELTA*smoothed_occ_local) {
+      // We are within target; don't want to migrate anything
+      target_delta = 0.0;
+    } else {
+      cur_p = smoothed_inserts_local/(smoothed_inserts_local+smoothed_inserts_remote);
+      if(smoothed_occ_local < beta * smoothed_occ_remote) {
+        p_lo = cur_p;
+        if(p_hi <= p_lo) {
+          // reset p_hi
+          p_hi = 1.0;
+        }
+      } else {
+        p_hi = cur_p;
+        if(p_lo >= p_hi) {
+          // reset p_lo
+          p_lo = 0.0;
+        }
+      }
+      if(fabs(p_hi-p_lo) < COLLOID_EPSILON) {
+        if(smoothed_occ_local < beta * smoothed_occ_remote) {
+          p_hi = 1.0;
+        } else {
+          p_lo = 0.0;
+        } 
+      }
+      target_delta = fabs((p_lo+p_hi)/2 - cur_p);
+    }
+    #else
+    target_delta = fabs(smoothed_occ_local - beta * smoothed_occ_remote);
+    target_delta /= ((smoothed_occ_local+smoothed_occ_remote));
+    #endif
+
     // Try to add temp pages with 0 access frequency
     // tmp_dram_page = dequeue_fifo(&dram_free_list);
     // if(tmp_dram_page != NULL) {
@@ -1192,10 +1232,6 @@ void *pebs_policy_thread()
     //   nvm_page_freqs[nvm_freqs_count].page = tmp_nvm_page;
     //   nvm_freqs_count++;
     // }
-
-    // Sort frequency arrays in increasing order
-    qsort(dram_page_freqs, dram_freqs_count, sizeof(struct page_freq), cmp_page_freq);
-    qsort(nvm_page_freqs, nvm_freqs_count, sizeof(struct page_freq), cmp_page_freq);
 
     migrate_limit = (50 * PAGE_SIZE);
     #ifdef COLLOID_DYNAMIC_LIMIT
@@ -1218,7 +1254,9 @@ void *pebs_policy_thread()
     ",total_accesses=%lu"
     ",top_freq_i=%lu"
     ",top_freq_j=%lu"
-    ",migrate_limit=%lu",
+    ",migrate_limit=%lu"
+    ",p_lo=%lf"
+    ",p_hi=%lf",
     smoothed_occ_local,
     smoothed_occ_remote,
     smoothed_inserts_local,
@@ -1231,7 +1269,9 @@ void *pebs_policy_thread()
     total_accesses,
     dram_page_freqs[dram_freqs_count-1].accesses,
     nvm_page_freqs[nvm_freqs_count-1].accesses,
-    migrate_limit);
+    migrate_limit,
+    p_lo,
+    p_hi);
 
     fprintf(colloid_log_f, ",pairs=");
 
