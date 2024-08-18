@@ -19,7 +19,7 @@ The following instructions assume a dual-socket server (Intel Ice Lake architect
 
 #### Requirements
 
-1. We recommend using gcc version 8.4.0 (We ran into issues while compiling HeMem and requirements with later versions of GCC). This can be installed using:
+We recommend using gcc version 8.4.0 (We ran into issues while compiling HeMem and requirements with later versions of GCC). This can be installed using:
    
 ```
 sudo apt install gcc-8
@@ -29,13 +29,13 @@ and select the version using:
 sudo update-alternatives --config gcc
 ```
 
-2. Install ndctl utility
+Next, install ndctl utility
 
 ```
 sudo apt install ndctl
 ```
 
-3. Install prerequisites for compiling linux kernel:
+Also, install prerequisites for compiling linux kernel:
 
 ```
 sudo apt install build-essential libncurses-dev bison flex libssl-dev libelf-dev fakeroot
