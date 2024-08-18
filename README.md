@@ -94,47 +94,15 @@ HeMem also depends on libsyscall_intercept to intercept memory allocation system
 
 Once the proper kernel version is running, the `/dev/dax` files have been set up, and all dependencies have been installed, HeMem (+ colloid) can be built with the supplied Makefile by typing `make` from the `src/` directory.
 
-#### Running
+### Running HeMem + colloid
 
-You will likely need to add the paths to the build HeMem library and the Hoard library to your LD_LIBRARY_PATH variable:
+Procedure for running HeMem + colloid is the same as that for vanilla HeMem.
 
-`export LD_LIBRARY_PATH=path/to/hemem/lib:/path/to/Hoard/lib:$LD_LIBRARY_PATH`
+To be safe, increase the number of allowed mmap ranges:
 
-You may also need to increase the number of allowed mmap ranges:
+`echo 1000000 | sudo tee /proc/sys/vm/max_map_count`
 
-`echo 1000000 > /proc/sys/vm/max_map_count`
+HeMem requires the user be root in order to run. Applications can be run unmodified via the `LD_PRELOAD` environment variable:
 
-HeMem requires the user be root in order to run. Applications can either be linked with Hemem or run unmodified via the `LD_PRELOAD` environment variable:
-
-`LD_PRELOAD=/path/to/hemem/lib.so ./foo [args]`
-
-### Microbenchmarks
-
-A Makefile is provided to build the GUPS microbenchmarks.
-
-To reproduce the Uniform GUPS results, run the `run-random.sh` script. Results will be printed to the `random.txt` file. The throughput results shown in the paper are the "GUPS" lines.
-
-To reproduce the Hotset GUPS results, run the `run.sh` script. Results will be printed to the `results.txt` file. The throughput results shown in the paper are the "GUPS" lines.
-
-To reproduce the Instantaneous GUPS results, run the `run-instantaneous.sh` script. Results will be printed to the `tot_gups.txt` file.
-
-### Application Benchmarks
-
-Applications tested with HeMem are located in the `apps/` directory.
-
-#### Silo 
-
-The Silo application can be found in the `apps/silo_hemem/silo` directory.. Run the provided `run_batch.sh` script. Results will be in the `batch/results.txt` file. The reported throughput numbers are numbers in the first column of the file.
-
-#### FlexKVS
-
-The FlexKVS application can be found in the `apps/flexkvs` directory. These results require a separate machine for the clients.
-
-#### GapBS
-
-The GapBS application can be found in the `apps/gapbs` directory. To run the BC algorithm reported in the paper, you may run the following command:
-
-`LD_PRELOAD=/path/to/hemem/lib ./bc -g <scale>`
-
-which will run the bc algorithm with HeMem on a graph with 2^scale vertices.
+`sudo LD_LIBRARY_PATH=/home/midhul/hemem/src:/home/midhul/hemem/Hoard/src LD_PRELOAD=/home/midhul/hemem/src/libhemem.so <command to run app>`
 
