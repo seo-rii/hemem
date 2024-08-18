@@ -1,15 +1,17 @@
-# HeMem
+# HeMem + colloid
 
-This document describes the artifact for our [SOSP 2021 paper](https://dl.acm.org/doi/10.1145/3477132.3483550 "SOSP 2021 paper") on HeMem. HeMem is a tiered main memory management system designed from scratch for commercially available NVM and the big data applications that use it. HeMem manages tiered memory asynchronously, batching and amortizing memory access tracking, migration, and associated TLB synchronization overheads. HeMem monitors application memory use by sampling memory access via CPU events, rather than page tables. This allows HeMem to scale to terabytes of memory, keeping small and ephemeral data structures in fast memory, and allocating scarce, asymmetric NVM bandwidth according to access patterns. Finally, HeMem is flexible by placing per-application memory management policy at user-level.
+This is a fork of [HeMem](https://bitbucket.org/ajaustin/hemem/src/master/) with [colloid](https://github.com/webglider/colloid/) integration. Please refer to `README-original` for vanilla HeMem documentation. Here, we provide an overview of colloid implementation on top of HeMem along with detailed instructions on how to setup and run the end-to-end system.
 
 ## Overview
 
-* `apps/` contains the application benchmarks evaluated with HeMem
-* `microbenchmarks/` contains the GUPS microbenchmark used to evaluate HeMem
-* `src/` contains the source code of HeMem
-	* `src/policies` contains extra memory policies used for testing HeMem, such as a page-table based LRU policy
-* `Hoard/` contains the Hoard memory allocator that HeMem depends on
-* `linux/` contains the linux kernel version required to run HeMem
+The core of colloid implementation is in the following two files:
+* `src/pebs.h` contains key colloid configuration parameters
+* `src/pebs.c` contains implementation of loaded latency measurement infrastructure and colloid migration algorithm
+
+The fork contains the following additional minor updates over vanilla HeMem to enable working on our setup:
+* Updated PEBS counter to use remote NUMA node as alternate tier instead of NVM
+* Handling non-contiguous CPU core ids within a socket in `perf_setup` of `src/pebs.c`
+* Backport of Icelake PEBS support to HeMem linux kernel in `linux/`: HeMem requires a patched version of linux kernel 5.1.0. This kernel does not include PEBS support for Intel Icelake and newer architectures. To that end, we backported Icelake PEBS support from a newer kernel to the HeMem linux kernel
 
 ### Building and Running HeMem
 
