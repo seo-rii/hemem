@@ -106,3 +106,5 @@ HeMem requires the user be root in order to run. Applications can be run unmodif
 
 `sudo LD_LIBRARY_PATH=/home/midhul/hemem/src:/home/midhul/hemem/Hoard/src LD_PRELOAD=/home/midhul/hemem/src/libhemem.so <command to run app>`
 
+** Note about potential PEBS issue: ** PEBS can sometimes abruptly stop producing samples on certain CPU cores causing HeMem's access monitoring mechanism to become ineffective. To mitigate such issues, it is useful to run `sudo ./run_perf.sh`, which periodically resets PEBS counters, in the background while running HeMem (make sure to update the list of CPU core in the script based on your setup).
+
