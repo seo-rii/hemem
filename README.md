@@ -15,7 +15,7 @@ The fork contains the following additional minor updates over vanilla HeMem to e
 
 ### Building HeMem + colloid
 
-The following instructions assume a dual-socket server (Intel Ice Lake architecture) where one of the NUMA nodes is used as the default tier, and the other is used as the alternate tier. We have tested the following on Ubuntu 20.04.
+The following instructions assume a dual-socket server (Intel Ice Lake architecture) where one of the NUMA nodes is used as the default tier, and the other is used as the alternate tier. In the remainder of this document, we are going to assume NUMA 1 is the default tier, and NUMA 0 is the alternate tier (easily interchangeable). We have tested the following on Ubuntu 20.04.
 
 #### Requirements
 
@@ -44,33 +44,32 @@ sudo apt install dwarves
 
 #### Setup
 
-HeMem requires setting up `/dev/dax` files representing each of the tiers. This requires reserving blocks of physical memory at boot time.   
+HeMem requires setting up `/dev/dax` files representing each of the tiers. This requires reserving blocks of physical memory at boot time.
 
-You may set up HeMem to run on your own machine provided you have Intel Optane NVM. HeMem uses `/dev/dax` files to represent DRAM and NVM. Some additional setup is required for setting up the DRAM and NVM `/dev/dax` files to run HeMem.
+First, determine the how physical addresses ranges map to NUMA nodes using:
 
-To set up the `/dev/dax` file representing DRAM, follow the instructions [here](https://pmem.io/2016/02/22/pm-emulation.html "here") in order to reserve a block of DRAM at machine startup to represent the DRAM `/dev/dax` file. HeMem reserves its 140GB of DRAM in this way (enough for its 128GB of reserved DRAM plus some metadata needed for `ndctl`). If your machine has multiple NUMA nodes, ensure that the block of DRAM you reserve is located on the same NUMA node that has NVM. **Do not follow the last set of instructions from pmem.io on setting up a file system on the reserved DRAM.** Instead, set up a `/dev/dax` file to represent it:
+```
+dmesg | grep -i "acpi: srat"
+```
 
-1. First, determine the name of the namespace representing the reserved DRAM:
+Next, reserve memory regions of the required size for each of the tiers using the memmap boot command line parameter (see https://docs.pmem.io/persistent-memory/getting-started-guide/creating-development-environments/linux-environments/linux-memmap for details). For example, on our setup, we use the following to reserve 32GB starting at address 130G (corresponding to NUMA1 which we are going to use as default tier), and 96GB starting at address 4G (corresponding to NUMA0 which we are going to use as the alternate tier):
 
-`ndctl list --human`
+```
+GRUB_CMDLINE_LINUX="memmap=32G!130G memmap=96G!4G"
+```
 
-2. You should see your reserved DRAM. If multiple namespaces are listed, some represent NVM namespaces (described below). You should be able to differentiate the DRAM namespace based on size. Your DRAM namespace is likely in `fsdax` mode. Change the namespace over to `devdax` mode using the following command (in this example, the DRAM namespace is called `namespace0.0`):
+After rebooting the system, you can verify whether the regions were reserved using (the two regions should show up as separate namespaces):
 
-`sudo ndctl create-namespace -f -e namespace0.0 --mode=devdax --align 2M`
+```
+sudo ndctl list
+```
 
-3. Make note of the `chardev` name of the DRAM `/dev/dax` file. This will be used to tell HeMem which `/dev/dax` file represents DRAM. If this is different from `dax0.0`, then you will need to set the environment variable `DRAMPATH` to your actual DRAM `/dev/dax` file.
+Then, you can setup the `/dev/dax` files using (make sure to use the correct namespace names from above):
 
-To set up the `/dev/dax` file representing NVM, ensure that your machine has NVM in App Direct mode. If you do not already have namespaces representing NVM, then you will need to create them. Follow these steps:
-
-1. List the regions available on your machine:
-
-`ndctl list --regions --human`
-
-2. Note which regions represent NVM. You can differentiate them from the reserved DRAM region based on size or via the `persistence_domain` field, which, for NVM, will read `memory_controller`. Pick the region that is on the same NUMA node as your reserved DRAM. In this example, this is "region1". Create a namespace over this region:
-
-`ndctl create-namespace --region=1 --mode=devdax`
-
-3. Make note of the `chardev` name of the NVM `/dev/dax` file. This will be used to tell HeMem which `/dev/dax` file represents NVM. If this is different from `dax1.0`, then you will need to set the environment variable `NVMPATH` to your actual DRAM `/dev/dax` file.
+```
+sudo ndctl create-namespace -f -e namespace0.0 --mode=devdax --align 2M
+sudo ndctl create-namespace -f -e namespace1.0 --mode=devdax --align 2M
+```
 
 
 #### Building
