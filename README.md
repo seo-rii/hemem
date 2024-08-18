@@ -13,9 +13,38 @@ The fork contains the following additional minor updates over vanilla HeMem to e
 * Handling non-contiguous CPU core ids within a socket in `perf_setup` of `src/pebs.c`
 * Backport of Icelake PEBS support to HeMem linux kernel in `linux/`: HeMem requires a patched version of linux kernel 5.1.0. This kernel does not include PEBS support for Intel Icelake and newer architectures. To that end, we backported Icelake PEBS support from a newer kernel to the HeMem linux kernel
 
-### Building and Running HeMem
+### Building HeMem + colloid
+
+The following instructions assume a dual-socket server (Intel Ice Lake architecture) where one of the NUMA nodes is used as the default tier, and the other is used as the alternate tier. We have tested the following on Ubuntu 20.04.
+
+#### Requirements
+
+1. We recommend using gcc version 8.4.0 (We ran into issues while compiling HeMem and requirements with later versions of GCC). This can be installed using:
+   
+```
+sudo apt install gcc-8
+```
+and select the version using:
+```
+sudo update-alternatives --config gcc
+```
+
+2. Install ndctl utility
+
+```
+sudo apt install ndctl
+```
+
+3. Install prerequisites for compiling linux kernel:
+
+```
+sudo apt install build-essential libncurses-dev bison flex libssl-dev libelf-dev fakeroot
+sudo apt install dwarves
+```
 
 #### Setup
+
+HeMem requires setting up `/dev/dax` files representing each of the tiers. This requires reserving blocks of physical memory at boot time.   
 
 You may set up HeMem to run on your own machine provided you have Intel Optane NVM. HeMem uses `/dev/dax` files to represent DRAM and NVM. Some additional setup is required for setting up the DRAM and NVM `/dev/dax` files to run HeMem.
 
