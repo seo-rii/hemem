@@ -70,9 +70,19 @@ Then, you can setup the `/dev/dax` files using (make sure to use the correct nam
 sudo ndctl create-namespace -f -e namespace0.0 --mode=devdax --align 2M
 sudo ndctl create-namespace -f -e namespace1.0 --mode=devdax --align 2M
 ```
-Make note of the "chardevs" in the output for each of the namespaces (e.g., dax1.0, dax0.0). 
+Make note of the "chardevs" in the output for each of the namespaces (e.g., dax1.0, dax0.0).
 
-#### Building HeMem + colloid
+#### Configuration
+
+Based on your setup, the following configuration parameters may need to be updated:
+* Update `DRAMPATH_DEFAULT` and `NVMPATH_DEFAULT` to match the chardevs (from above) for the default tier and alternate tiers respectively
+* Update `DRAMSIZE_DEFAULT` and `NVMSIZE_DEFAULT` to the desired capacities of the default tier and alternate respectively
+* Update `PEBS_NPROCS` to the number of cores per-socket (can be obtained via `lscpu`)
+* Configure which CPU cores to pin HeMem threads to. Update `scanning_thread_cpu` and `migration_thread_cpu` in `src/pebs.c` and `fault_thread_cpu` in `src/hemem.c` accordingly. It is recommended to use dedicated CPU cores for each of the scanning and migration threads
+* Update `pebs_core_list` in `src/pebs.c` to the list of CPU cores in the (default tier) socket (use `lscpu` if in doubt)
+* Update `LOCAL_NUMA` in `src/pebs.c` to the NUMA node number of the default tier NUMA node   
+
+#### Building
 
 Building HeMem + colloid uses the same procedure as vanilla HeMem. In particular:
 
