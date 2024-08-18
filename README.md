@@ -70,17 +70,19 @@ Then, you can setup the `/dev/dax` files using (make sure to use the correct nam
 sudo ndctl create-namespace -f -e namespace0.0 --mode=devdax --align 2M
 sudo ndctl create-namespace -f -e namespace1.0 --mode=devdax --align 2M
 ```
+Make note of the "chardevs" in the output for each of the namespaces (e.g., dax1.0, dax0.0). 
 
+#### Building HeMem + colloid
 
-#### Building
+Building HeMem + colloid uses the same procedure as vanilla HeMem. In particular:
 
-To build HeMem, you must first build the linux kernel HeMem depends on. Build, install, and run the kernel located in the `linux/` directory.
+First build the linux kernel HeMem depends on. Build, install, and run the kernel located in the `linux/` directory.
 
 Next, HeMem depends on Hoard. Follow the instructions to build the Hoard library located in the `Hoard/` directory.
 
 HeMem also depends on libsyscall_intercept to intercept memory allocation system calls. Follow the instructions to build and install libsyscall_intercept [here](https://github.com/pmem/syscall_intercept).
 
-Once the proper kernel version is running, the `/dev/dax` files have been set up, and all dependencies have been installed, HeMem can be built with the supplied Makefile by typing `make` from the `src/` directory.
+Once the proper kernel version is running, the `/dev/dax` files have been set up, and all dependencies have been installed, HeMem (+ colloid) can be built with the supplied Makefile by typing `make` from the `src/` directory.
 
 #### Running
 
