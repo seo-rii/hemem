@@ -8,7 +8,7 @@ The core of colloid implementation is in the following two files:
 * `src/pebs.h` contains key colloid configuration parameters
 * `src/pebs.c` contains implementation of loaded latency measurement infrastructure and colloid migration algorithm
 
-The fork contains the following additional minor updates over vanilla HeMem to enable working on our setup:
+The fork contains the following additional minor updates over vanilla HeMem to enable it work on our setup:
 * Updated PEBS counter to use remote NUMA node as alternate tier instead of NVM
 * Handling non-contiguous CPU core ids within a socket in `perf_setup` of `src/pebs.c`
 * Backport of Icelake PEBS support to HeMem linux kernel in `linux/`: HeMem requires a patched version of linux kernel 5.1.0. This kernel does not include PEBS support for Intel Icelake and newer architectures. To that end, we backported Icelake PEBS support from a newer kernel to the HeMem linux kernel
