@@ -1930,9 +1930,9 @@ void pebs_stats()
   }
   LOG_STATS("]\ttotal_samples: [%lu]\n", total_samples);
   #ifndef HISTOGRAM
-  fprintf(stdout, "Total: %.2f GB DRAM, %.2f GB NVM\n",
-    (double)(dram_hot_list.numentries + dram_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0), 
-    (double)(nvm_hot_list.numentries + nvm_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0));
+  // fprintf(stdout, "Total: %.2f GB DRAM, %.2f GB NVM\n",
+    // (double)(dram_hot_list.numentries + dram_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0), 
+    // (double)(nvm_hot_list.numentries + nvm_cold_list.numentries) * ((double)PAGE_SIZE) / (1024.0 * 1024.0 * 1024.0));
   #endif
   #ifdef HISTOGRAM
   LOG_STATS("\t%ddram_histogram: [", 0);
