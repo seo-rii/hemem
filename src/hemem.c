@@ -42,6 +42,9 @@ char* nvmpath = NULL;
 uint64_t start_cpu = 0;
 uint64_t num_cores = 0;
 
+int mmap_pre_populate = 0;
+uint64_t mmap_filter_size = 0;
+
 uint64_t fault_thread_cpu = 0;
 uint64_t stats_thread_cpu = 0;
 
@@ -260,6 +263,20 @@ void hemem_init()
     nvmpath = malloc(sizeof(NVMPATH_DEFAULT));
     strcpy(nvmpath, NVMPATH_DEFAULT);
   }
+
+  char* mmap_pre_populate_string = getenv("MMAP_PRE_POPULATE");
+  if(mmap_pre_populate_string != NULL)
+    mmap_pre_populate = (int)(strtoull(mmap_pre_populate_string, NULL, 10));
+  else
+    mmap_pre_populate = 0;
+
+  char* mmap_filter_size_string = getenv("MMAP_FILTER_SIZE");
+  if(mmap_filter_size_string != NULL)
+    mmap_filter_size = strtoull(mmap_filter_size_string, NULL, 10);
+  else
+    mmap_filter_size = 1UL * 1024UL * 1024UL * 1024UL;
+
+  // printf("mmap_filter_size: %lu\n", mmap_filter_size);
 
   nvmfd = open(nvmpath, O_RDWR);
   if (nvmfd < 0) {
@@ -546,7 +563,7 @@ void* hemem_mmap(void *addr, size_t length, int prot, int flags, int fd, off_t o
   }
 
    
-  if ((flags & MAP_POPULATE) == MAP_POPULATE) {
+  if ((flags & MAP_POPULATE) == MAP_POPULATE || mmap_pre_populate) {
     hemem_mmap_populate(p, length);
   }
 

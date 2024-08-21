@@ -53,6 +53,8 @@ extern char* drampath;
 extern char* nvmpath;
 extern uint64_t start_cpu;
 extern uint64_t num_cores;
+extern int mmap_pre_populate;
+extern uint64_t mmap_filter_size;
 
 // #define NVMSIZE_DEFAULT   (480L * (1024L * 1024L * 1024L))
 // #define DRAMSIZE_DEFAULT  (128L * (1024L * 1024L * 1024L))
