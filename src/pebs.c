@@ -97,7 +97,7 @@ FILE *colloid_log_f = NULL;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
-int pebs_core_list[] = {1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31,33,35,37,39,41,43,45,47,49,51,53,55,57,59,61,63}; // should contain PEBS_NPROCS entries
+int pebs_core_list[] = {1,3,5,7,9,11,13,15}; // should contain PEBS_NPROCS entries
 
 volatile bool need_cool_dram = false;
 volatile bool need_cool_nvm = false;
