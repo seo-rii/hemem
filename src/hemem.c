@@ -11,7 +11,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <sys/mman.h>
-#include <linux/userfaultfd.h>
+#include "userfaultfd.h"
 #include <poll.h>
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
