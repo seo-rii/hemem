@@ -85,7 +85,7 @@ extern uint64_t mmap_filter_size;
 #define GIGA_PFN_MASK   (GIGAPAGE_MASK ^ UINT64_MAX)
 
 #define START_THREAD_DEFAULT 0
-#define FAULT_THREAD_CPU_DEFAULT  (59)
+#define FAULT_THREAD_CPU_DEFAULT  (0)
 #define STATS_THREAD_CPU_DEFAULT  (0)
 
 extern uint64_t fault_thread_cpu;
@@ -165,6 +165,13 @@ enum pagetypes {
   HUGEP = 0,
   BASEP = 1,
   NPAGETYPES
+};
+
+enum pbuftype {
+  DRAMREAD = 0,
+  NVMREAD = 1,  
+//  WRITE = 2,
+  NPBUFTYPES
 };
 
 struct hemem_page {

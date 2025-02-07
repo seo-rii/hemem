@@ -18,68 +18,48 @@
 #include <math.h>
 #include <signal.h>
 
-#include "hemem.h"
 #include "pebs.h"
+#include "hemem.h"
 #include "timer.h"
 #include "spsc-ring.h"
 
-#define USE_FILTER1
-#define LOCAL_NUMA 1
-#define CHA_MSR_PMON_BASE 0x0E00L
-#define CHA_MSR_PMON_CTL_BASE 0x0E01L
-#define CHA_MSR_PMON_FILTER0_BASE 0x0E05L
-#define CHA_MSR_PMON_FILTER1_BASE 0x0E06L
-#define CHA_MSR_PMON_STATUS_BASE 0x0E07L
-#define CHA_MSR_PMON_CTR_BASE 0x0E08L
-#define NUM_CHA_BOXES 18 // There are 32 CHA boxes in icelake server. After the first 18 boxes, the couter offsets change.
-#define NUM_CHA_COUNTERS 4
-#define MSR_OFFSET 0x10 // Offset for cascadelake
+#define NUM_CHA_BOXES 18
 
-int colloid_msr_fd;
 double smoothed_occ_local, occ_local;
 double smoothed_occ_remote, occ_remote;
 double smoothed_inserts_local, inserts_local;
 double smoothed_inserts_remote, inserts_remote;
-double p_lo, p_hi;
-uint64_t cur_ctr_tsc[NUM_CHA_BOXES][NUM_CHA_COUNTERS], prev_ctr_tsc[NUM_CHA_BOXES][NUM_CHA_COUNTERS];
-uint64_t cur_ctr_val[NUM_CHA_BOXES][NUM_CHA_COUNTERS], prev_ctr_val[NUM_CHA_BOXES][NUM_CHA_COUNTERS];
 
 uint64_t hemem_cpu_start;
 uint64_t migration_thread_cpu;
 uint64_t scanning_thread_cpu;
-
-#ifdef SCAN_AND_SORT
-struct page_freq {
-  uint64_t accesses;
-  struct hemem_page *page;
-};
-#endif
 
 #ifdef DUMP_FREQ
 volatile bool end_pebs_sampling = false;
 #endif
 
 #ifdef HISTOGRAM
-static struct fifo_list dram_histogram_list[MAX_HISTOGRAM_BINS];
-static struct fifo_list nvm_histogram_list[MAX_HISTOGRAM_BINS];
+struct fifo_list dram_histogram_list[MAX_HISTOGRAM_BINS];
+struct fifo_list nvm_histogram_list[MAX_HISTOGRAM_BINS];
 uint64_t histogram_clock = 0;
 #else
-static struct fifo_list dram_hot_list;
-static struct fifo_list dram_cold_list;
-static struct fifo_list nvm_hot_list;
-static struct fifo_list nvm_cold_list;
+struct fifo_list dram_hot_list;
+struct fifo_list dram_cold_list;
+struct fifo_list nvm_hot_list;
+struct fifo_list nvm_cold_list;
 #endif
-static struct fifo_list dram_free_list;
-static struct fifo_list nvm_free_list;
+struct fifo_list dram_free_list;
+struct fifo_list nvm_free_list;
 #ifndef HISTOGRAM
-static ring_handle_t hot_ring;
-static ring_handle_t cold_ring;
+ring_handle_t hot_ring;
+ring_handle_t cold_ring;
 #else
-static ring_handle_t update_ring;
+ring_handle_t update_ring;
 #endif
+
 static ring_handle_t free_page_ring;
 static pthread_mutex_t free_page_ring_lock = PTHREAD_MUTEX_INITIALIZER;
-uint64_t global_clock = 0;
+uint64_t global_clock;
 
 uint64_t hemem_pages_cnt = 0;
 uint64_t other_pages_cnt = 0;
@@ -93,14 +73,16 @@ uint64_t cools = 0;
 
 _Atomic volatile double miss_ratio = -1.0;
 FILE *miss_ratio_f = NULL;
-FILE *colloid_log_f = NULL;
 
 static struct perf_event_mmap_page *perf_page[PEBS_NPROCS][NPBUFTYPES];
 int pfd[PEBS_NPROCS][NPBUFTYPES];
 int pebs_core_list[] = {1,3,5,7,9,11,13,15}; // should contain PEBS_NPROCS entries
 
-volatile bool need_cool_dram = false;
-volatile bool need_cool_nvm = false;
+volatile bool need_cool_dram;
+volatile bool need_cool_nvm;
+
+struct hemem_page* start_dram_page;
+struct hemem_page* start_nvm_page;
 
 static long perf_event_open(struct perf_event_attr *hw_event, pid_t pid, 
     int cpu, int group_fd, unsigned long flags)
@@ -150,152 +132,6 @@ static struct perf_event_mmap_page* perf_setup(__u64 config, __u64 config1, __u6
 
   return p;
 }
-
-static inline void sample_cha_ctr(int cha, int ctr) {
-    uint32_t msr_num;
-    uint64_t msr_val;
-    int ret;
-
-    msr_num = CHA_MSR_PMON_CTR_BASE + (MSR_OFFSET * cha) + ctr;
-    ret = pread(colloid_msr_fd, &msr_val, sizeof(msr_val), msr_num);
-    if (ret != sizeof(msr_val)) {
-        perror("ERROR: failed to read MSR");
-    }
-    prev_ctr_val[cha][ctr] = cur_ctr_val[cha][ctr];
-    cur_ctr_val[cha][ctr] = msr_val;
-    prev_ctr_tsc[cha][ctr] = cur_ctr_tsc[cha][ctr];
-    cur_ctr_tsc[cha][ctr] = rdtscp();
-}
-
-static void colloid_setup(int cpu) {
-  // Open msr file
-  char filename[100];
-  sprintf(filename, "/dev/cpu/%d/msr", cpu);
-  colloid_msr_fd = open(filename, O_RDWR);
-  if(colloid_msr_fd == -1) {
-    perror("Failed to open msr file");
-  }
-
-  // Setup counters
-  int cha, ctr, ret;
-  uint32_t msr_num;
-  uint64_t msr_val;
-  for(cha = 0; cha < NUM_CHA_BOXES; cha++) {
-	// Icelake offset multiplier is MSR_OFFSET
-      msr_num = CHA_MSR_PMON_FILTER0_BASE + (MSR_OFFSET * cha); // Filter0
-      msr_val = 0x00000000; // default; no filtering
-      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
-      if (ret != 8) {
-	  printf("wrmsr FILTER0 failed for cha: %d\n", cha);
-          perror("wrmsr FILTER0 failed");
-      }
-
-      #ifdef USE_FILTER1
-      msr_num = CHA_MSR_PMON_FILTER1_BASE + (MSR_OFFSET * cha); // Filter1
-      msr_val = (cha%2 == 0)?(0x40432):(0x40431); // Filter DRd of local/remote on even/odd CHA boxes
-      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
-      if (ret != 8) {
-         perror("wrmsr FILTER1 failed");
-      }
-      #endif
-
-      msr_num = CHA_MSR_PMON_CTL_BASE + (MSR_OFFSET * cha) + 0; // counter 0
-      msr_val = (cha%2==0)?(0x00c8168600400136):(0x00c8170600400136); // TOR Occupancy, DRd, Miss, local/remote on even/odd CHA boxes
-      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
-      if (ret != 8) {
-          perror("wrmsr COUNTER0 failed");
-      }
-
-      msr_num = CHA_MSR_PMON_CTL_BASE + (MSR_OFFSET * cha) + 1; // counter 1
-      msr_val = (cha%2==0)?(0x00c8168600400135):(0x00c8170600400135); // TOR Inserts, DRd, Miss, local/remote on even/odd CHA boxes
-      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
-      if (ret != 8) {
-          perror("wrmsr COUNTER1 failed");
-      }
-
-      msr_num = CHA_MSR_PMON_CTL_BASE + (MSR_OFFSET * cha) + 2; // counter 2
-      msr_val = 0x400000; // CLOCKTICKS
-      ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
-      if (ret != 8) {
-          perror("wrmsr COUNTER2 failed");
-      }
-  }
-
-  // Initialize stats
-  for(cha = 0; cha < NUM_CHA_BOXES; cha++) {
-        for(ctr = 0; ctr < NUM_CHA_COUNTERS; ctr++) {
-            cur_ctr_tsc[cha][ctr] = 0;
-            cur_ctr_val[cha][ctr] = 0;
-            sample_cha_ctr(cha, ctr);
-        }
-    }
-
-  smoothed_occ_local = 0.0;
-  occ_local = 0.0;
-  smoothed_occ_remote = 0.0;
-  occ_remote = 0.0;
-  smoothed_inserts_local = 0.0;
-  inserts_local = 0.0;
-  smoothed_inserts_remote = 0.0;
-  inserts_remote = 0.0;
-  p_lo = 0.0;
-  p_hi = 1.0;
-}
-
-static void colloid_update_stats() {
-  uint64_t cum_occ, delta_tsc, cum_inserts;
-  double cur_occ, cur_rate;
-  // Sample counters and update state
-  // TODO: For starters using CHA0 for local and CHA1 for remote
-  sample_cha_ctr(0, 0); // CHA0 occupancy
-  sample_cha_ctr(0, 1); // CHA0 inserts
-  sample_cha_ctr(1, 0);
-  sample_cha_ctr(1, 1);
-
-  cum_occ = cur_ctr_val[0][0] - prev_ctr_val[0][0];
-  delta_tsc = cur_ctr_tsc[0][0] - prev_ctr_tsc[0][0];
-  cur_occ = ((double)cum_occ)/((double)delta_tsc);
-  occ_local = cur_occ;
-  smoothed_occ_local = COLLOID_EWMA*cur_occ + (1-COLLOID_EWMA)*smoothed_occ_local;
-
-  cum_inserts = cur_ctr_val[0][1] - prev_ctr_val[0][1];
-  // delta_tsc = cur_ctr_tsc[0][1] - prev_ctr_tsc[0][1];
-  // cur_rate = ((double)cum_inserts)/((double)delta_tsc);
-  inserts_local = (double)cum_inserts;
-  smoothed_inserts_local = COLLOID_EWMA*((double)cum_inserts) + (1-COLLOID_EWMA)*smoothed_inserts_local;
-
-  cum_occ = cur_ctr_val[1][0] - prev_ctr_val[1][0];
-  delta_tsc = cur_ctr_tsc[1][0] - prev_ctr_tsc[1][0];
-  cur_occ = ((double)cum_occ)/((double)delta_tsc);
-  occ_remote = cur_occ;
-  smoothed_occ_remote = COLLOID_EWMA*cur_occ + (1-COLLOID_EWMA)*smoothed_occ_remote;
-
-  cum_inserts = cur_ctr_val[1][1] - prev_ctr_val[1][1];
-  // delta_tsc = cur_ctr_tsc[1][1] - prev_ctr_tsc[1][1];
-  // cur_rate = ((double)cum_inserts)/((double)delta_tsc);
-  inserts_remote = (double)cum_inserts;
-  smoothed_inserts_remote = COLLOID_EWMA*((double)cum_inserts) + (1-COLLOID_EWMA)*smoothed_inserts_remote;
-}
-
-#ifndef HISTOGRAM
-void make_hot_request(struct hemem_page* page)
-{
-   page->ring_present = true;
-   ring_buf_put(hot_ring, (uint64_t*)page); 
-}
-
-void make_cold_request(struct hemem_page* page)
-{
-    page->ring_present = true;
-    ring_buf_put(cold_ring, (uint64_t*)page);
-}
-#else
-void histogram_update_request(struct hemem_page* page) 
-{
-  page->ring_present = true;
-  ring_buf_put(update_ring, (uint64_t*)page); 
-}
-#endif
 
 void *pebs_scan_thread()
 {
@@ -442,421 +278,21 @@ void *pebs_scan_thread()
   return NULL;
 }
 
-static void pebs_migrate_down(struct hemem_page *page, uint64_t offset)
-{
-  struct timeval start, end;
-
-  gettimeofday(&start, NULL);
-
-  if(page->list == &dram_free_list || page->list == &nvm_free_list) {
-    printf("BUG: attempting to migrate freed page\n");
-  }
-
-  if(page->present == false) {
-    printf("BUG: attempting to migrate un-processed free page\n"); 
-  }
-
-  page->migrating = true;
-  hemem_wp_page(page, true);
-  hemem_migrate_down(page, offset);
-  page->migrating = false; 
-
-  gettimeofday(&end, NULL);
-  LOG_TIME("migrate_down: %f s\n", elapsed(&start, &end));
-}
-
-static void pebs_migrate_up(struct hemem_page *page, uint64_t offset)
-{
-  struct timeval start, end;
-
-  gettimeofday(&start, NULL);
-
-  if(page->list == &dram_free_list || page->list == &nvm_free_list) {
-    printf("BUG: attempting to migrate freed page\n");
-  }
-
-  if(page->present == false) {
-    printf("BUG: attempting to migrate un-processed free page\n"); 
-  }
-
-  page->migrating = true;
-  hemem_wp_page(page, true);
-  hemem_migrate_up(page, offset);
-  page->migrating = false;
-
-  gettimeofday(&end, NULL);
-  LOG_TIME("migrate_up: %f s\n", elapsed(&start, &end));
-}
-
-#ifdef HISTOGRAM
-// Should be called before doing any list operations
-// void histogram_sync_page(struct hemem_page* page) {
-//   int old_bin, new_bin;
-//   struct fifo_list *base_ptr;
-//   assert(page != NULL);
-
-//   if(page->list == NULL) {
-//     return;
-//   }
-
-//   // Make sure page->list back pointer is up-to-date
-//   if(page->local_histogram_clock != histogram_clock) {
-//     assert(histogram_clock > page->local_histogram_clock);
-//     base_ptr = (page->in_dram)?(&dram_histogram_list[0]):(&nvm_histogram_list[0]);
-//     old_bin = (int)(page->list - base_ptr);
-//     assert(old_bin >= 0 && old_bin < MAX_HISTOGRAM_BINS);
-//     new_bin = (old_bin >> (histogram_clock - page->local_histogram_clock));
-//     page->list = base_ptr + new_bin;
-//     page->local_histogram_clock = histogram_clock;
-//   }
-// }
-bool histogram_update(struct hemem_page* page, uint64_t accesses)
-{
-  struct fifo_list *cur_list;
-  struct fifo_list *new_list;
-  bool ret = false;
-  int bin;
-  assert(page != NULL);
-  assert(page->va != 0);
-
-  // histogram_sync_page(page);
-  cur_list = page->list;
-  bin = accesses;
-  if(bin >= MAX_HISTOGRAM_BINS) {
-    bin = MAX_HISTOGRAM_BINS - 1;
-  }
-  new_list = (page->in_dram)?(&dram_histogram_list[bin]):(&nvm_histogram_list[bin]);
-  
-  if(cur_list != new_list) {
-    if(cur_list != NULL) {
-      page_list_remove_page(cur_list, page);
-      ret = true;
-      if(page->prev != NULL) {
-        printf("page->prev not NULL after list remove");
-        fflush(stdout);
-      }
-    }
-    // page->local_histogram_clock = histogram_clock;
-    if(page->prev != NULL) {
-      printf("page->prev not NULL before enqueue\n");
-      fflush(stdout);
-    }
-    enqueue_fifo(new_list, page);
-  }
-
-  return ret;
-}
-
-// Left shift all bins in histogram by a factor
-// NOTE: individual page->list pointers are not updated
-// void histogram_shift(struct fifo_list *hist, unsigned int factor) {
-//   int shifted_bin;
-//   if(factor == 0) {
-//     return;
-//   }
-//   for(int i = 0; i < MAX_HISTOGRAM_BINS; i++) {
-//     shifted_bin = (i >> factor);
-//     if(shifted_bin != i) {
-//       merge_page_list(hist + shifted_bin, hist + i);
-//     }
-//   }
-// }
-#else
-// moves page to hot list -- called by migrate thread
-void make_hot(struct hemem_page* page)
-{
-  assert(page != NULL);
-  assert(page->va != 0);
-
-  if (page->hot) {
-    if (page->in_dram) {
-      assert(page->list == &dram_hot_list);
-    }
-    else {
-      assert(page->list == &nvm_hot_list);
-    }
-
-    return;
-  }
-
-  if (page->in_dram) {
-    if(page->list != &dram_cold_list) {
-	          printf("cold dram page not in dram cold list. page->present: %d, page->va=%lu, page->list=%p, dram_hot_list=%p, dram_cold_list=%p, nvm_hot_list=%p, nvm_cold_list=%p, dram_free_list=%p, nvm_free_list=%p, page->devdax_offset=%lu, page->migrating=%d, page->naccesses=%lu, page->accesses_dram=%lu, page->accesses_nvm=%lu, page->tot_accesses_dram=%lu, page->tot_accesses_nvm=%lu, page->migrations_up=%lu, page->migrations_down=%lu\n", page->present, page->va, page->list, &dram_hot_list, &dram_cold_list, &nvm_hot_list, &nvm_cold_list, &dram_free_list, &nvm_free_list, page->devdax_offset, page->migrating, page->naccesses, page->accesses[DRAMREAD], page->accesses[NVMREAD], page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD], page->migrations_up, page->migrations_down);
-	}
-    assert(page->list == &dram_cold_list);
-    page_list_remove_page(&dram_cold_list, page);
-    page->hot = true;
-    enqueue_fifo(&dram_hot_list, page);
-  }
-  else {
-    assert(page->list == &nvm_cold_list);
-    page_list_remove_page(&nvm_cold_list, page);
-    page->hot = true;
-    enqueue_fifo(&nvm_hot_list, page);
-  }
-}
-
-// moves page to cold list -- called by migrate thread
-void make_cold(struct hemem_page* page)
-{
-  assert(page != NULL);
-  assert(page->va != 0);
-
-  if (!page->hot) {
-    if (page->in_dram) {
-      if(page->list != &dram_cold_list) {
-        printf("cold dram page not in dram cold list. page->present: %d, page->va=%lu, page->list=%p, dram_hot_list=%p, dram_cold_list=%p, nvm_hot_list=%p, nvm_cold_list=%p, page->devdax_offset=%lu, page->migrating=%d, page->naccesses=%lu, page->accesses_dram=%lu, page->accesses_nvm=%lu, page->tot_accesses_dram=%lu, page->tot_accesses_nvm=%lu, page->migrations_up=%lu, page->migrations_down=%lu\n", page->present, page->va, page->list, &dram_hot_list, &dram_cold_list, &nvm_hot_list, &nvm_cold_list, page->devdax_offset, page->migrating, page->naccesses, page->accesses[DRAMREAD], page->accesses[NVMREAD], page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD], page->migrations_up, page->migrations_down);
-      }
-      assert(page->list == &dram_cold_list);
-    }
-    else {
-      if(page->list != &nvm_cold_list) {
-        printf("cold nvm page not in nvm cold list. page->present: %d, page->va=%lu, page->list=%p, dram_hot_list=%p, dram_cold_list=%p, nvm_hot_list=%p, nvm_cold_list=%p, page->devdax_offset=%lu, page->migrating=%d, page->naccesses=%lu, page->accesses_dram=%lu, page->accesses_nvm=%lu, page->tot_accesses_dram=%lu, page->tot_accesses_nvm=%lu, page->migrations_up=%lu, page->migrations_down=%lu\n", page->present, page->va, page->list, &dram_hot_list, &dram_cold_list, &nvm_hot_list, &nvm_cold_list, page->devdax_offset, page->migrating, page->naccesses, page->accesses[DRAMREAD], page->accesses[NVMREAD], page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD], page->migrations_up, page->migrations_down);
-      }
-      assert(page->list == &nvm_cold_list);
-    }
-
-    return;
-  }
-
-  if (page->in_dram) {
-    assert(page->list == &dram_hot_list);
-    page_list_remove_page(&dram_hot_list, page);
-    page->hot = false;
-    enqueue_fifo(&dram_cold_list, page);
-  }
-  else {
-    if(page->list != &nvm_hot_list) {
-      printf("hot nvm page not in nvm hot list. page->present: %d, page->va=%lu, page->list=%p, dram_hot_list=%p, dram_cold_list=%p, nvm_hot_list=%p, nvm_cold_list=%p, page->devdax_offset=%lu, page->migrating=%d, page->naccesses=%lu, page->accesses_dram=%lu, page->accesses_nvm=%lu, page->tot_accesses_dram=%lu, page->tot_accesses_nvm=%lu, page->migrations_up=%lu, page->migrations_down=%lu\n", page->present, page->va, page->list, &dram_hot_list, &dram_cold_list, &nvm_hot_list, &nvm_cold_list, page->devdax_offset, page->migrating, page->naccesses, page->accesses[DRAMREAD], page->accesses[NVMREAD], page->tot_accesses[DRAMREAD], page->tot_accesses[NVMREAD], page->migrations_up, page->migrations_down);
-    }
-    assert(page->list == &nvm_hot_list);
-    page_list_remove_page(&nvm_hot_list, page);
-    page->hot = false;
-    enqueue_fifo(&nvm_cold_list, page);
-  }
-}
-#endif
-
-static struct hemem_page* start_dram_page = NULL;
-static struct hemem_page* start_nvm_page = NULL;
-
-#ifdef COOL_IN_PLACE
-struct hemem_page* partial_cool(struct fifo_list *hot, struct fifo_list *cold, bool dram, struct hemem_page* current)
-{
-  struct hemem_page *p;
-  #ifdef HISTOGRAM
-  struct hemem_page *prev_p;
-  #endif
-  uint64_t tmp_accesses[NPBUFTYPES];
-
-  if (dram && !need_cool_dram) {
-      return current;
-  }
-  if (!dram && !need_cool_nvm) {
-      return current;
-  }
-
-  if (start_dram_page == NULL && dram) {
-      #ifdef HISTOGRAM
-      next_page(hot, NULL, &start_dram_page);
-      #else
-      start_dram_page = hot->last;
-      #endif
-  }
-
-  if (start_nvm_page == NULL && !dram) {
-      #ifdef HISTOGRAM
-      next_page(hot, NULL, &start_nvm_page);
-      #else
-      start_nvm_page = hot->last;
-      #endif
-  }
-
-  for (int i = 0; i < COOLING_PAGES; i++) {
-    next_page(hot, current, &p);
-    if (p == NULL) {
-        break;
-    }
-    if (dram) {
-        assert(p->in_dram);
-    }
-    else {
-        assert(!p->in_dram);
-    }
-
-    for (int j = 0; j < NPBUFTYPES; j++) {
-        tmp_accesses[j] = p->accesses[j] >> (global_clock - p->local_clock);
-    }
-
-    if (/*(tmp_accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
-        p->hot = false;
-    }
-    
-    if (dram && (p == start_dram_page)) {
-        start_dram_page = NULL;
-        need_cool_dram = false;
-    }
-
-    if (!dram && (p == start_nvm_page)) {
-        start_nvm_page = NULL;
-        need_cool_nvm = false;
-    } 
-
-    #ifdef HISTOGRAM
-    prev_page(hot, p, &prev_p);
-    if(histogram_update(p, tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD])) {
-      current = prev_p;      
-    } else {
-      current = p;
-    }
-    #else
-    if (!p->hot) {
-        current = p->next;
-        page_list_remove_page(hot, p);
-        enqueue_fifo(cold, p);
-    }
-    else {
-        current = p;
-    }
-    #endif
-  }
-
-  return current;
-}
-#else
-static void partial_cool(struct fifo_list *hot, struct fifo_list *cold, bool dram)
-{
-  struct hemem_page *p;
-  uint64_t tmp_accesses[NPBUFTYPES];
-
-  if (dram && !need_cool_dram) {
-      return;
-  }
-  if (!dram && !need_cool_nvm) {
-      return;
-  }
-
-  if ((start_dram_page == NULL) && dram) {
-      start_dram_page = hot->last;
-  }
-
-  if ((start_nvm_page == NULL) && !dram) {
-      start_nvm_page = hot->last;
-  }
-
-  for (int i = 0; i < COOLING_PAGES; i++) {
-    p = dequeue_fifo(hot);
-    if (p == NULL) {
-        break;
-    }
-    if (dram) {
-        assert(p->in_dram);
-    }
-    else {
-        assert(!p->in_dram);
-    }
-
-    for (int j = 0; j < NPBUFTYPES; j++) {
-        tmp_accesses[j] = p->accesses[j] >> (global_clock - p->local_clock);
-    }
-
-    if (/*(tmp_accesses[WRITE] < HOT_WRITE_THRESHOLD) &&*/ (tmp_accesses[DRAMREAD] + tmp_accesses[NVMREAD] < HOT_READ_THRESHOLD)) {
-        p->hot = false;
-    }
-
-    if (dram && (p == start_dram_page)) {
-        start_dram_page = NULL;
-        need_cool_dram = false;
-    }
-
-    if (!dram && (p == start_nvm_page)) {
-        start_nvm_page = NULL;
-        need_cool_nvm = false;
-    } 
-
-    if (p->hot) {
-      enqueue_fifo(hot, p);
-    }
-    else {
-      enqueue_fifo(cold, p);
-    }
-  }
-}
-#endif
-
-#ifdef COOL_IN_PLACE
-void update_current_cool_page(struct hemem_page** cur_cool_in_dram, struct hemem_page** cur_cool_in_nvm, struct hemem_page* page)
-{
-    if (page == NULL) {
-        return;
-    }
-
-    if (page == *cur_cool_in_dram) {
-        #ifdef HISTOGRAM
-        assert(page->in_dram);
-        next_page(&dram_histogram_list[0], page, cur_cool_in_dram);
-        #else
-        assert(page->list == &dram_hot_list);
-        next_page(page->list, page, cur_cool_in_dram);
-        #endif
-    }
-    if (page == *cur_cool_in_nvm) {
-        #ifdef HISTOGRAM
-        assert(!page->in_dram);
-        next_page(&nvm_histogram_list[0], page, cur_cool_in_nvm);
-        #else
-        assert(page->list == &nvm_hot_list);
-        next_page(page->list, page, cur_cool_in_nvm);
-        #endif
-    }
-}
-#endif
-
-#ifdef SCAN_AND_SORT
-int scan_page_list(struct fifo_list *page_list, struct page_freq *page_freqs, size_t freqs_size, uint64_t *total_accesses) {
-  int idx = 0;
-  struct hemem_page *p;
-  struct hemem_page *np;
-  next_page(page_list, NULL, &p);
-  while(p != NULL) {
-    // There could be pages that were unmapped, but not yet moved to free list
-    // Don't want to consider these for migration
-    if(p->present) {
-      assert(idx < freqs_size);
-      #ifdef COLLOID_COOLING
-      page_freqs[idx].accesses = (p->accesses[DRAMREAD] >> (global_clock - p->local_clock)) + (p->accesses[NVMREAD] >> (global_clock - p->local_clock));
-      #else
-      page_freqs[idx].accesses = p->tot_accesses[DRAMREAD] + p->tot_accesses[NVMREAD];
-      #endif
-      page_freqs[idx].page = p;
-      *total_accesses += page_freqs[idx].accesses;
-      idx += 1;
-    }
-    next_page(page_list, p, &np);
-    p = np;
-  }
-  return idx;
-}
-int cmp_page_freq (const void * a, const void * b) {
-   return ( ((struct page_freq*)a)->accesses - ((struct page_freq*)b)->accesses );
-}
-#endif
-
 void *pebs_policy_thread()
 {
   cpu_set_t cpuset;
   pthread_t thread;
   struct timeval start, end, begin;
-  int tries;
+  // int tries;
   struct hemem_page *p;
-  struct hemem_page *cp;
+  // struct hemem_page *cp;
   struct hemem_page *np;
   uint64_t migrated_bytes, migrate_limit;
   uint64_t old_offset;
   int num_ring_reqs;
   struct hemem_page* page = NULL;
   double migrate_time;
-  double delta_occ;
+  // double delta_occ;
   #ifdef COOL_IN_PLACE
   struct hemem_page* cur_cool_in_dram  = NULL;
   struct hemem_page* cur_cool_in_nvm = NULL;
@@ -880,8 +316,8 @@ void *pebs_policy_thread()
   int dram_i, nvm_j;
   // struct hemem_page *tmp_dram_page = NULL;
   // struct hemem_page *tmp_nvm_page = NULL;
-  uint64_t dlimit;
-  double cur_p;
+  // uint64_t dlimit;
+  // double cur_p;
   #endif
   
   thread = pthread_self();
@@ -894,10 +330,6 @@ void *pebs_policy_thread()
   }
 
   colloid_setup(migration_thread_cpu);
-  colloid_log_f = fopen("/tmp/hemem-colloid.log", "w");
-  if(colloid_log_f == NULL) {
-    perror("open colloid log file failed");
-  }
 
   #ifdef SCAN_AND_SORT
   dram_page_freqs = calloc(dramsize/PAGE_SIZE, sizeof(struct page_freq));
@@ -1017,23 +449,19 @@ void *pebs_policy_thread()
     
     // if(elapsed(&begin, &start) > 200.0) {
     //   // stop migrations
-    //   // fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf\n", smoothed_occ_local, smoothed_occ_remote);
-    //   fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu, freq_i=%lu, freq_j=%lu, top_freq_i=%lu, top_freq_j=%lu, inserts_local=%lf, inserts_remote=%lf, inst_occ_local=%lf, inst_occ_remote=%lf, inst_inserts_local=%lf, inst_inserts_remote=%lf\n", smoothed_occ_local, smoothed_occ_remote, 0, 0, 0UL, 0UL, 0UL, 0UL, 0UL, 0UL, smoothed_inserts_local, smoothed_inserts_remote, occ_local, occ_remote, inserts_local, inserts_remote);
+    //   // colloid_printf("occ_local: %lf, occ_remote: %lf\n", smoothed_occ_local, smoothed_occ_remote);
+    //   colloid_printf("occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu, freq_i=%lu, freq_j=%lu, top_freq_i=%lu, top_freq_j=%lu, inserts_local=%lf, inserts_remote=%lf, inst_occ_local=%lf, inst_occ_remote=%lf, inst_inserts_local=%lf, inst_inserts_remote=%lf\n", smoothed_occ_local, smoothed_occ_remote, 0, 0, 0UL, 0UL, 0UL, 0UL, 0UL, 0UL, smoothed_inserts_local, smoothed_inserts_remote, occ_local, occ_remote, inserts_local, inserts_remote);
     //   goto out;
     // }
 
-    #ifdef RATE_BETA
-    beta = smoothed_inserts_local/smoothed_inserts_remote;
-    #else
-    beta = COLLOID_BETA;
-    #endif
+    beta = colloid_beta();
 
     // Pair finding algorithm
     #ifdef HISTOGRAM
     // TODO: Compare based on some precision threshold
     if(smoothed_occ_local == beta * smoothed_occ_remote) {
       // nothing to do
-      fprintf(colloid_log_f, "equal occupancy exit\n");
+      colloid_printf("equal occupancy exit\n");
       goto out;
     }
     target_delta = fabs(smoothed_occ_local - beta * smoothed_occ_remote);
@@ -1044,7 +472,7 @@ void *pebs_policy_thread()
       total_accesses += (i * nvm_histogram_list[i].numentries);
     }
     if(total_accesses == 0) {
-      fprintf(colloid_log_f, "total_accesses=0 exit\n");
+      colloid_printf("total_accesses=0 exit\n");
       goto out;
     }
     best_i = -1;
@@ -1075,7 +503,7 @@ void *pebs_policy_thread()
     }
     if(best_i == -1 || best_j == -1) {
       // No suitable pair found; bail out;
-      fprintf(colloid_log_f, "no suitable pair exit\n");
+      colloid_printf("no suitable pair exit\n");
       goto out;
     }
     assert(best_i >= 0 && best_j >= 0);
@@ -1092,7 +520,7 @@ void *pebs_policy_thread()
       p = dequeue_fifo(&dram_histogram_list[best_i]);
       if(p == NULL) {
         // should ideally not happen
-        fprintf(colloid_log_f, "best_i empty exit\n");
+        colloid_printf("best_i empty exit\n");
         goto out;
       }
       #ifdef COOL_IN_PLACE
@@ -1128,7 +556,7 @@ void *pebs_policy_thread()
       if(p == NULL) {
         // should ideally not happen
         enqueue_fifo(&dram_free_list, np);
-        fprintf(colloid_log_f, "best_j empty exit\n");
+        colloid_printf("best_j empty exit\n");
         goto out;
       }
       #ifdef COOL_IN_PLACE
@@ -1157,12 +585,13 @@ void *pebs_policy_thread()
       // No point in moving 0 freq page; just return np to dram free list
       enqueue_fifo(&dram_free_list, np);
     }
-    fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu\n", smoothed_occ_local, smoothed_occ_remote, best_i, best_j, migrated_bytes, total_accesses);
+    colloid_printf("occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu\n", smoothed_occ_local, smoothed_occ_remote, best_i, best_j, migrated_bytes, total_accesses);
     #elif defined SCAN_AND_SORT
     // TODO: Compare based on some precision threshold
     if(smoothed_occ_local == beta * smoothed_occ_remote) {
       // nothing to do
-      fprintf(colloid_log_f, "equal occupancy exit\n");
+      colloid_printf("equal occupancy exit\n");
+      colloid_printf("equal occupancy exit\n");
       goto out;
     }
 
@@ -1176,7 +605,7 @@ void *pebs_policy_thread()
     nvm_freqs_count += scan_page_list(&nvm_cold_list, nvm_page_freqs+nvm_freqs_count, nvmsize/PAGE_SIZE-nvm_freqs_count, &total_accesses);
 
     if(total_accesses == 0) {
-      fprintf(colloid_log_f, "total_accesses=0 exit\n");
+      colloid_printf("total_accesses=0 exit\n");
       goto out;
     }
 
@@ -1184,44 +613,7 @@ void *pebs_policy_thread()
     qsort(dram_page_freqs, dram_freqs_count, sizeof(struct page_freq), cmp_page_freq);
     qsort(nvm_page_freqs, nvm_freqs_count, sizeof(struct page_freq), cmp_page_freq);
   
-    #ifdef COLLOID_EXPR2
-    target_delta = fabs(smoothed_occ_local - beta * smoothed_occ_remote);
-    target_delta /= ((1.0+beta)*(smoothed_occ_local+smoothed_occ_remote));
-    #elif defined COLLOID_EXPR3
-    target_delta = fabs(smoothed_occ_local - beta * smoothed_occ_remote);
-    target_delta /= ((smoothed_inserts_local+smoothed_inserts_remote)*(beta*smoothed_occ_remote/smoothed_inserts_remote + smoothed_occ_local/smoothed_inserts_local));
-    #elif defined COLLOID_BINSEARCH
-    if(fabs(smoothed_occ_local - beta * smoothed_occ_remote) < COLLOID_DELTA*smoothed_occ_local) {
-      // We are within target; don't want to migrate anything
-      target_delta = 0.0;
-    } else {
-      cur_p = smoothed_inserts_local/(smoothed_inserts_local+smoothed_inserts_remote);
-      if(smoothed_occ_local < beta * smoothed_occ_remote) {
-        p_lo = cur_p;
-        if(p_hi <= p_lo) {
-          // reset p_hi
-          p_hi = 1.0;
-        }
-      } else {
-        p_hi = cur_p;
-        if(p_lo >= p_hi) {
-          // reset p_lo
-          p_lo = 0.0;
-        }
-      }
-      if(fabs(p_hi-p_lo) < COLLOID_EPSILON) {
-        if(smoothed_occ_local < beta * smoothed_occ_remote) {
-          p_hi = 1.0;
-        } else {
-          p_lo = 0.0;
-        } 
-      }
-      target_delta = fabs((p_lo+p_hi)/2 - cur_p);
-    }
-    #else
-    target_delta = fabs(smoothed_occ_local - beta * smoothed_occ_remote);
-    target_delta /= ((smoothed_occ_local+smoothed_occ_remote));
-    #endif
+    target_delta = colloid_target_delta(beta);
 
     // Try to add temp pages with 0 access frequency
     // tmp_dram_page = dequeue_fifo(&dram_free_list);
@@ -1238,46 +630,27 @@ void *pebs_policy_thread()
     // }
 
     migrate_limit = (50 * PAGE_SIZE);
-    #ifdef COLLOID_DYNAMIC_LIMIT
+    #ifdef COLLOID_DYNAMIC_LIMITbe
     dlimit = (uint64_t)(target_delta * (smoothed_inserts_local + smoothed_inserts_remote) * NUM_CHA_BOXES * 64);
     if(migrate_limit > dlimit) {
       migrate_limit = dlimit;
     }  
     #endif
 
-    fprintf(colloid_log_f, 
-    "occ_local=%lf"
-    ",occ_remote=%lf"
-    ",inserts_local=%lf"
-    ",inserts_remote=%lf"
-    ",inst_occ_local=%lf"
-    ",inst_occ_remote=%lf"
-    ",inst_inserts_local=%lf"
-    ",inst_inserts_remote=%lf"
+    colloid_log_pre();
+    colloid_printf( 
     ",target_delta=%lf"
     ",total_accesses=%lu"
     ",top_freq_i=%lu"
     ",top_freq_j=%lu"
-    ",migrate_limit=%lu"
-    ",p_lo=%lf"
-    ",p_hi=%lf",
-    smoothed_occ_local,
-    smoothed_occ_remote,
-    smoothed_inserts_local,
-    smoothed_inserts_remote,
-    occ_local,
-    occ_remote,
-    inserts_local,
-    inserts_remote,
+    ",migrate_limit=%lu",
     target_delta,
     total_accesses,
     dram_page_freqs[dram_freqs_count-1].accesses,
     nvm_page_freqs[nvm_freqs_count-1].accesses,
-    migrate_limit,
-    p_lo,
-    p_hi);
+    migrate_limit);
 
-    fprintf(colloid_log_f, ",pairs=");
+    colloid_printf(",pairs=");
 
     for(migrated_bytes = 0; migrated_bytes < migrate_limit;) {
       // Find best pair of pages using two pointers
@@ -1320,7 +693,7 @@ void *pebs_policy_thread()
 
       if(best_i == -1 || best_j == -1 || best_delta <= 0.0) {
         // No suitable pair found; bail out;
-        fprintf(colloid_log_f, ",no-suitable-pair-exit,migrated_bytes=%ld,remaining_delta=%lf\n", migrated_bytes, target_delta);
+        colloid_printf(",no-suitable-pair-exit,migrated_bytes=%ld,remaining_delta=%lf\n", migrated_bytes, target_delta);
         // if(tmp_dram_page != NULL) {
         //   enqueue_fifo(&dram_free_list, tmp_dram_page);
         //   tmp_dram_page = NULL;
@@ -1334,7 +707,7 @@ void *pebs_policy_thread()
       assert(best_i >= 0 && best_j >= 0 && best_delta > 0.0);
       dram_i = (top == dram_page_freqs)?(best_i):(best_j);
       nvm_j = (top == nvm_page_freqs)?(best_i):(best_j);
-      fprintf(colloid_log_f, "|best_i:%d;best_j:%d;best_delta:%lf", dram_i, nvm_j, best_delta);
+      colloid_printf("|best_i:%d;best_j:%d;best_delta:%lf", dram_i, nvm_j, best_delta);
 
       pthread_mutex_lock(&(dram_page_freqs[dram_i].page->page_lock));
       pthread_mutex_lock(&(nvm_page_freqs[nvm_j].page->page_lock));
@@ -1343,7 +716,7 @@ void *pebs_policy_thread()
       if(dram_page_freqs[dram_i].page->present == false || nvm_page_freqs[nvm_j].page->present == false) {
         pthread_mutex_unlock(&(nvm_page_freqs[nvm_j].page->page_lock));
         pthread_mutex_unlock(&(dram_page_freqs[dram_i].page->page_lock));
-       fprintf(colloid_log_f, ",page-freed-exit,migrated_bytes=%ld,remaining_delta=%lf\n", migrated_bytes, target_delta);
+       colloid_printf(",page-freed-exit,migrated_bytes=%ld,remaining_delta=%lf\n", migrated_bytes, target_delta);
        goto out;
       }
 
@@ -1448,9 +821,9 @@ void *pebs_policy_thread()
       //   enqueue_fifo(&nvm_free_list, tmp_nvm_page);
       //   tmp_nvm_page = NULL;
       // }
-      // fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu, freq_i=%lu, freq_j=%lu, top_freq_i=%lu, top_freq_j=%lu, inserts_local=%lf, inserts_remote=%lf, inst_occ_local=%lf, inst_occ_remote=%lf, inst_inserts_local=%lf, inst_inserts_remote=%lf\n", smoothed_occ_local, smoothed_occ_remote, dram_i, nvm_j, migrated_bytes, total_accesses, dram_page_freqs[dram_i].accesses, nvm_page_freqs[nvm_j].accesses, dram_page_freqs[dram_freqs_count-1].accesses, nvm_page_freqs[nvm_freqs_count-1].accesses, smoothed_inserts_local, smoothed_inserts_remote, occ_local, occ_remote, inserts_local, inserts_remote);
+      // colloid_printf("occ_local: %lf, occ_remote: %lf, best_i: %d, best_j: %d, migrated_bytes=%lu, total_accesses=%lu, freq_i=%lu, freq_j=%lu, top_freq_i=%lu, top_freq_j=%lu, inserts_local=%lf, inserts_remote=%lf, inst_occ_local=%lf, inst_occ_remote=%lf, inst_inserts_local=%lf, inst_inserts_remote=%lf\n", smoothed_occ_local, smoothed_occ_remote, dram_i, nvm_j, migrated_bytes, total_accesses, dram_page_freqs[dram_i].accesses, nvm_page_freqs[nvm_j].accesses, dram_page_freqs[dram_freqs_count-1].accesses, nvm_page_freqs[nvm_freqs_count-1].accesses, smoothed_inserts_local, smoothed_inserts_remote, occ_local, occ_remote, inserts_local, inserts_remote);
     }
-    fprintf(colloid_log_f, ",hit-migration-limit,migrated_bytes=%ld,remaining_delta=%lf\n", migrated_bytes, target_delta);
+    colloid_printf(",hit-migration-limit,migrated_bytes=%ld,remaining_delta=%lf\n", migrated_bytes, target_delta);
     #endif
 
     #if !defined(HISTOGRAM) && !defined(SCAN_AND_SORT)
@@ -1464,7 +837,7 @@ void *pebs_policy_thread()
       if(migrate_limit > PEBS_KSWAPD_MIGRATE_RATE) {
         migrate_limit = PEBS_KSWAPD_MIGRATE_RATE;
       }
-      fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, nvm_hot_size: %lu, migrate_limit: %lu\n", smoothed_occ_local, smoothed_occ_remote, nvm_hot_list.numentries, migrate_limit);
+      colloid_printf("occ_local: %lf, occ_remote: %lf, nvm_hot_size: %lu, migrate_limit: %lu\n", smoothed_occ_local, smoothed_occ_remote, nvm_hot_list.numentries, migrate_limit);
       for (migrated_bytes = 0; migrated_bytes < migrate_limit;) {
         p = dequeue_fifo(&nvm_hot_list);
         if (p == NULL) {
@@ -1556,7 +929,7 @@ void *pebs_policy_thread()
       if(migrate_limit > PEBS_KSWAPD_MIGRATE_RATE) {
         migrate_limit = PEBS_KSWAPD_MIGRATE_RATE;
       }
-      fprintf(colloid_log_f, "occ_local: %lf, occ_remote: %lf, dram_hot_size: %lu, migrate_limit: %lu\n", smoothed_occ_local, smoothed_occ_remote, dram_hot_list.numentries, migrate_limit);
+      colloid_printf("occ_local: %lf, occ_remote: %lf, dram_hot_size: %lu, migrate_limit: %lu\n", smoothed_occ_local, smoothed_occ_remote, dram_hot_list.numentries, migrate_limit);
 
       for (migrated_bytes = 0; migrated_bytes < migrate_limit;) {
         p = dequeue_fifo(&dram_hot_list);
@@ -1799,8 +1172,8 @@ void pebs_init(void)
   else
     hemem_cpu_start = START_THREAD_DEFAULT;
   
-  scanning_thread_cpu = 63;
-  migration_thread_cpu = 61;
+  scanning_thread_cpu = 4;
+  migration_thread_cpu = 2;
 
   for (int i = start_cpu; i < start_cpu + num_cores; i++) {
     //perf_page[i][READ] = perf_setup(0x1cd, 0x4, i);  // MEM_TRANS_RETIRED.LOAD_LATENCY_GT_4
@@ -1898,7 +1271,7 @@ static inline double calc_miss_ratio()
 void pebs_stats()
 {
   uint64_t total_samples = 0;
-  LOG_STATS("\tocc_local: [%lf]\t occ_remote: [%lf]\n", smoothed_occ_local, smoothed_occ_remote);
+  colloid_log_stat();
   LOG_STATS("\tdram_hot_list.numentries: [%ld]\tdram_cold_list.numentries: [%ld]\tnvm_hot_list.numentries: [%ld]\tnvm_cold_list.numentries: [%ld]\themem_pages: [%lu]\ttotal_pages: [%lu]\tzero_pages: [%ld]\tthrottle/unthrottle_cnt: [%ld/%ld]\tcools: [%ld]\n",
           #ifndef HISTOGRAM 
           dram_hot_list.numentries, 

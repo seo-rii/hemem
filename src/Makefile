@@ -12,8 +12,8 @@ all: hemem-libs
 
 hemem-libs: libhemem-lru.so libhemem-simple.so libhemem-lru-swap.so libhemem.so
 
-libhemem.so: hemem.o pebs.o timer.o interpose.o fifo.o spsc-ring.o
-	$(CC) $(LDFLAGS) -o libhemem.so hemem.o timer.o interpose.o pebs.o fifo.o spsc-ring.o $(HEMEM_LIBS)
+libhemem.so: hemem.o pebs.o page.o colloid.o timer.o interpose.o fifo.o spsc-ring.o
+	$(CC) $(LDFLAGS) -o libhemem.so hemem.o timer.o interpose.o pebs.o page.o colloid.o fifo.o spsc-ring.o $(HEMEM_LIBS)
 
 libhemem-lru.so: policies/hemem-lru.o policies/lru.o timer.o interpose.o policies/paging.o fifo.o spsc-ring.o
 	$(CC) $(LDFLAGS) -o libhemem-lru.so policies/hemem-lru.o timer.o policies/lru.o interpose.o policies/paging.o fifo.o spsc-ring.o $(HEMEM_LIBS)
@@ -56,6 +56,12 @@ policies/paging.o: policies/paging.c policies/paging.h
 
 pebs.o: pebs.c pebs.h hemem.h fifo.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c pebs.c
+
+page.o: page.c pebs.h hemem.h fifo.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c page.c
+
+colloid.o: page.c pebs.h hemem.h fifo.h
+	$(CC) $(CFLAGS) $(INCLUDES) -c colloid.c
 
 fifo.o: fifo.c fifo.h hemem.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c fifo.c

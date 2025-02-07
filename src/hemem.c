@@ -21,10 +21,10 @@
 #include <stdbool.h>
 #include <sched.h>
 
+#include "pebs.h"
 #include "hemem.h"
 #include "timer.h"
 #include "uthash.h"
-#include "pebs.h"
 
 #ifdef ALLOC_LRU
 #include "policies/paging.h"
