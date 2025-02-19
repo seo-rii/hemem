@@ -3,7 +3,6 @@
 *.txt
 *.patch
 *.data
-*.sh
 *.csv
 *.pdf
 *.py
