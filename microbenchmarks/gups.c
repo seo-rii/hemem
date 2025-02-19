@@ -40,7 +40,7 @@
 
 #include "gups.h"
 
-#define MAX_THREADS     64
+#define MAX_THREADS     16
 
 #define GUPS_PAGE_SIZE      (4 * 1024)
 #define PAGE_NUM            3

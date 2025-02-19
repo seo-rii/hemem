@@ -54,13 +54,13 @@ policies/lru_swap.o: policies/lru.c policies/lru.h hemem.h fifo.h spsc-ring.h
 policies/paging.o: policies/paging.c policies/paging.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c policies/paging.c -o policies/paging.o
 
-pebs.o: pebs.c pebs.h hemem.h fifo.h
+pebs.o: pebs_onlystat.c pebs.h hemem.h fifo.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c pebs.c
 
 page.o: page.c pebs.h hemem.h fifo.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c page.c
 
-colloid.o: page.c pebs.h hemem.h fifo.h
+colloid.o: colloid.c pebs.h hemem.h fifo.h
 	$(CC) $(CFLAGS) $(INCLUDES) -c colloid.c
 
 fifo.o: fifo.c fifo.h hemem.h

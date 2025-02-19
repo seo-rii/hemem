@@ -23,7 +23,7 @@
 #include "timer.h"
 #include "spsc-ring.h"
 
-#define USE_FILTER1
+// #define USE_FILTER1
 #define CHA_MSR_PMON_BASE 0x0E00L
 #define CHA_MSR_PMON_CTL_BASE 0x0E01L
 #define CHA_MSR_PMON_FILTER0_BASE 0x0E05L
@@ -95,14 +95,14 @@ void colloid_setup(int cpu) {
       #endif
 
       msr_num = CHA_MSR_PMON_CTL_BASE + (MSR_OFFSET * cha) + 0; // counter 0
-      msr_val = (cha%2==0)?(0x00c8168600400136):(0x00c8170600400136); // TOR Occupancy, DRd, Miss, local/remote on even/odd CHA boxes
+      msr_val = (cha%2==0)?(0x400000):(0x400000); // TOR Occupancy, DRd, Miss, local/remote on even/odd CHA boxes
       ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
       if (ret != 8) {
           perror("wrmsr COUNTER0 failed");
       }
 
       msr_num = CHA_MSR_PMON_CTL_BASE + (MSR_OFFSET * cha) + 1; // counter 1
-      msr_val = (cha%2==0)?(0x00c8168600400135):(0x00c8170600400135); // TOR Inserts, DRd, Miss, local/remote on even/odd CHA boxes
+      msr_val = (cha%2==0)?(0x400000):(0x400000); // TOR Inserts, DRd, Miss, local/remote on even/odd CHA boxes
       ret = pwrite(colloid_msr_fd,&msr_val,sizeof(msr_val),msr_num);
       if (ret != 8) {
           perror("wrmsr COUNTER1 failed");
