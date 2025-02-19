@@ -85,8 +85,8 @@ GAPBS:
 
 BASE_NODE ?= 0
 OTHER_NODE ?= $$(((${BASE_NODE} + 1) % 2))
-NUMA_CMD ?= numactl -N${BASE_NODE} -m${BASE_NODE}
-NUMA_CMD_CLIENT ?= numactl -N${OTHER_NODE} -m${OTHER_NODE}
+NUMA_CMD ?= 
+NUMA_CMD_CLIENT ?= 
 PRELOAD  ?= 
 
 SET_LOW_PRTY = MISS_RATIO=1.0
@@ -105,8 +105,9 @@ CMD_KILL_ALL := \
 
 
 # Configs for HeMem
-NVMSIZE    ?= $$((512*1024*1024*1024))
-DRAMSIZE   ?= $$((128*1024*1024*1024))
+APPSIZE    ?= $$((92*1024*1024*1024))
+NVMSIZE    ?= $$((248*1024*1024*1024))
+DRAMSIZE   ?= $$((96*1024*1024*1024))
 NVMOFFSET  ?= 0
 DRAMOFFSET ?= 0
 
@@ -129,7 +130,7 @@ FLEXKV_CPUS ?= 18-23
 FLEXKV_CPUS_START ?=18
 endif
 
-FLEXKV_SIZE ?= $$((64*1024*1024*1024))
+FLEXKV_SIZE ?= $$((32*1024*1024*1024))
 GUPS_SIZE   ?= $$((256*1024*1024*1024))
 GAPBS_SIZE  ?= 28
 BT_SIZE     ?= E
@@ -144,7 +145,7 @@ SETUP_CMD = export LD_LIBRARY_PATH=./src:./Hoard/src:$LD_LIBRARY_PATH; \
 	echo 1000000 > /proc/sys/vm/max_map_count;
 HEMEM_PRELOAD = env LD_PRELOAD=./src/libhemem.so
 
-RUN_MGR = nice -20 ${NUMA_CMD} --physcpubind=${MGR_CPUS} ./src/central-manager > $${file}_mem_usage.txt & \
+RUN_MGR = nice -20 ./src/central-manager > $${file}_mem_usage.txt & \
 	CTRL_MGR=$$!; \
 	sleep 20;
 
@@ -155,7 +156,7 @@ RUN_PERF = ${NUMA_CMD_CLIENT} ./run_perf.sh & PERF_CMD=$$!;
 KILL_PERF = kill $${PERF_CMD}; pkill perf; sleep 5;
 
 FLEXKV_NICE ?= nice -20
-FLEXKV_S_WAIT   ?= 240	
+FLEXKV_S_WAIT   ?= 160	
 FLEXKV_WARMUP   ?= 100	
 FLEXKV_RUNTIME  ?= 300
 FLEXKV_HOT_FRAC ?= 0.25
@@ -177,15 +178,15 @@ run_flexkvs: ./apps/flexkvs/flexkvs ./apps/flexkvs/kvsbench
 	fi;\
 	NVMSIZE=${NVMSIZE} DRAMSIZE=${DRAMSIZE} \
 	NVMOFFSET=${NVMOFFSET} DRAMOFFSET=${DRAMOFFSET} \
-	${FLEXKV_PRTY} ${FLEXKV_NICE} ${NUMA_CMD} --physcpubind=${FLEXKV_CPUS} \
+	${FLEXKV_PRTY} ${FLEXKV_NICE} \
 		${PRELOAD} ./apps/flexkvs/flexkvs flexkvs.conf ${FLEXKV_THDS} ${FLEXKV_SIZE} > ${RES}/${PREFIX}_server.txt & \
 	FLEXKVS_SERVER=$$!; \
 	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
 		perf stat -e faults -I 1000 -p $${FLEXKVS_SERVER} -o ${RES}/${PREFIX}_flexkv_faults.txt &\
-		${NUMASTAT} $${FLEXKVS_SERVER} > ${RES}/${PREFIX}_flexkv_mem_usage.txt & \
+		$${FLEXKVS_SERVER} > ${RES}/${PREFIX}_flexkv_mem_usage.txt & \
 	fi; \
 	./wait-kvs.sh ${RES}/${PREFIX}_server.txt; \
-	${FLEXKV_NICE} ${NUMA_CMD_CLIENT} \
+	${FLEXKV_NICE} \
 		./apps/flexkvs/kvsbench -t ${FLEXKV_THDS} -T ${FLEXKV_RUNTIME} -w ${FLEXKV_WARMUP} \
 		-h ${FLEXKV_HOT_FRAC} 127.0.0.1:11211 -S $$((15*${FLEXKV_SIZE}/16)) > ${RES}/${PREFIX}_flexkv.txt; \
 	if [ ${MAXMEM_MEASURE} -gt 0 ]; then \
@@ -209,11 +210,11 @@ run_flexkvs_grow: ./apps/flexkvs/flexkvs ./apps/flexkvs/kvsbench
 
 GUPS_ITERS ?= 0
 run_gups: ./microbenchmarks/gups
-	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
-	hot_size=$$(printf "%.0f" $$(echo "$${log_size} - 2"|bc -l)); \
-	${GUPS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
-		./microbenchmarks/gups ${APP_THDS} ${GUPS_ITERS} $${log_size} \
-		8 $${hot_size} 0 ${RES}/${PREFIX}_persecond_gups.txt > ${RES}/${PREFIX}_gups.txt & \
+	LOG_SIZE=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
+	HOT_SIZE=$$(printf "%.0f" $$(echo "$${LOG_SIZE} - 2"|bc -l)); \
+	${GUPS_PRTY} nice -20 \
+		./microbenchmarks/gups ${APP_THDS} ${GUPS_ITERS} ${LOG_SIZE} \
+		8 ${HOT_SIZE} 0 ${RES}/${PREFIX}_persecond_gups.txt > ${RES}/${PREFIX}_gups.txt & \
 	GUPS_PID=$$!; \
 	perf stat -e instructions -I 1000 -p $${GUPS_PID} -o ${RES}/${PREFIX}_gups_ipc.txt &\
 	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
@@ -221,13 +222,13 @@ run_gups: ./microbenchmarks/gups
 	fi; \
 
 run_gups_pebs: ./microbenchmarks/gups-pebs
-	log_size=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
-	hot_size=$$(printf "%.0f" $$(echo "$${log_size} - 2"|bc -l)); \
+	LOG_SIZE=$$(printf "%.0f" $$(echo "l(${APP_SIZE})/l(2)"|bc -l)); \
+	HOT_SIZE=$$(printf "%.0f" $$(echo "$${LOG_SIZE} - 2"|bc -l)); \
 	NVMSIZE=${NVMSIZE} DRAMSIZE=${DRAMSIZE} \
 	NVMOFFSET=${NVMOFFSET} DRAMOFFSET=${DRAMOFFSET} REQ_DRAM=${REQ_DRAM} \
 	${GUPS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
 		./microbenchmarks/gups-pebs ${APP_THDS} ${GUPS_ITERS} \
-		$${log_size} 8 $${hot_size} 0 ${RES}/${PREFIX}_persecond_gups.txt > ${RES}/${PREFIX}_gups_pebs.txt & \
+		${LOG_SIZE} 8 ${HOT_SIZE} 0 ${RES}/${PREFIX}_persecond_gups.txt > ${RES}/${PREFIX}_gups_pebs.txt & \
 	GUPS_PID=$$!;\
 	perf stat -e instructions -I 1000 -p $${GUPS_PID} -o ${RES}/${PREFIX}_gups_pebs_ipc.txt &\
 	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
@@ -238,8 +239,8 @@ GAPBS_TRIALS ?= 10
 run_gapbs: ./apps/gapbs/bc
 	HEMEM_START_CPU=${MGR_CPU_START} NVMSIZE=${NVMSIZE} DRAMSIZE=${DRAMSIZE} NVMOFFSET=${NVMOFFSET} \
 	DRAMOFFSET=${DRAMOFFSET} OMP_THREAD_LIMIT=${APP_THDS} \
-	${GAPBS_PRTY} nice -20 ${NUMA_CMD} --physcpubind=${APP_CPUS} ${PRELOAD} \
-		./apps/gapbs/bc -n ${GAPBS_TRIALS} -g ${APP_SIZE} > ${RES}/${PREFIX}_gapbs.txt & \
+	${GAPBS_PRTY} nice -20 ${PRELOAD} \
+		./apps/gapbs/bc -n ${GAPBS_TRIALS} ${APP_SIZE} > ${RES}/${PREFIX}_gapbs.txt & \
 	GAPBS_PID=$$!;\
 	perf stat -e instructions -I 1000 -C ${APP_CPUS} -o ${RES}/${PREFIX}_gapbs_ipc.txt &\
 	if [ ${ZNUMA_MEASURE} -gt 0 ]; then \
@@ -288,7 +289,7 @@ run_bg_dram_base: all
 
 run_bg_hw_tier: all
 	PREFIX=bg_hw_tier; \
-	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	FLEXKV_SIZE=$$((${APPSIZE})); \
 	$(MAKE) run_flexkvs FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_Isolated; \
 	pkill flexkvs;\
 	$(MAKE) run_flexkvs FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_gups & \
@@ -308,8 +309,7 @@ run_znuma_tier: all
 	echo "1" > /proc/sys/kernel/numa_balancing;\
 	PREFIX=bg_znuma_tier; \
 	BASE_NODE=1;\
-	NUMA_CMD="numactl -N 1 -m 1,3"; \
-	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	FLEXKV_SIZE=$$((${APPSIZE})); \
 	$(MAKE) run_flexkvs ZNUMA_MEASURE=1 BASE_NODE=$${BASE_NODE} NUMA_CMD="$${NUMA_CMD}" FLEXKV_SIZE=$${FLEXKV_SIZE} PRELOAD="" PREFIX=$${PREFIX}_Isolated; \
 	wait;\
 	pkill flexkvs;\
@@ -333,7 +333,7 @@ run_znuma_tier: all
 # FlexKV occupies first half of DRAM/NVM, and other app the other half
 run_bg_sw_tier: all
 	# HeMem runs
-	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	FLEXKV_SIZE=$$((${APPSIZE})); \
 	NVMSIZE=$$((${NVMSIZE}/2)); DRAMSIZE=$$((${DRAMSIZE}/2)); \
 	${SETUP_CMD} \
 	PREFIX=bg_hemem; \
@@ -381,7 +381,7 @@ run_bg_sw_tier: all
 # FlexKV occupies the entire DRAM and half of NVM, and other app the other half of NVM
 run_test_nodram_bg_sw_tier: all
 	# HeMem runs
-	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	FLEXKV_SIZE=$$((${APPSIZE})); \
 	NVMSIZE1=$$(($${FLEXKV_SIZE})); \
 	NVMSIZE2=$$((${NVMSIZE} - $${FLEXKV_SIZE})); \
 	${SETUP_CMD} \
@@ -427,7 +427,7 @@ run_test_nodram_bg_sw_tier: all
 # FlexKV occupies the entire DRAM and half of NVM, and other app the other half of NVM
 run_test_bg_sw_tier: all
 	# HeMem runs
-	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	FLEXKV_SIZE=$$((${APPSIZE})); \
 	NVMSIZE=$$((${NVMSIZE}/2)); \
 	${SETUP_CMD} \
 	PREFIX=bg_test_hemem; \
@@ -504,7 +504,7 @@ run_bg_mini_sw_tier: all
 # FlexKV occupies first half of DRAM/NVM, and other app the other half	
 run_eval_apps: all	
 	# HeMem runs	
-	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	FLEXKV_SIZE=$$((${APPSIZE})); \
 	${SETUP_CMD} \
 	PREFIX=eval_qtmem; \
 	${RUN_PERF} \
@@ -536,8 +536,8 @@ run_eval_apps: all
 
 run_eval_dynamic: all
 	# qtMem runs
-	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
-	FLEXKV_RUNTIME=240; \
+	FLEXKV_SIZE=$$((${APPSIZE})); \
+	FLEXKV_RUNTIME=160; \
 	FLEXKV_HOT_FRAC=0.15; \
 	FLEXKV_HOT_FRAC2=0.30; \
 	GUPS_SIZE=$$((128*1024*1024*1024)); \
@@ -566,8 +566,8 @@ run_eval_dynamic: all
 
 run_eval_dynamic_hemem: all
 	# qtMem runs
-	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
-	FLEXKV_RUNTIME=240; \
+	FLEXKV_SIZE=$$((${APPSIZE})); \
+	FLEXKV_RUNTIME=160; \
 	FLEXKV_HOT_FRAC=0.15; \
 	FLEXKV_HOT_FRAC2=0.30; \
 	GUPS_SIZE=$$((128*1024*1024*1024)); \
@@ -599,9 +599,8 @@ run_eval_dynamic_hemem: all
 
 run_eval_dynamic_znuma: all
 	BASE_NODE=1;\
-	NUMA_CMD="numactl -N 1 -m 1,3"; \
-	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
-	FLEXKV_RUNTIME=240; \
+	FLEXKV_SIZE=$$((${APPSIZE})); \
+	FLEXKV_RUNTIME=160; \
 	FLEXKV_HOT_FRAC=0.15; \
 	FLEXKV_HOT_FRAC2=0.30; \
 	GUPS_SIZE=$$((128*1024*1024*1024)); \
@@ -629,7 +628,7 @@ run_eval_dynamic_znuma: all
 
 
 run_eval_dynamic_hw: all
-	FLEXKV_SIZE=$$((320*1024*1024*1024)); \
+	FLEXKV_SIZE=$$((${APPSIZE})); \
 	GUPS_SIZE=$$((64*1024*1024*1024)); \
 	GAPBS_SIZE=27; \
 	APP_THREADS=4; \
